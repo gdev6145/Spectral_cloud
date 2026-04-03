@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spectral-config
+  namespace: default
+data:
+  CONFIG_KEY_1: "value1"
+  CONFIG_KEY_2: "value2"
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: spectral-service
+  namespace: default
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+  selector:
+    app: spectralcloud
+
+---
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: spectral-statefulset
+  namespace: default
+spec:
+  serviceName: spectral-service
+  replicas: 3
+  selector:
+    matchLabels:
+      app: spectralcloud
+  template:
+    metadata:
+      labels:
+        app: spectralcloud
+    spec:
+      containers:
+      - name: spectral-container
+        image: spectral-cloud/spectral-image:latest
+        ports:
+          - containerPort: 8080
+        env:
+          - name: CONFIG_KEY_1
+            valueFrom:
+              configMapKeyRef:
+                name: spectral-config
+                key: CONFIG_KEY_1
+          - name: CONFIG_KEY_2
+            valueFrom:
+              configMapKeyRef:
+                name: spectral-config
+                key: CONFIG_KEY_2
+
+---
+
+apiVersion: autoscaling/v1
+kind: HorizontalPodAutoscaler
+metadata:
+  name: spectral-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: spectral-statefulset
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 50
