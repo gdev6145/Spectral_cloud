@@ -1,0 +1,55 @@
+# Binaries
+*.o
+*.a
+*.so
+*.exe
+*.exe~
+*.dll
+*.dylib
+*.out
+
+# Go binaries
+/bin/
+/dist/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+egss/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.env
+
+# Testing
+coverage/
+*.cover
+.pytest_cache/
+.coverage
+
+# Temporary files
+*.tmp
+*.log
