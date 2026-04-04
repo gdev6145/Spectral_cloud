@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,9 +12,11 @@ import (
 
 	"github.com/gdev6145/Spectral_cloud/pkg/blockchain"
 	"github.com/gdev6145/Spectral_cloud/pkg/mesh"
+	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
 	"github.com/gdev6145/Spectral_cloud/pkg/routing"
 	"github.com/gdev6145/Spectral_cloud/pkg/store"
 	"github.com/prometheus/client_golang/prometheus"
+	"google.golang.org/protobuf/proto"
 )
 
 func makeHandler(chain *blockchain.Blockchain, router *routing.RoutingEngine, db *store.Store, counter *prometheus.CounterVec, auth authConfig, status *statusTracker, meshNode *mesh.Node) http.Handler {
@@ -222,6 +225,126 @@ func TestStatusEndpoint(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestProtoDataEndpoint(t *testing.T) {
+	chain := blockchain.NewBlockchain()
+	router := routing.NewRoutingEngine()
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_9", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(chain, router, db, counter, authConfig{}, nil, nil)
+
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	t.Run("valid", func(t *testing.T) {
+		msg := &meshpb.DataMessage{
+			MsgType:       meshpb.DataMessage_DATA,
+			SourceId:      1,
+			DestinationId: 2,
+			Timestamp:     time.Now().UTC().Unix(),
+			Payload:       []byte("hello"),
+		}
+		raw, err := proto.Marshal(msg)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		resp, err := http.Post(srv.URL+"/proto/data", "application/x-protobuf", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d", resp.StatusCode)
+		}
+		out, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		var ack meshpb.DataMessage
+		if err := proto.Unmarshal(out, &ack); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if ack.MsgType != meshpb.DataMessage_ACK {
+			t.Fatalf("expected ACK, got %v", ack.MsgType)
+		}
+		if ack.SourceId != 2 || ack.DestinationId != 1 {
+			t.Fatalf("expected source/dest swapped, got %d/%d", ack.SourceId, ack.DestinationId)
+		}
+	})
+
+	t.Run("invalid-msg-type", func(t *testing.T) {
+		msg := &meshpb.DataMessage{
+			MsgType:       meshpb.DataMessage_ACK,
+			SourceId:      1,
+			DestinationId: 2,
+			Timestamp:     time.Now().UTC().Unix(),
+		}
+		raw, err := proto.Marshal(msg)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		resp, err := http.Post(srv.URL+"/proto/data", "application/x-protobuf", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", resp.StatusCode)
+		}
+	})
+}
+
+func TestProtoControlEndpoint(t *testing.T) {
+	chain := blockchain.NewBlockchain()
+	router := routing.NewRoutingEngine()
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_10", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(chain, router, db, counter, authConfig{}, nil, nil)
+
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	msg := &meshpb.ControlMessage{
+		MsgType:     meshpb.DataMessage_DATA,
+		ControlType: meshpb.ControlMessage_HEARTBEAT,
+		NodeId:      42,
+	}
+	raw, err := proto.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resp, err := http.Post(srv.URL+"/proto/control", "application/x-protobuf", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["status"] != "ok" {
+		t.Fatalf("expected status ok, got %v", body["status"])
+	}
+	if body["control_type"] != "HEARTBEAT" {
+		t.Fatalf("expected control_type HEARTBEAT, got %v", body["control_type"])
+	}
+	if body["node_id"] != float64(42) {
+		t.Fatalf("expected node_id 42, got %v", body["node_id"])
 	}
 }
 

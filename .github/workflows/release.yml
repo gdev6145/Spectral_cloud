@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Build binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          targets="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64"
+          for t in $targets; do
+            GOOS=${t%/*}
+            GOARCH=${t#*/}
+            ext=""
+            if [ "$GOOS" = "windows" ]; then
+              ext=".exe"
+            fi
+            GOOS=$GOOS GOARCH=$GOARCH go build -o "dist/spectral-cloud-${GOOS}-${GOARCH}${ext}" ./cmd/spectral-cloud
+            GOOS=$GOOS GOARCH=$GOARCH go build -o "dist/spectralctl-${GOOS}-${GOARCH}${ext}" ./cmd/spectralctl
+          done
+          (cd dist && sha256sum * > checksums.txt)
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*

@@ -17,6 +17,7 @@ go run ./cmd/spectral-cloud
 
 Quick links:
 - Architecture overview: `docs/spectral-cloud-architecture.md`
+- API reference: `docs/api.md`
 - Configuration reference: `docs/configuration.md`
 
 **Core Endpoints**
@@ -85,6 +86,7 @@ go run ./cmd/spectralctl rekey --in ./data/spectral.db.enc --out ./data/spectral
 **Docs**
 - Protocol specification: `docs/protocol.md`
 - Architecture overview: `docs/spectral-cloud-architecture.md`
+- API reference: `docs/api.md`
 - Configuration reference: `docs/configuration.md`
 - DevOps runbooks: `DevOps_Runbooks.md`
 
