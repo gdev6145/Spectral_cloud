@@ -116,6 +116,7 @@ go run ./cmd/spectralctl rekey --in ./data/spectral.db.enc --out ./data/spectral
 
 **Docs**
 - Protocol specification: `docs/protocol.md`
+- Architecture overview: `docs/spectral-cloud-architecture.md`
 - DevOps runbooks: `DevOps_Runbooks.md`
 
 **Tests**
