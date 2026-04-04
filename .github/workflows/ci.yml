@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc-gen-go
+        run: go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2
+      - name: Generate protobufs
+        run: ./scripts/gen-proto.sh
+      - name: Ensure generated files are committed
+        run: git diff --exit-code
+      - name: Go fmt check
+        run: test -z "$(gofmt -l .)"
+      - name: Go test
+        run: go test ./...
+      - name: Spectralctl validate (empty data dir)
+        run: go run ./cmd/spectralctl validate --data-dir ./data
+      - name: Spectralctl backup/verify (temp db)
+        run: |
+          mkdir -p data
+          go run ./cmd/spectral-cloud & sleep 2
+          go run ./cmd/spectralctl backup --db-path ./data/spectral.db --out ./data/spectral.db.bak
+      - name: Spectralctl backup/verify (encrypted)
+        run: |
+          KEY=$(go run ./cmd/spectralctl keygen)
+          go run ./cmd/spectralctl backup --db-path ./data/spectral.db --out ./data/spectral.db.enc --key "$KEY"
+      - name: Spectralctl rekey (encrypted)
+        run: |
+          OLD_KEY=$(go run ./cmd/spectralctl keygen)
+          NEW_KEY=$(go run ./cmd/spectralctl keygen)
+          go run ./cmd/spectralctl backup --db-path ./data/spectral.db --out ./data/spectral.db.enc --key "$OLD_KEY"
+          go run ./cmd/spectralctl rekey --in ./data/spectral.db.enc --out ./data/spectral.db.rekey --old-key "$OLD_KEY" --new-key "$NEW_KEY"

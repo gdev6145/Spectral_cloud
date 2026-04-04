@@ -1,0 +1,78 @@
+image:
+  repository: spectral-cloud/spectral-image
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+replicaCount: 1
+
+env:
+  PORT: "8080"
+  DATA_DIR: "/data"
+  MAX_BODY_BYTES: "1048576"
+  RATE_LIMIT_RPS: "10"
+  RATE_LIMIT_BURST: "20"
+  BACKUP_INTERVAL: "0"
+  BACKUP_DIR: "/data/backups"
+  BACKUP_KEY_B64: ""
+  COMPACT_ON_START: "false"
+  COMPACT_INTERVAL: "0"
+  COMPACT_DIR: "/data/compactions"
+  COMPACT_RETENTION: "3"
+  ADMIN_ALLOW_REMOTE: "false"
+  ADMIN_ALLOWLIST_CIDRS: ""
+  ADMIN_API_KEY: ""
+  ADMIN_WRITE_KEY: ""
+  WRITE_API_KEY: ""
+  PUBLIC_PATHS: "/health"
+  ADMIN_PATHS: "/admin/status"
+  MESH_ENABLE: "false"
+  MESH_UDP_BIND: "0.0.0.0:7000"
+  MESH_NODE_ID: ""
+  MESH_PEERS: ""
+  MESH_HEARTBEAT_INTERVAL: "5s"
+  MESH_ROUTE_TTL: "30s"
+  MESH_SHARED_KEY: ""
+  MESH_SHARED_KEYS: ""
+  MESH_PEER_KEYS: ""
+  MESH_ANOMALY_WINDOW: "5"
+  MESH_REJECT_RATE_THRESHOLD: "0.3"
+  MESH_REJECT_BURST_THRESHOLD: "20"
+  MESH_ANOMALY_MIN_SAMPLES: "50"
+
+persistence:
+  enabled: true
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  storageClassName: ""
+
+livenessProbe:
+  path: /health
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 2
+
+readinessProbe:
+  path: /health
+  initialDelaySeconds: 2
+  periodSeconds: 5
+  timeoutSeconds: 2
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "256Mi"

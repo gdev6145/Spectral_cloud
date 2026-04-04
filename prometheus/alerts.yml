@@ -1,0 +1,20 @@
+groups:
+  - name: spectral-cloud-mesh
+    rules:
+      - alert: SpectralCloudMeshAnomaly
+        expr: spectral_cloud_mesh_anomaly{type="reject_rate"} == 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Spectral Cloud mesh anomaly"
+          description: "Mesh reject-rate anomaly detected for {{ $labels.instance }}."
+
+      - alert: SpectralCloudMeshRejectRateHigh
+        expr: spectral_cloud_mesh_reject_rate > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Spectral Cloud mesh reject rate high"
+          description: "Mesh reject rate > 50% for {{ $labels.instance }}."

@@ -47,6 +47,70 @@ spec:
         ports:
           - containerPort: 8080
         env:
+          - name: PORT
+            value: "8080"
+          - name: MAX_BODY_BYTES
+            value: "1048576"
+          - name: RATE_LIMIT_RPS
+            value: "10"
+          - name: RATE_LIMIT_BURST
+            value: "20"
+          - name: BACKUP_INTERVAL
+            value: "0"
+          - name: BACKUP_DIR
+            value: /data/backups
+          - name: BACKUP_KEY_B64
+            value: ""
+          - name: COMPACT_ON_START
+            value: "false"
+          - name: COMPACT_INTERVAL
+            value: "0"
+          - name: COMPACT_DIR
+            value: /data/compactions
+          - name: COMPACT_RETENTION
+            value: "3"
+          - name: ADMIN_ALLOW_REMOTE
+            value: "false"
+          - name: ADMIN_ALLOWLIST_CIDRS
+            value: ""
+          - name: ADMIN_API_KEY
+            value: ""
+          - name: ADMIN_WRITE_KEY
+            value: ""
+          - name: WRITE_API_KEY
+            value: ""
+          - name: PUBLIC_PATHS
+            value: "/health"
+          - name: ADMIN_PATHS
+            value: "/admin/status"
+          - name: MESH_ENABLE
+            value: "false"
+          - name: MESH_UDP_BIND
+            value: "0.0.0.0:7000"
+          - name: MESH_NODE_ID
+            value: ""
+          - name: MESH_PEERS
+            value: ""
+          - name: MESH_HEARTBEAT_INTERVAL
+            value: "5s"
+          - name: MESH_ROUTE_TTL
+            value: "30s"
+          - name: MESH_SHARED_KEY
+            value: ""
+          - name: MESH_SHARED_KEYS
+            value: ""
+          - name: MESH_PEER_KEYS
+            value: ""
+          - name: MESH_ANOMALY_WINDOW
+            value: "5"
+          - name: MESH_REJECT_RATE_THRESHOLD
+            value: "0.3"
+          - name: MESH_REJECT_BURST_THRESHOLD
+            value: "20"
+          - name: MESH_ANOMALY_MIN_SAMPLES
+            value: "50"
+          - name: DATA_DIR
+            value: /data
           - name: CONFIG_KEY_1
             valueFrom:
               configMapKeyRef:
@@ -57,6 +121,43 @@ spec:
               configMapKeyRef:
                 name: spectral-config
                 key: CONFIG_KEY_2
+        volumeMounts:
+          - name: spectral-data
+            mountPath: /data
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 2
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 2
+          periodSeconds: 5
+          timeoutSeconds: 2
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 10001
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+  volumeClaimTemplates:
+    - metadata:
+        name: spectral-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
 
 ---
 

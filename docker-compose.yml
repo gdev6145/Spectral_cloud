@@ -1,1 +1,303 @@
-version: '3.8'\n\nservices:\n  node1:\n    image: your-node-image\n    environment:\n      - NODE_ENV=development\n    volumes:\n      - node1-data:/data\n    networks:\n      - mesh-network\n\n  node2:\n    image: your-node-image\n    environment:\n      - NODE_ENV=development\n    volumes:\n      - node2-data:/data\n    networks:\n      - mesh-network\n\n  node3:\n    image: your-node-image\n    environment:\n      - NODE_ENV=development\n    volumes:\n      - node3-data:/data\n    networks:\n      - mesh-network\n\n  node4:\n    image: your-node-image\n    environment:\n      - NODE_ENV=development\n    volumes:\n      - node4-data:/data\n    networks:\n      - mesh-network\n\n  node5:\n    image: your-node-image\n    environment:\n      - NODE_ENV=development\n    volumes:\n      - node5-data:/data\n    networks:\n      - mesh-network\n\nnets:\n  mesh-network:\n    driver: bridge\n\nvolumes:\n  node1-data:\n  node2-data:\n  node3-data:\n  node4-data:\n  node5-data:
+version: "3.8"
+
+services:
+  node1:
+    build: .
+    environment:
+      - NODE_ENV=development
+      - PORT=8080
+      - DATA_DIR=/data
+      - MAX_BODY_BYTES=1048576
+      - RATE_LIMIT_RPS=10
+      - RATE_LIMIT_BURST=20
+      - BACKUP_INTERVAL=0
+      - BACKUP_DIR=/data/backups
+      - BACKUP_KEY_B64=
+      - COMPACT_ON_START=false
+      - COMPACT_INTERVAL=0
+      - COMPACT_DIR=/data/compactions
+      - COMPACT_RETENTION=3
+      - ADMIN_ALLOW_REMOTE=false
+      - ADMIN_ALLOWLIST_CIDRS=
+      - ADMIN_API_KEY=
+      - ADMIN_WRITE_KEY=
+      - WRITE_API_KEY=
+      - PUBLIC_PATHS=/health
+      - ADMIN_PATHS=/admin/status
+      - MESH_ENABLE=false
+      - MESH_UDP_BIND=0.0.0.0:7000
+      - MESH_NODE_ID=
+      - MESH_PEERS=
+      - MESH_HEARTBEAT_INTERVAL=5s
+      - MESH_ROUTE_TTL=30s
+      - MESH_SHARED_KEY=
+      - MESH_SHARED_KEYS=
+      - MESH_PEER_KEYS=
+      - MESH_ANOMALY_WINDOW=5
+      - MESH_REJECT_RATE_THRESHOLD=0.3
+      - MESH_REJECT_BURST_THRESHOLD=20
+      - MESH_ANOMALY_MIN_SAMPLES=50
+    volumes:
+      - node1-data:/data
+    networks:
+      - mesh-network
+    ports:
+      - "8080:8080"
+      - "7000:7000/udp"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 2s
+      retries: 5
+
+  node2:
+    build: .
+    environment:
+      - NODE_ENV=development
+      - PORT=8081
+      - DATA_DIR=/data
+      - MAX_BODY_BYTES=1048576
+      - RATE_LIMIT_RPS=10
+      - RATE_LIMIT_BURST=20
+      - BACKUP_INTERVAL=0
+      - BACKUP_DIR=/data/backups
+      - BACKUP_KEY_B64=
+      - COMPACT_ON_START=false
+      - COMPACT_INTERVAL=0
+      - COMPACT_DIR=/data/compactions
+      - COMPACT_RETENTION=3
+      - ADMIN_ALLOW_REMOTE=false
+      - ADMIN_ALLOWLIST_CIDRS=
+      - ADMIN_API_KEY=
+      - ADMIN_WRITE_KEY=
+      - WRITE_API_KEY=
+      - PUBLIC_PATHS=/health
+      - ADMIN_PATHS=/admin/status
+      - MESH_ENABLE=false
+      - MESH_UDP_BIND=0.0.0.0:7001
+      - MESH_NODE_ID=
+      - MESH_PEERS=
+      - MESH_HEARTBEAT_INTERVAL=5s
+      - MESH_ROUTE_TTL=30s
+      - MESH_SHARED_KEY=
+      - MESH_SHARED_KEYS=
+      - MESH_PEER_KEYS=
+      - MESH_ANOMALY_WINDOW=5
+      - MESH_REJECT_RATE_THRESHOLD=0.3
+      - MESH_REJECT_BURST_THRESHOLD=20
+      - MESH_ANOMALY_MIN_SAMPLES=50
+    volumes:
+      - node2-data:/data
+    networks:
+      - mesh-network
+    ports:
+      - "8081:8081"
+      - "7001:7001/udp"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 2s
+      retries: 5
+
+  node3:
+    build: .
+    environment:
+      - NODE_ENV=development
+      - PORT=8082
+      - DATA_DIR=/data
+      - MAX_BODY_BYTES=1048576
+      - RATE_LIMIT_RPS=10
+      - RATE_LIMIT_BURST=20
+      - BACKUP_INTERVAL=0
+      - BACKUP_DIR=/data/backups
+      - BACKUP_KEY_B64=
+      - COMPACT_ON_START=false
+      - COMPACT_INTERVAL=0
+      - COMPACT_DIR=/data/compactions
+      - COMPACT_RETENTION=3
+      - ADMIN_ALLOW_REMOTE=false
+      - ADMIN_ALLOWLIST_CIDRS=
+      - ADMIN_API_KEY=
+      - ADMIN_WRITE_KEY=
+      - WRITE_API_KEY=
+      - PUBLIC_PATHS=/health
+      - ADMIN_PATHS=/admin/status
+      - MESH_ENABLE=false
+      - MESH_UDP_BIND=0.0.0.0:7002
+      - MESH_NODE_ID=
+      - MESH_PEERS=
+      - MESH_HEARTBEAT_INTERVAL=5s
+      - MESH_ROUTE_TTL=30s
+      - MESH_SHARED_KEY=
+      - MESH_SHARED_KEYS=
+      - MESH_PEER_KEYS=
+      - MESH_ANOMALY_WINDOW=5
+      - MESH_REJECT_RATE_THRESHOLD=0.3
+      - MESH_REJECT_BURST_THRESHOLD=20
+      - MESH_ANOMALY_MIN_SAMPLES=50
+    volumes:
+      - node3-data:/data
+    networks:
+      - mesh-network
+    ports:
+      - "8082:8082"
+      - "7002:7002/udp"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8082/health"]
+      interval: 10s
+      timeout: 2s
+      retries: 5
+
+  node4:
+    build: .
+    environment:
+      - NODE_ENV=development
+      - PORT=8083
+      - DATA_DIR=/data
+      - MAX_BODY_BYTES=1048576
+      - RATE_LIMIT_RPS=10
+      - RATE_LIMIT_BURST=20
+      - BACKUP_INTERVAL=0
+      - BACKUP_DIR=/data/backups
+      - BACKUP_KEY_B64=
+      - COMPACT_ON_START=false
+      - COMPACT_INTERVAL=0
+      - COMPACT_DIR=/data/compactions
+      - COMPACT_RETENTION=3
+      - ADMIN_ALLOW_REMOTE=false
+      - ADMIN_ALLOWLIST_CIDRS=
+      - ADMIN_API_KEY=
+      - ADMIN_WRITE_KEY=
+      - WRITE_API_KEY=
+      - PUBLIC_PATHS=/health
+      - ADMIN_PATHS=/admin/status
+      - MESH_ENABLE=false
+      - MESH_UDP_BIND=0.0.0.0:7003
+      - MESH_NODE_ID=
+      - MESH_PEERS=
+      - MESH_HEARTBEAT_INTERVAL=5s
+      - MESH_ROUTE_TTL=30s
+      - MESH_SHARED_KEY=
+      - MESH_SHARED_KEYS=
+      - MESH_PEER_KEYS=
+      - MESH_ANOMALY_WINDOW=5
+      - MESH_REJECT_RATE_THRESHOLD=0.3
+      - MESH_REJECT_BURST_THRESHOLD=20
+      - MESH_ANOMALY_MIN_SAMPLES=50
+    volumes:
+      - node4-data:/data
+    networks:
+      - mesh-network
+    ports:
+      - "8083:8083"
+      - "7003:7003/udp"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8083/health"]
+      interval: 10s
+      timeout: 2s
+      retries: 5
+
+  node5:
+    build: .
+    environment:
+      - NODE_ENV=development
+      - PORT=8084
+      - DATA_DIR=/data
+      - MAX_BODY_BYTES=1048576
+      - RATE_LIMIT_RPS=10
+      - RATE_LIMIT_BURST=20
+      - BACKUP_INTERVAL=0
+      - BACKUP_DIR=/data/backups
+      - BACKUP_KEY_B64=
+      - COMPACT_ON_START=false
+      - COMPACT_INTERVAL=0
+      - COMPACT_DIR=/data/compactions
+      - COMPACT_RETENTION=3
+      - ADMIN_ALLOW_REMOTE=false
+      - ADMIN_ALLOWLIST_CIDRS=
+      - ADMIN_API_KEY=
+      - ADMIN_WRITE_KEY=
+      - WRITE_API_KEY=
+      - PUBLIC_PATHS=/health
+      - ADMIN_PATHS=/admin/status
+      - MESH_ENABLE=false
+      - MESH_UDP_BIND=0.0.0.0:7004
+      - MESH_NODE_ID=
+      - MESH_PEERS=
+      - MESH_HEARTBEAT_INTERVAL=5s
+      - MESH_ROUTE_TTL=30s
+      - MESH_SHARED_KEY=
+      - MESH_SHARED_KEYS=
+      - MESH_PEER_KEYS=
+      - MESH_ANOMALY_WINDOW=5
+      - MESH_REJECT_RATE_THRESHOLD=0.3
+      - MESH_REJECT_BURST_THRESHOLD=20
+      - MESH_ANOMALY_MIN_SAMPLES=50
+    volumes:
+      - node5-data:/data
+    networks:
+      - mesh-network
+    ports:
+      - "8084:8084"
+      - "7004:7004/udp"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8084/health"]
+      interval: 10s
+      timeout: 2s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - mesh-network
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    volumes:
+      - alertmanager-config:/config
+    ports:
+      - "9093:9093"
+    networks:
+      - mesh-network
+    depends_on:
+      - alertmanager-config
+    command:
+      - "--config.file=/config/alertmanager.yml"
+
+  alertmanager-config:
+    image: alpine:3.20
+    volumes:
+      - ./alertmanager/alertmanager.tmpl.yml:/templates/alertmanager.tmpl.yml:ro
+      - ./alertmanager/render.sh:/render.sh:ro
+      - alertmanager-config:/config
+    environment:
+      - SLACK_WEBHOOK_URL=
+      - SLACK_CHANNEL=#alerts
+      - ALERT_EMAIL_TO=
+      - ALERT_EMAIL_FROM=
+      - ALERT_SMTP_HOST=
+      - ALERT_SMTP_USER=
+      - ALERT_SMTP_PASS=
+      - PAGERDUTY_ROUTING_KEY=
+      - OPSGENIE_API_KEY=
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["apk add --no-cache gettext >/dev/null && /render.sh"]
+    networks:
+      - mesh-network
+
+networks:
+  mesh-network:
+    driver: bridge
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
+  node4-data:
+  node5-data:
+  alertmanager-config:

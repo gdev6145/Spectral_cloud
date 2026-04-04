@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "spectral-cloud/blockchain",
+  "title": "Spectral Cloud Blockchain Persistence",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["version", "updated_at", "blocks"],
+      "properties": {
+        "version": { "type": "integer", "minimum": 1 },
+        "updated_at": { "type": "string" },
+        "meta": { "type": "object" },
+        "blocks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/block" }
+        }
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "array",
+      "items": { "$ref": "#/$defs/block" }
+    }
+  ],
+  "$defs": {
+    "transaction": {
+      "type": "object",
+      "required": ["sender", "recipient", "amount"],
+      "properties": {
+        "sender": { "type": "string" },
+        "recipient": { "type": "string" },
+        "amount": { "type": "number" }
+      },
+      "additionalProperties": true
+    },
+    "block": {
+      "type": "object",
+      "required": ["index", "timestamp", "previousHash", "hash"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "timestamp": { "type": "string" },
+        "transactions": {
+          "type": ["array", "null"],
+          "items": { "$ref": "#/$defs/transaction" }
+        },
+        "previousHash": { "type": "string" },
+        "hash": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

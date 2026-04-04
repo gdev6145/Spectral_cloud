@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "spectral-cloud/routes",
+  "title": "Spectral Cloud Routes Persistence",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["version", "updated_at", "routes"],
+      "properties": {
+        "version": { "type": "integer", "minimum": 1 },
+        "updated_at": { "type": "string" },
+        "meta": { "type": "object" },
+        "routes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/route" }
+        }
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "array",
+      "items": { "$ref": "#/$defs/route" }
+    }
+  ],
+  "$defs": {
+    "metric": {
+      "type": "object",
+      "required": ["latency", "throughput"],
+      "properties": {
+        "latency": { "type": "integer", "minimum": 0 },
+        "throughput": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "route": {
+      "type": "object",
+      "required": ["destination", "metric"],
+      "properties": {
+        "destination": { "type": "string" },
+        "metric": { "$ref": "#/$defs/metric" },
+        "addedAt": { "type": "string" },
+        "expiresAt": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    }
+  }
+}

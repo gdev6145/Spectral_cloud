@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package spectralcloud.protocol;
+
+option go_package = "github.com/gdev6145/Spectral_cloud/pkg/proto;proto";
+
+message DataMessage {
+  enum MsgType {
+    DATA = 0;
+    ACK = 1;
+  }
+  MsgType msg_type = 1;
+  uint32 source_id = 2;
+  uint32 destination_id = 3;
+  int64 timestamp = 4;
+  bytes payload = 5;
+}
+
+message ControlMessage {
+  enum ControlType {
+    HEARTBEAT = 0;
+    HANDSHAKE = 1;
+  }
+  DataMessage.MsgType msg_type = 1;
+  ControlType control_type = 2;
+  uint32 node_id = 3;
+  bytes payload = 4;
+}
