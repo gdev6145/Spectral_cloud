@@ -15,6 +15,10 @@ cd /root/Spectral_cloud
 go run ./cmd/spectral-cloud
 ```
 
+Quick links:
+- Architecture overview: `docs/spectral-cloud-architecture.md`
+- Configuration reference: `docs/configuration.md`
+
 **Core Endpoints**
 - `GET /` -> basic banner
 - `GET /health` -> JSON health
@@ -46,6 +50,8 @@ helm install spectral-cloud ./spectral-cloud
 Update image settings in `spectral-cloud/values.yaml` if you publish a custom image.
 
 **Configuration**
+
+Full configuration reference: `docs/configuration.md`.
 
 Environment variables:
 - `PORT` (default `8080`)
@@ -117,6 +123,7 @@ go run ./cmd/spectralctl rekey --in ./data/spectral.db.enc --out ./data/spectral
 **Docs**
 - Protocol specification: `docs/protocol.md`
 - Architecture overview: `docs/spectral-cloud-architecture.md`
+- Configuration reference: `docs/configuration.md`
 - DevOps runbooks: `DevOps_Runbooks.md`
 
 **Tests**
