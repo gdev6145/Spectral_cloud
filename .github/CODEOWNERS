@@ -1,0 +1,8 @@
+# Default owner
+* @gdev6145
+
+# High-signal areas
+/pkg/mesh/ @gdev6145
+/pkg/store/ @gdev6145
+/proto/ @gdev6145
+/.github/ @gdev6145
