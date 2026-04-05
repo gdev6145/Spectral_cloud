@@ -10,16 +10,16 @@ import (
 
 // RouteMetric represents metrics for a route.
 type RouteMetric struct {
-	Latency    int // Latency in milliseconds
-	Throughput int // Throughput in Mbps
+	Latency    int `json:"latency"`    // Latency in milliseconds
+	Throughput int `json:"throughput"` // Throughput in Mbps
 }
 
 // Route represents a routing path.
 type Route struct {
-	Destination string
-	Metric      RouteMetric
-	AddedAt     time.Time
-	ExpiresAt   *time.Time
+	Destination string      `json:"destination"`
+	Metric      RouteMetric `json:"metric"`
+	AddedAt     time.Time   `json:"added_at"`
+	ExpiresAt   *time.Time  `json:"expires_at,omitempty"`
 }
 
 // RoutingEngine manages routes.
@@ -33,6 +33,15 @@ func NewRoutingEngine() *RoutingEngine {
 	return &RoutingEngine{
 		Routes: []Route{},
 	}
+}
+
+// NewRoutingEngineFromRoutes creates a routing engine preloaded with routes.
+func NewRoutingEngineFromRoutes(routes []Route) *RoutingEngine {
+	engine := &RoutingEngine{
+		Routes: routes,
+	}
+	engine.pruneExpiredLocked()
+	return engine
 }
 
 // AddRoute adds a new route with validation.

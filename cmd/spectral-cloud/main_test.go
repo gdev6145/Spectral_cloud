@@ -10,26 +10,27 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gdev6145/Spectral_cloud/pkg/blockchain"
 	"github.com/gdev6145/Spectral_cloud/pkg/mesh"
 	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
-	"github.com/gdev6145/Spectral_cloud/pkg/routing"
 	"github.com/gdev6145/Spectral_cloud/pkg/store"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/protobuf/proto"
 )
 
-func makeHandler(chain *blockchain.Blockchain, router *routing.RoutingEngine, db *store.Store, counter *prometheus.CounterVec, auth authConfig, status *statusTracker, meshNode *mesh.Node) http.Handler {
+func makeHandler(db *store.Store, counter *prometheus.CounterVec, auth authConfig, status *statusTracker, meshNode *mesh.Node) http.Handler {
+	if auth.defaultTenant == "" {
+		auth.defaultTenant = "default"
+	}
+	tenantMgr := newTenantManager(db)
+	_, _ = tenantMgr.getTenant(auth.defaultTenant)
 	meshCounter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_mesh_packets_total", Help: "test"}, []string{"outcome"})
 	meshReject := prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_mesh_reject_rate", Help: "test"})
 	meshAnom := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_mesh_anomaly", Help: "test"}, []string{"type"})
 	anomalyState := &meshAnomalyState{}
-	return newHandler(chain, router, db, 1<<20, counter, meshCounter, meshReject, meshAnom, auth, 100, 200, status, meshNode, anomalyState)
+	return newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, auth, 100, 200, status, meshNode, anomalyState)
 }
 
 func TestHealthEndpoint(t *testing.T) {
-	chain := blockchain.NewBlockchain()
-	router := routing.NewRoutingEngine()
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total", Help: "test"}, []string{"path", "method", "code"})
 	tmp := t.TempDir()
 	db, err := store.Open(store.DBPath(tmp))
@@ -37,7 +38,7 @@ func TestHealthEndpoint(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	handler := makeHandler(chain, router, db, counter, authConfig{}, nil, nil)
+	handler := makeHandler(db, counter, authConfig{}, nil, nil)
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -60,8 +61,6 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestBlockchainAddEndpoint(t *testing.T) {
-	chain := blockchain.NewBlockchain()
-	router := routing.NewRoutingEngine()
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_2", Help: "test"}, []string{"path", "method", "code"})
 	tmp := t.TempDir()
 	db, err := store.Open(store.DBPath(tmp))
@@ -69,7 +68,7 @@ func TestBlockchainAddEndpoint(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	handler := makeHandler(chain, router, db, counter, authConfig{}, nil, nil)
+	handler := makeHandler(db, counter, authConfig{}, nil, nil)
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -93,8 +92,6 @@ func TestBlockchainAddEndpoint(t *testing.T) {
 }
 
 func TestRoutesEndpoints(t *testing.T) {
-	chain := blockchain.NewBlockchain()
-	router := routing.NewRoutingEngine()
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_3", Help: "test"}, []string{"path", "method", "code"})
 	tmp := t.TempDir()
 	db, err := store.Open(store.DBPath(tmp))
@@ -102,7 +99,7 @@ func TestRoutesEndpoints(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	handler := makeHandler(chain, router, db, counter, authConfig{}, nil, nil)
+	handler := makeHandler(db, counter, authConfig{}, nil, nil)
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -133,8 +130,6 @@ func TestRoutesEndpoints(t *testing.T) {
 }
 
 func TestAuthMiddleware(t *testing.T) {
-	chain := blockchain.NewBlockchain()
-	router := routing.NewRoutingEngine()
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_4", Help: "test"}, []string{"path", "method", "code"})
 	tmp := t.TempDir()
 	db, err := store.Open(store.DBPath(tmp))
@@ -142,9 +137,10 @@ func TestAuthMiddleware(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	handler := makeHandler(chain, router, db, counter, authConfig{
-		apiKey:      "secret",
-		publicRules: []pathRule{{value: "/health"}},
+	handler := makeHandler(db, counter, authConfig{
+		apiKey:        "secret",
+		defaultTenant: "default",
+		publicRules:   []pathRule{{value: "/health"}},
 	}, nil, nil)
 
 	srv := httptest.NewServer(handler)
@@ -181,8 +177,6 @@ func TestAuthMiddleware(t *testing.T) {
 }
 
 func TestStatusEndpoint(t *testing.T) {
-	chain := blockchain.NewBlockchain()
-	router := routing.NewRoutingEngine()
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_5", Help: "test"}, []string{"path", "method", "code"})
 	tmp := t.TempDir()
 	db, err := store.Open(store.DBPath(tmp))
@@ -205,11 +199,12 @@ func TestStatusEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse cidr: %v", err)
 	}
-	handler := makeHandler(chain, router, db, counter, authConfig{
-		apiKey:      "secret",
-		publicRules: []pathRule{{value: "/health"}},
-		adminRules:  []pathRule{{value: "/admin/status"}},
-		adminCIDRs:  cidrs,
+	handler := makeHandler(db, counter, authConfig{
+		apiKey:        "secret",
+		defaultTenant: "default",
+		publicRules:   []pathRule{{value: "/health"}},
+		adminRules:    []pathRule{{value: "/admin/status"}},
+		adminCIDRs:    cidrs,
 	}, status, nil)
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -229,8 +224,6 @@ func TestStatusEndpoint(t *testing.T) {
 }
 
 func TestProtoDataEndpoint(t *testing.T) {
-	chain := blockchain.NewBlockchain()
-	router := routing.NewRoutingEngine()
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_9", Help: "test"}, []string{"path", "method", "code"})
 	tmp := t.TempDir()
 	db, err := store.Open(store.DBPath(tmp))
@@ -238,7 +231,7 @@ func TestProtoDataEndpoint(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	handler := makeHandler(chain, router, db, counter, authConfig{}, nil, nil)
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -267,12 +260,9 @@ func TestProtoDataEndpoint(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}
-		var ack meshpb.DataMessage
+		var ack meshpb.Ack
 		if err := proto.Unmarshal(out, &ack); err != nil {
 			t.Fatalf("unmarshal: %v", err)
-		}
-		if ack.MsgType != meshpb.DataMessage_ACK {
-			t.Fatalf("expected ACK, got %v", ack.MsgType)
 		}
 		if ack.SourceId != 2 || ack.DestinationId != 1 {
 			t.Fatalf("expected source/dest swapped, got %d/%d", ack.SourceId, ack.DestinationId)
@@ -302,8 +292,6 @@ func TestProtoDataEndpoint(t *testing.T) {
 }
 
 func TestProtoControlEndpoint(t *testing.T) {
-	chain := blockchain.NewBlockchain()
-	router := routing.NewRoutingEngine()
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_10", Help: "test"}, []string{"path", "method", "code"})
 	tmp := t.TempDir()
 	db, err := store.Open(store.DBPath(tmp))
@@ -311,7 +299,7 @@ func TestProtoControlEndpoint(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	handler := makeHandler(chain, router, db, counter, authConfig{}, nil, nil)
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -333,24 +321,20 @@ func TestProtoControlEndpoint(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	var body map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read: %v", err)
 	}
-	if body["status"] != "ok" {
-		t.Fatalf("expected status ok, got %v", body["status"])
+	var ack meshpb.Ack
+	if err := proto.Unmarshal(out, &ack); err != nil {
+		t.Fatalf("unmarshal: %v", err)
 	}
-	if body["control_type"] != "HEARTBEAT" {
-		t.Fatalf("expected control_type HEARTBEAT, got %v", body["control_type"])
-	}
-	if body["node_id"] != float64(42) {
-		t.Fatalf("expected node_id 42, got %v", body["node_id"])
+	if ack.SourceId != 42 || ack.DestinationId != 42 {
+		t.Fatalf("expected ack for node 42, got %d/%d", ack.SourceId, ack.DestinationId)
 	}
 }
 
 func TestPublicPathsAllowUnauth(t *testing.T) {
-	chain := blockchain.NewBlockchain()
-	router := routing.NewRoutingEngine()
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_6", Help: "test"}, []string{"path", "method", "code"})
 	tmp := t.TempDir()
 	db, err := store.Open(store.DBPath(tmp))
@@ -360,14 +344,15 @@ func TestPublicPathsAllowUnauth(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	auth := authConfig{
-		apiKey: "secret",
+		apiKey:        "secret",
+		defaultTenant: "default",
 		publicRules: []pathRule{
 			{value: "/metrics"},
 			{value: "/health"},
 			{value: "/routes", method: http.MethodGet},
 		},
 	}
-	handler := makeHandler(chain, router, db, counter, auth, nil, nil)
+	handler := makeHandler(db, counter, auth, nil, nil)
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
@@ -397,8 +382,6 @@ func TestPublicPathsAllowUnauth(t *testing.T) {
 }
 
 func TestWriteKeyEnforced(t *testing.T) {
-	chain := blockchain.NewBlockchain()
-	router := routing.NewRoutingEngine()
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_8", Help: "test"}, []string{"path", "method", "code"})
 	tmp := t.TempDir()
 	db, err := store.Open(store.DBPath(tmp))
@@ -408,13 +391,14 @@ func TestWriteKeyEnforced(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	auth := authConfig{
-		apiKey:   "readkey",
-		writeKey: "writekey",
+		apiKey:        "readkey",
+		writeKey:      "writekey",
+		defaultTenant: "default",
 		publicRules: []pathRule{
 			{value: "/health"},
 		},
 	}
-	handler := makeHandler(chain, router, db, counter, auth, nil, nil)
+	handler := makeHandler(db, counter, auth, nil, nil)
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
@@ -446,8 +430,6 @@ func TestWriteKeyEnforced(t *testing.T) {
 }
 
 func TestAdminWriteKey(t *testing.T) {
-	chain := blockchain.NewBlockchain()
-	router := routing.NewRoutingEngine()
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_7", Help: "test"}, []string{"path", "method", "code"})
 	tmp := t.TempDir()
 	db, err := store.Open(store.DBPath(tmp))
@@ -459,11 +441,12 @@ func TestAdminWriteKey(t *testing.T) {
 	auth := authConfig{
 		apiKey:        "secret",
 		adminWriteKey: "adminwrite",
+		defaultTenant: "default",
 		adminRules: []pathRule{
 			{value: "/routes", method: http.MethodPost},
 		},
 	}
-	handler := makeHandler(chain, router, db, counter, auth, nil, nil)
+	handler := makeHandler(db, counter, auth, nil, nil)
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
@@ -503,21 +486,27 @@ func TestPersistenceBackwardCompat(t *testing.T) {
 		t.Fatalf("write legacy routes: %v", err)
 	}
 
-	chain := blockchain.NewBlockchain()
-	router := routing.NewRoutingEngine()
 	db, err := store.Open(store.DBPath(tmp))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := migrateLegacyJSON(tmp, db, chain, router, 2); err != nil {
+	if _, err := migrateLegacyJSON(tmp, db, "default", 2); err != nil {
 		t.Fatalf("migrate legacy: %v", err)
 	}
-	if chain.Height() != 1 {
-		t.Fatalf("expected height 1, got %d", chain.Height())
+	blocks, err := db.ReadBlocksTenant("default")
+	if err != nil {
+		t.Fatalf("read blocks: %v", err)
 	}
-	if router.RouteCount() != 1 {
-		t.Fatalf("expected 1 route, got %d", router.RouteCount())
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	routes, err := db.ReadRoutesTenant("default")
+	if err != nil {
+		t.Fatalf("read routes: %v", err)
+	}
+	if len(routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(routes))
 	}
 }
 
@@ -535,17 +524,19 @@ func TestPersistenceRejectsInvalidBlocks(t *testing.T) {
 	if err := os.WriteFile(chainPath, []byte(payload), 0o644); err != nil {
 		t.Fatalf("write bad blocks: %v", err)
 	}
-	chain := blockchain.NewBlockchain()
-	router := routing.NewRoutingEngine()
 	db, err := store.Open(store.DBPath(tmp))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := migrateLegacyJSON(tmp, db, chain, router, 2); err != nil {
+	if _, err := migrateLegacyJSON(tmp, db, "default", 2); err != nil {
 		t.Fatalf("migrate legacy: %v", err)
 	}
-	if chain.Height() != 1 {
-		t.Fatalf("expected height 1 (genesis), got %d", chain.Height())
+	blocks, err := db.ReadBlocksTenant("default")
+	if err != nil {
+		t.Fatalf("read blocks: %v", err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 valid block (genesis), got %d", len(blocks))
 	}
 }

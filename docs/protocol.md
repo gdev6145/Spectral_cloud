@@ -10,14 +10,16 @@ The protocol supports various message formats, including but not limited to:
      - `msg_type` (uint8): Type of message (Data, Acknowledgment, etc.)
      - `source_id` (uint32): Unique identifier for the sender node.
      - `destination_id` (uint32): Unique identifier for the receiver node.
-     - `timestamp` (uint64): Unix timestamp when the message was sent.
+    - `timestamp` (uint64): Unix timestamp when the message was sent.
+    - `tenant_id` (string): Tenant identifier for multi-tenant isolation.
    - **Payload**: The actual data being transmitted.
 
 2. **Control Message**: Used for managing node states.
    - **Header**: 
      - `msg_type` (uint8)
      - `control_type` (uint8): Type of control message (Heartbeat, Handshake, etc.)
-     - `node_id` (uint32): Identifier of the node involved.
+    - `node_id` (uint32): Identifier of the node involved.
+    - `tenant_id` (string): Tenant identifier for multi-tenant isolation.
    - **Payload**: Control-specific data (if any).
 
 ## Node Handshake Sequences
@@ -48,6 +50,7 @@ message DataMessage {
     uint32 destination_id = 3;
     int64 timestamp = 4;
     bytes payload = 5;
+    string tenant_id = 6;
 }
 
 message ControlMessage {
@@ -59,6 +62,20 @@ message ControlMessage {
     ControlType control_type = 2;
     uint32 node_id = 3;
     bytes payload = 4;
+    string tenant_id = 5;
+}
+
+message Ack {
+    uint32 source_id = 1;
+    uint32 destination_id = 2;
+    int64 timestamp = 3;
+    string message = 4;
+    string tenant_id = 5;
+}
+
+service MeshService {
+    rpc SendData (DataMessage) returns (Ack);
+    rpc SendControl (ControlMessage) returns (Ack);
 }
 }
 ```

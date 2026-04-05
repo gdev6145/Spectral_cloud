@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gdev6145/Spectral_cloud/pkg/auth"
 	"github.com/gdev6145/Spectral_cloud/pkg/blockchain"
 	"github.com/gdev6145/Spectral_cloud/pkg/mesh"
 	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
@@ -81,6 +82,9 @@ type authConfig struct {
 	adminKey      string
 	adminWriteKey string
 	writeKey      string
+	tenantKeys    *auth.Manager
+	tenantWrite   *auth.Manager
+	defaultTenant string
 	publicRules   []pathRule
 	adminRules    []pathRule
 	allowRemote   bool
@@ -169,10 +173,12 @@ type routesFile struct {
 
 func main() {
 	startedAt := time.Now().UTC()
-	chain := blockchain.NewBlockchain()
-	router := routing.NewRoutingEngine()
 	maxBodyBytes := getEnvInt("MAX_BODY_BYTES", 1<<20)
 	backupRetention := getEnvInt("BACKUP_RETENTION", 5)
+	defaultTenant := strings.TrimSpace(os.Getenv("DEFAULT_TENANT"))
+	if defaultTenant == "" {
+		defaultTenant = "default"
+	}
 	dataDir := strings.TrimSpace(os.Getenv("DATA_DIR"))
 	if dataDir == "" {
 		dataDir = "data"
@@ -208,20 +214,17 @@ func main() {
 		log.Fatalf("failed to check store data: %v", err)
 	}
 	if !hasData {
-		legacyLoaded, err := migrateLegacyJSON(dataDir, db, chain, router, backupRetention)
+		legacyLoaded, err := migrateLegacyJSON(dataDir, db, defaultTenant, backupRetention)
 		if err != nil {
 			log.Printf("legacy migration failed: %v", err)
 		} else if legacyLoaded {
 			log.Printf("legacy data migrated into BoltDB")
 		}
 	}
-	if err := loadFromStore(db, chain, router); err != nil {
-		log.Printf("failed to load from store: %v", err)
-	}
-	// Cleanup expired routes from persisted data.
-	router.RemoveExpiredRoutes()
-	if err := db.SaveRoutes(router); err != nil {
-		log.Printf("failed to persist routes after cleanup: %v", err)
+
+	tenantMgr := newTenantManager(db)
+	if _, err := tenantMgr.getTenant(defaultTenant); err != nil {
+		log.Fatalf("failed to load default tenant: %v", err)
 	}
 
 	requestsTotal := prometheus.NewCounterVec(
@@ -263,6 +266,27 @@ func main() {
 	adminKey := strings.TrimSpace(os.Getenv("ADMIN_API_KEY"))
 	adminWriteKey := strings.TrimSpace(os.Getenv("ADMIN_WRITE_KEY"))
 	writeKey := strings.TrimSpace(os.Getenv("WRITE_API_KEY"))
+	tenantKeysRaw := strings.TrimSpace(os.Getenv("TENANT_KEYS"))
+	tenantWriteRaw := strings.TrimSpace(os.Getenv("TENANT_WRITE_KEYS"))
+	var tenantKeys *auth.Manager
+	var tenantWrite *auth.Manager
+	if tenantKeysRaw != "" {
+		manager, err := auth.NewManagerFromEnv(tenantKeysRaw)
+		if err != nil {
+			log.Fatalf("invalid TENANT_KEYS: %v", err)
+		}
+		tenantKeys = manager
+	}
+	if tenantWriteRaw != "" {
+		manager, err := auth.NewManagerFromEnv(tenantWriteRaw)
+		if err != nil {
+			log.Fatalf("invalid TENANT_WRITE_KEYS: %v", err)
+		}
+		tenantWrite = manager
+	}
+	if tenantKeys != nil && authKey != "" {
+		log.Printf("API_KEY ignored because TENANT_KEYS is set")
+	}
 	rateRPS := getEnvFloat("RATE_LIMIT_RPS", 10)
 	rateBurst := getEnvInt("RATE_LIMIT_BURST", 20)
 
@@ -301,6 +325,9 @@ func main() {
 		adminKey:      adminKey,
 		adminWriteKey: adminWriteKey,
 		writeKey:      writeKey,
+		tenantKeys:    tenantKeys,
+		tenantWrite:   tenantWrite,
+		defaultTenant: defaultTenant,
 		publicRules:   publicRules,
 		adminRules:    adminRules,
 		allowRemote:   getEnvBool("ADMIN_ALLOW_REMOTE", false),
@@ -316,22 +343,44 @@ func main() {
 	defer stop()
 
 	var meshNode *mesh.Node
+	meshTenant := strings.TrimSpace(os.Getenv("MESH_TENANT"))
+	if meshTenant == "" {
+		meshTenant = defaultTenant
+	}
 	if getEnvBool("MESH_ENABLE", false) {
 		meshCfg, err := loadMeshConfig()
 		if err != nil {
 			log.Printf("mesh disabled: %v", err)
 		} else {
-			if node, err := mesh.Start(ctx, meshCfg, router); err != nil {
+			meshCfg.TenantID = meshTenant
+			meshState, err := tenantMgr.getTenant(meshTenant)
+			if err != nil {
+				log.Printf("mesh start failed: %v", err)
+			} else if node, err := mesh.Start(ctx, meshCfg, meshState.router); err != nil {
 				log.Printf("mesh start failed: %v", err)
 			} else {
 				meshNode = node
-				log.Printf("mesh enabled on %s with %d peers", meshCfg.BindAddr, len(meshCfg.Peers))
+				log.Printf("mesh enabled on %s with %d peers (tenant=%s)", meshCfg.BindAddr, len(meshCfg.Peers), meshTenant)
 			}
 		}
 	}
 
+	meshGrpcAddr := strings.TrimSpace(os.Getenv("MESH_GRPC_ADDR"))
+	if meshGrpcAddr != "" {
+		authManager := meshAuthManager(auth)
+		if authManager == nil {
+			log.Printf("mesh gRPC disabled: no auth keys configured")
+		} else {
+			go func() {
+				if err := startMeshGRPC(ctx, meshGrpcAddr, authManager); err != nil {
+					log.Printf("mesh gRPC failed: %v", err)
+				}
+			}()
+		}
+	}
+
 	anomalyState := &meshAnomalyState{}
-	handler := newHandler(chain, router, db, maxBodyBytes, requestsTotal, meshPackets, meshRejectRate, meshAnomaly, auth, rateRPS, rateBurst, status, meshNode, anomalyState)
+	handler := newHandler(tenantMgr, db, maxBodyBytes, requestsTotal, meshPackets, meshRejectRate, meshAnomaly, auth, rateRPS, rateBurst, status, meshNode, anomalyState)
 
 	srv := &http.Server{
 		Addr:              ":" + port,
@@ -392,20 +441,36 @@ func main() {
 	}
 }
 
-func newHandler(chain *blockchain.Blockchain, router *routing.RoutingEngine, db *store.Store, maxBodyBytes int, requestsTotal *prometheus.CounterVec, meshPackets *prometheus.CounterVec, meshRejectRate prometheus.Gauge, meshAnomaly *prometheus.GaugeVec, auth authConfig, rateRPS float64, rateBurst int, status *statusTracker, meshNode *mesh.Node, anomalyState *meshAnomalyState) http.Handler {
+func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, requestsTotal *prometheus.CounterVec, meshPackets *prometheus.CounterVec, meshRejectRate prometheus.Gauge, meshAnomaly *prometheus.GaugeVec, auth authConfig, rateRPS float64, rateBurst int, status *statusTracker, meshNode *mesh.Node, anomalyState *meshAnomalyState) http.Handler {
 	mux := http.NewServeMux()
+	getState := func(r *http.Request) (*tenantState, string, error) {
+		tenant, ok := tenantFromContext(r.Context())
+		if !ok || strings.TrimSpace(tenant) == "" {
+			tenant = auth.defaultTenant
+		}
+		state, err := tenantMgr.getTenant(tenant)
+		if err != nil {
+			return nil, "", err
+		}
+		return state, tenant, nil
+	}
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
+		state, _, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		resp := healthResponse{
 			Status:    "ok",
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
-			Blocks:    chain.Height(),
-			Routes:    router.RouteCount(),
+			Blocks:    state.chain.Height(),
+			Routes:    state.router.RouteCount(),
 		}
 		_ = json.NewEncoder(w).Encode(resp)
 	})
@@ -456,10 +521,47 @@ func newHandler(chain *blockchain.Blockchain, router *routing.RoutingEngine, db 
 				"route_ttl":          cfg.RouteTTL.String(),
 				"shared_keys":        len(cfg.SharedKeys),
 				"peer_key_overrides": len(cfg.PeerKeys),
+				"tenant_id":          cfg.TenantID,
 			},
 			"stats":   stats,
 			"anomaly": anomaly,
 		})
+	})
+
+	mux.HandleFunc("/admin/tenants", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		names, err := db.TenantNames()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list tenants")
+			return
+		}
+		if auth.defaultTenant != "" && !stringInSlice(auth.defaultTenant, names) {
+			names = append(names, auth.defaultTenant)
+		}
+		sort.Strings(names)
+		type tenantSummary struct {
+			Tenant string `json:"tenant"`
+			Blocks int    `json:"blocks"`
+			Routes int    `json:"routes"`
+		}
+		out := make([]tenantSummary, 0, len(names))
+		for _, name := range names {
+			state, err := tenantMgr.getTenant(name)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load tenant")
+				return
+			}
+			out = append(out, tenantSummary{
+				Tenant: name,
+				Blocks: state.chain.Height(),
+				Routes: state.router.RouteCount(),
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
 	})
 
 	mux.Handle("/metrics", promhttp.Handler())
@@ -477,6 +579,11 @@ func newHandler(chain *blockchain.Blockchain, router *routing.RoutingEngine, db 
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
+		state, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))
 		var txs []blockchain.Transaction
 		dec := json.NewDecoder(r.Body)
@@ -489,8 +596,8 @@ func newHandler(chain *blockchain.Blockchain, router *routing.RoutingEngine, db 
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		chain.AddBlock(txs)
-		if err := db.SaveChain(chain); err != nil {
+		state.chain.AddBlock(txs)
+		if err := db.SaveChainTenant(tenant, state.chain); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to persist blockchain")
 			return
 		}
@@ -500,6 +607,11 @@ func newHandler(chain *blockchain.Blockchain, router *routing.RoutingEngine, db 
 	mux.HandleFunc("/proto/data", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))
@@ -517,11 +629,16 @@ func newHandler(chain *blockchain.Blockchain, router *routing.RoutingEngine, db 
 			writeError(w, http.StatusBadRequest, "invalid message type")
 			return
 		}
-		ack := &meshpb.DataMessage{
-			MsgType:       meshpb.DataMessage_ACK,
+		if msg.TenantId != "" && msg.TenantId != tenant {
+			writeError(w, http.StatusForbidden, "tenant mismatch")
+			return
+		}
+		ack := &meshpb.Ack{
 			SourceId:      msg.DestinationId,
 			DestinationId: msg.SourceId,
 			Timestamp:     time.Now().UTC().Unix(),
+			Message:       "ack",
+			TenantId:      tenant,
 		}
 		out, err := proto.Marshal(ack)
 		if err != nil {
@@ -538,6 +655,11 @@ func newHandler(chain *blockchain.Blockchain, router *routing.RoutingEngine, db 
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))
 		raw, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -549,15 +671,33 @@ func newHandler(chain *blockchain.Blockchain, router *routing.RoutingEngine, db 
 			writeError(w, http.StatusBadRequest, "invalid protobuf body")
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":       "ok",
-			"control_type": msg.ControlType.String(),
-			"node_id":      msg.NodeId,
-		})
+		if msg.TenantId != "" && msg.TenantId != tenant {
+			writeError(w, http.StatusForbidden, "tenant mismatch")
+			return
+		}
+		ack := &meshpb.Ack{
+			SourceId:      msg.NodeId,
+			DestinationId: msg.NodeId,
+			Timestamp:     time.Now().UTC().Unix(),
+			Message:       "ack",
+			TenantId:      tenant,
+		}
+		out, err := proto.Marshal(ack)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to encode response")
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(out)
 	})
 
 	mux.HandleFunc("/routes", func(w http.ResponseWriter, r *http.Request) {
+		state, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
 		switch r.Method {
 		case http.MethodPost:
 			dest := r.URL.Query().Get("destination")
@@ -590,21 +730,21 @@ func newHandler(chain *blockchain.Blockchain, router *routing.RoutingEngine, db 
 			if ttlSeconds > 0 {
 				ttl = time.Duration(ttlSeconds) * time.Second
 			}
-			if err := router.AddRouteWithTTL(dest, routing.RouteMetric{
+			if err := state.router.AddRouteWithTTL(dest, routing.RouteMetric{
 				Latency:    lat,
 				Throughput: thr,
 			}, ttl); err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			if err := db.SaveRoutes(router); err != nil {
+			if err := db.SaveRoutesTenant(tenant, state.router); err != nil {
 				writeError(w, http.StatusInternalServerError, "failed to persist routes")
 				return
 			}
 			w.WriteHeader(http.StatusCreated)
 		case http.MethodGet:
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(router.ListRoutes())
+			_ = json.NewEncoder(w).Encode(state.router.ListRoutes())
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -861,7 +1001,7 @@ func validateTransactions(txs []blockchain.Transaction) error {
 	return nil
 }
 
-func migrateLegacyJSON(dataDir string, db *store.Store, chain *blockchain.Blockchain, router *routing.RoutingEngine, backupRetention int) (bool, error) {
+func migrateLegacyJSON(dataDir string, db *store.Store, tenant string, backupRetention int) (bool, error) {
 	chainPath := filepath.Join(dataDir, "blockchain.json")
 	routesPath := filepath.Join(dataDir, "routes.json")
 
@@ -877,15 +1017,18 @@ func migrateLegacyJSON(dataDir string, db *store.Store, chain *blockchain.Blockc
 		return false, nil
 	}
 	if blocksLoaded {
-		chain.Load(filterValidBlocks(blocks))
-		if err := db.SaveChain(chain); err != nil {
+		valid := filterValidBlocks(blocks)
+		if len(valid) == 0 {
+			valid = blockchain.NewBlockchain().Snapshot()
+		}
+		if err := db.WriteBlocksTenant(tenant, valid); err != nil {
 			return false, err
 		}
 		_ = renameLegacy(chainPath)
 	}
 	if routesLoaded {
-		router.Load(pruneExpiredRoutes(routes))
-		if err := db.SaveRoutes(router); err != nil {
+		pruned := pruneExpiredRoutes(routes)
+		if err := db.WriteRoutesTenant(tenant, pruned); err != nil {
 			return false, err
 		}
 		_ = renameLegacy(routesPath)
@@ -955,8 +1098,8 @@ func loadLegacyRoutes(path string, backupRetention int) ([]routing.Route, bool, 
 	return routes, true, nil
 }
 
-func loadFromStore(db *store.Store, chain *blockchain.Blockchain, router *routing.RoutingEngine) error {
-	blocks, err := db.ReadBlocks()
+func loadFromStore(db *store.Store, tenant string, chain *blockchain.Blockchain, router *routing.RoutingEngine) error {
+	blocks, err := db.ReadBlocksTenant(tenant)
 	if err != nil {
 		return err
 	}
@@ -964,10 +1107,10 @@ func loadFromStore(db *store.Store, chain *blockchain.Blockchain, router *routin
 		valid := filterValidBlocks(blocks)
 		chain.Load(valid)
 		if len(valid) != len(blocks) {
-			_ = db.WriteBlocks(valid)
+			_ = db.WriteBlocksTenant(tenant, valid)
 		}
 	}
-	routes, err := db.ReadRoutes()
+	routes, err := db.ReadRoutesTenant(tenant)
 	if err != nil {
 		return err
 	}
@@ -975,7 +1118,7 @@ func loadFromStore(db *store.Store, chain *blockchain.Blockchain, router *routin
 		pruned := pruneExpiredRoutes(routes)
 		router.Load(pruned)
 		if len(pruned) != len(routes) {
-			_ = db.WriteRoutes(pruned)
+			_ = db.WriteRoutesTenant(tenant, pruned)
 		}
 	}
 	return nil
@@ -1262,15 +1405,35 @@ func withAuth(next http.Handler, auth authConfig) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if auth.tenantKeys != nil {
+			manager := auth.tenantKeys
+			if isWriteMethod(r.Method) && auth.tenantWrite != nil {
+				manager = auth.tenantWrite
+			}
+			tenant, ok := manager.TenantFromRequest(r)
+			if !ok {
+				writeError(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+			r = r.WithContext(withTenant(r.Context(), tenant))
+			next.ServeHTTP(w, r)
+			return
+		}
 		if isWriteMethod(r.Method) && strings.TrimSpace(auth.writeKey) != "" {
 			if !hasValidAPIKey(r, auth.writeKey) {
 				writeError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
+			if auth.defaultTenant != "" {
+				r = r.WithContext(withTenant(r.Context(), auth.defaultTenant))
+			}
 		} else if strings.TrimSpace(auth.apiKey) != "" {
 			if !hasValidAPIKey(r, auth.apiKey) {
 				writeError(w, http.StatusUnauthorized, "unauthorized")
 				return
+			}
+			if auth.defaultTenant != "" {
+				r = r.WithContext(withTenant(r.Context(), auth.defaultTenant))
 			}
 		}
 		next.ServeHTTP(w, r)
@@ -1329,6 +1492,15 @@ func clientIP(r *http.Request) net.IP {
 		host = h
 	}
 	return net.ParseIP(host)
+}
+
+func stringInSlice(value string, list []string) bool {
+	for _, item := range list {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
 
 func parseCIDRList(raw string) ([]*net.IPNet, error) {

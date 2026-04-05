@@ -9,18 +9,18 @@ import (
 
 // Block represents a single block in the blockchain
 type Block struct {
-	Index        int
-	Timestamp    string
-	Transactions []Transaction
-	PreviousHash string
-	Hash         string
+	Index        int           `json:"index"`
+	Timestamp    string        `json:"timestamp"`
+	Transactions []Transaction `json:"transactions"`
+	PreviousHash string        `json:"previous_hash"`
+	Hash         string        `json:"hash"`
 }
 
 // Transaction represents a transaction in the blockchain
 type Transaction struct {
-	Sender    string
-	Recipient string
-	Amount    float64
+	Sender    string  `json:"sender"`
+	Recipient string  `json:"recipient"`
+	Amount    float64 `json:"amount"`
 }
 
 // Blockchain represents the complete chain
@@ -34,6 +34,14 @@ func NewBlockchain() *Blockchain {
 	return &Blockchain{
 		blocks: []*Block{createGenesisBlock()},
 	}
+}
+
+// NewBlockchainFromBlocks creates a blockchain from a predefined set of blocks.
+func NewBlockchainFromBlocks(blocks []*Block) *Blockchain {
+	if len(blocks) == 0 {
+		return NewBlockchain()
+	}
+	return &Blockchain{blocks: blocks}
 }
 
 // createGenesisBlock creates the first block in the blockchain
@@ -66,7 +74,7 @@ func Verify(block *Block) bool {
 }
 
 // AddBlock adds a new block to the blockchain
-func (bc *Blockchain) AddBlock(transactions []Transaction) {
+func (bc *Blockchain) AddBlock(transactions []Transaction) *Block {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 	previousBlock := bc.blocks[len(bc.blocks)-1]
@@ -81,6 +89,7 @@ func (bc *Blockchain) AddBlock(transactions []Transaction) {
 		Hash:         newHash,
 	}
 	bc.blocks = append(bc.blocks, newBlock)
+	return newBlock
 }
 
 // Height returns the current height of the chain.
@@ -98,6 +107,25 @@ func (bc *Blockchain) LastBlock() *Block {
 		return nil
 	}
 	return bc.blocks[len(bc.blocks)-1]
+}
+
+// Blocks returns a copy of all blocks.
+func (bc *Blockchain) Blocks() []*Block {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	out := make([]*Block, len(bc.blocks))
+	copy(out, bc.blocks)
+	return out
+}
+
+// RemoveLastBlock removes the most recent block, preserving the genesis block.
+func (bc *Blockchain) RemoveLastBlock() {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	if len(bc.blocks) <= 1 {
+		return
+	}
+	bc.blocks = bc.blocks[:len(bc.blocks)-1]
 }
 
 // Snapshot returns a copy of the blocks for persistence or inspection.

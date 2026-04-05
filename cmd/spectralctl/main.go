@@ -1,21 +1,30 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/base64"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gdev6145/Spectral_cloud/pkg/blockchain"
+	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
 	"github.com/gdev6145/Spectral_cloud/pkg/routing"
 	"github.com/gdev6145/Spectral_cloud/pkg/store"
 	"github.com/santhosh-tekuri/jsonschema/v5"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
 //go:embed schemas/*.json
@@ -51,6 +60,12 @@ func main() {
 		keygenCmd(os.Args[2:])
 	case "rekey":
 		rekeyCmd(os.Args[2:])
+	case "mesh-send":
+		meshSendCmd(os.Args[2:])
+	case "mesh-watch":
+		meshWatchCmd(os.Args[2:])
+	case "mesh-load":
+		meshLoadCmd(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -66,6 +81,9 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  spectralctl compact --db-path <path> --in-place")
 	fmt.Fprintln(os.Stderr, "  spectralctl keygen")
 	fmt.Fprintln(os.Stderr, "  spectralctl rekey --in <path> --out <path> --old-key <base64> --new-key <base64>")
+	fmt.Fprintln(os.Stderr, "  spectralctl mesh-send --addr <host:port> --api-key <key> --tenant <tenant> --kind data|control [options]")
+	fmt.Fprintln(os.Stderr, "  spectralctl mesh-watch --addr <host:port> --api-key <key> --tenant <tenant> [--interval 5s]")
+	fmt.Fprintln(os.Stderr, "  spectralctl mesh-load --addr <host:port> --api-key <key> --tenant <tenant> --kind data|control [--count N | --duration 10s] [--concurrency 4] [--ramp-start 2 --ramp-step 2 --ramp-interval 5s --ramp-max 8] [--rate 100] [--window 1s --window-live --window-live-json] [--hist ...] [--csv path] [--json]")
 }
 
 func validateCmd(args []string) {
@@ -199,6 +217,767 @@ func rekeyCmd(args []string) {
 		exitErr(err)
 	}
 	fmt.Println("rekey completed")
+}
+
+func meshSendCmd(args []string) {
+	fs := flag.NewFlagSet("mesh-send", flag.ExitOnError)
+	addr := fs.String("addr", "", "gRPC address (host:port)")
+	apiKey := fs.String("api-key", "", "API key")
+	tenant := fs.String("tenant", "default", "tenant id")
+	kind := fs.String("kind", "data", "data or control")
+	sourceID := fs.Uint("source-id", 1, "source id (data)")
+	destID := fs.Uint("destination-id", 2, "destination id (data)")
+	nodeID := fs.Uint("node-id", 1, "node id (control)")
+	payload := fs.String("payload", "hello", "payload string (data)")
+	controlType := fs.String("control-type", "heartbeat", "heartbeat or handshake (control)")
+	timeout := fs.Duration("timeout", 5*time.Second, "request timeout")
+	count := fs.Int("count", 1, "number of messages")
+	rate := fs.Float64("rate", 0, "messages per second (0 = as fast as possible)")
+	_ = fs.Parse(args)
+
+	if *addr == "" || *apiKey == "" {
+		exitErr(errors.New("addr and api-key are required"))
+	}
+
+	if *count <= 0 {
+		exitErr(errors.New("count must be positive"))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+
+	conn, err := grpc.DialContext(ctx, *addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		exitErr(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	client := meshpb.NewMeshServiceClient(conn)
+	send := buildMeshSender(client, *apiKey, *tenant, strings.ToLower(strings.TrimSpace(*kind)), *controlType, *sourceID, *destID, *nodeID, *payload)
+	start := time.Now().UTC()
+	var sent int
+	var failed int
+
+	var ticker *time.Ticker
+	if *rate > 0 {
+		interval := time.Duration(float64(time.Second) / *rate)
+		ticker = time.NewTicker(interval)
+		defer ticker.Stop()
+	}
+	for i := 0; i < *count; i++ {
+		if ticker != nil {
+			<-ticker.C
+		}
+		ack, err := send(ctx)
+		if err != nil {
+			failed++
+			fmt.Fprintf(os.Stderr, "send failed: %v\n", err)
+			continue
+		}
+		sent++
+		fmt.Printf("ack: source=%d dest=%d tenant=%s msg=%s\n", ack.SourceId, ack.DestinationId, ack.TenantId, ack.Message)
+	}
+	elapsed := time.Since(start).Seconds()
+	if elapsed > 0 {
+		fmt.Printf("summary: sent=%d failed=%d rate=%.2f msg/s\n", sent, failed, float64(sent)/elapsed)
+	}
+}
+
+func meshWatchCmd(args []string) {
+	fs := flag.NewFlagSet("mesh-watch", flag.ExitOnError)
+	addr := fs.String("addr", "", "gRPC address (host:port)")
+	apiKey := fs.String("api-key", "", "API key")
+	tenant := fs.String("tenant", "default", "tenant id")
+	interval := fs.Duration("interval", 5*time.Second, "interval between heartbeats")
+	timeout := fs.Duration("timeout", 5*time.Second, "request timeout")
+	_ = fs.Parse(args)
+
+	if *addr == "" || *apiKey == "" {
+		exitErr(errors.New("addr and api-key are required"))
+	}
+	if *interval <= 0 {
+		exitErr(errors.New("interval must be positive"))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	conn, err := grpc.DialContext(ctx, *addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		exitErr(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	client := meshpb.NewMeshServiceClient(conn)
+	send := buildMeshSender(client, *apiKey, *tenant, "control", "heartbeat", 1, 1, 1, "watch")
+
+	ticker := time.NewTicker(*interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		reqCtx, cancelReq := context.WithTimeout(context.Background(), *timeout)
+		ack, err := send(reqCtx)
+		cancelReq()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "watch error: %v\n", err)
+			continue
+		}
+		fmt.Printf("ack: source=%d dest=%d tenant=%s msg=%s\n", ack.SourceId, ack.DestinationId, ack.TenantId, ack.Message)
+	}
+}
+
+func buildMeshSender(client meshpb.MeshServiceClient, apiKey, tenant, kind, controlType string, sourceID, destID, nodeID uint, payload string) func(context.Context) (*meshpb.Ack, error) {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	controlType = strings.ToLower(strings.TrimSpace(controlType))
+	return func(ctx context.Context) (*meshpb.Ack, error) {
+		md := metadata.New(map[string]string{
+			"x-api-key": apiKey,
+		})
+		if strings.TrimSpace(tenant) != "" {
+			md.Set("x-tenant-id", tenant)
+		}
+		ctx = metadata.NewOutgoingContext(ctx, md)
+		switch kind {
+		case "data":
+			msg := &meshpb.DataMessage{
+				MsgType:       meshpb.DataMessage_DATA,
+				SourceId:      uint32(sourceID),
+				DestinationId: uint32(destID),
+				Timestamp:     time.Now().UTC().Unix(),
+				Payload:       []byte(payload),
+				TenantId:      tenant,
+			}
+			return client.SendData(ctx, msg)
+		case "control":
+			ct := meshpb.ControlMessage_HEARTBEAT
+			switch controlType {
+			case "handshake":
+				ct = meshpb.ControlMessage_HANDSHAKE
+			case "heartbeat":
+				ct = meshpb.ControlMessage_HEARTBEAT
+			default:
+				return nil, errors.New("invalid control-type")
+			}
+			msg := &meshpb.ControlMessage{
+				MsgType:     meshpb.DataMessage_DATA,
+				ControlType: ct,
+				NodeId:      uint32(nodeID),
+				Payload:     []byte(payload),
+				TenantId:    tenant,
+			}
+			return client.SendControl(ctx, msg)
+		default:
+			return nil, errors.New("kind must be data or control")
+		}
+	}
+}
+
+func meshLoadCmd(args []string) {
+	fs := flag.NewFlagSet("mesh-load", flag.ExitOnError)
+	addr := fs.String("addr", "", "gRPC address (host:port)")
+	apiKey := fs.String("api-key", "", "API key")
+	tenant := fs.String("tenant", "default", "tenant id")
+	kind := fs.String("kind", "data", "data or control")
+	sourceID := fs.Uint("source-id", 1, "source id (data)")
+	destID := fs.Uint("destination-id", 2, "destination id (data)")
+	nodeID := fs.Uint("node-id", 1, "node id (control)")
+	payload := fs.String("payload", "hello", "payload string (data)")
+	controlType := fs.String("control-type", "heartbeat", "heartbeat or handshake (control)")
+	count := fs.Int("count", 0, "total messages to send")
+	duration := fs.Duration("duration", 0, "how long to run (e.g. 10s)")
+	concurrency := fs.Int("concurrency", 4, "number of concurrent workers")
+	rampStart := fs.Int("ramp-start", 0, "starting concurrency (default = --concurrency)")
+	rampStep := fs.Int("ramp-step", 0, "concurrency increment per interval")
+	rampInterval := fs.Duration("ramp-interval", 0, "interval to ramp concurrency (e.g. 5s)")
+	rampMax := fs.Int("ramp-max", 0, "max concurrency during ramp (default = --concurrency)")
+	rate := fs.Float64("rate", 0, "max messages per second (0 = unlimited)")
+	jsonOut := fs.Bool("json", false, "emit JSON summary")
+	csvOut := fs.String("csv", "", "write per-request CSV to path")
+	bucketsRaw := fs.String("hist", "1,5,10,25,50,100,250,500,1000,2000", "histogram bucket bounds in ms (comma-separated)")
+	window := fs.Duration("window", 0, "emit per-window latency stats (e.g. 1s)")
+	windowLive := fs.Bool("window-live", false, "print window stats as they are collected")
+	windowLiveJSON := fs.Bool("window-live-json", false, "emit live window stats as JSON lines")
+	timeout := fs.Duration("timeout", 5*time.Second, "request timeout")
+	_ = fs.Parse(args)
+
+	if *addr == "" || *apiKey == "" {
+		exitErr(errors.New("addr and api-key are required"))
+	}
+	if *count <= 0 && *duration <= 0 {
+		exitErr(errors.New("count or duration is required"))
+	}
+	if *concurrency <= 0 {
+		exitErr(errors.New("concurrency must be positive"))
+	}
+	if *rampStart <= 0 {
+		*rampStart = *concurrency
+	}
+	if *rampMax <= 0 {
+		*rampMax = *concurrency
+	}
+	if *rampStart <= 0 || *rampMax <= 0 {
+		exitErr(errors.New("ramp-start and ramp-max must be positive"))
+	}
+	if *rampInterval > 0 && *rampStep <= 0 {
+		exitErr(errors.New("ramp-step must be positive when ramp-interval is set"))
+	}
+	if *rampMax < *concurrency {
+		*rampMax = *concurrency
+	}
+	if *rampStart > *rampMax {
+		*rampMax = *rampStart
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	conn, err := grpc.DialContext(ctx, *addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		exitErr(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	client := meshpb.NewMeshServiceClient(conn)
+	send := buildMeshSender(client, *apiKey, *tenant, strings.ToLower(strings.TrimSpace(*kind)), *controlType, *sourceID, *destID, *nodeID, *payload)
+
+	jobCh := make(chan struct{})
+	var wg sync.WaitGroup
+	buckets, err := parseBuckets(*bucketsRaw)
+	if err != nil {
+		exitErr(err)
+	}
+	stats := newLoadStats(buckets)
+	windowStats := newWindowStats(*window, *windowLive, *windowLiveJSON)
+
+	var csvFile *os.File
+	var csvWriter *csv.Writer
+	if strings.TrimSpace(*csvOut) != "" {
+		f, err := os.Create(*csvOut)
+		if err != nil {
+			exitErr(err)
+		}
+		csvFile = f
+		csvWriter = csv.NewWriter(f)
+		if err := csvWriter.Write([]string{"ts", "ok", "latency_ms", "error"}); err != nil {
+			exitErr(err)
+		}
+	}
+	defer func() {
+		if csvWriter != nil {
+			csvWriter.Flush()
+		}
+		if csvFile != nil {
+			_ = csvFile.Close()
+		}
+	}()
+
+	start := time.Now()
+	worker := func() {
+		defer wg.Done()
+		for range jobCh {
+			reqCtx, cancelReq := context.WithTimeout(context.Background(), *timeout)
+			before := time.Now()
+			_, err := send(reqCtx)
+			cancelReq()
+			lat := time.Since(before)
+			if err != nil {
+				stats.record(false, lat)
+				windowStats.record(false, lat, err.Error())
+				if csvWriter != nil {
+					_ = csvWriter.Write([]string{time.Now().UTC().Format(time.RFC3339Nano), "false", fmt.Sprintf("%.3f", float64(lat.Microseconds())/1000.0), err.Error()})
+				}
+			} else {
+				stats.record(true, lat)
+				windowStats.record(true, lat, "")
+				if csvWriter != nil {
+					_ = csvWriter.Write([]string{time.Now().UTC().Format(time.RFC3339Nano), "true", fmt.Sprintf("%.3f", float64(lat.Microseconds())/1000.0), ""})
+				}
+			}
+		}
+	}
+	launchWorkers := func(n int) {
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go worker()
+		}
+	}
+	launchWorkers(*rampStart)
+
+	if *rampInterval > 0 && *rampStep > 0 && *rampStart < *rampMax {
+		go func() {
+			current := *rampStart
+			ticker := time.NewTicker(*rampInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				next := current + *rampStep
+				if next > *rampMax {
+					next = *rampMax
+				}
+				launchWorkers(next - current)
+				current = next
+				if current >= *rampMax {
+					return
+				}
+			}
+		}()
+	}
+
+	windowStats.start()
+	defer windowStats.stop()
+
+	if *rampStart < *concurrency {
+		launchWorkers(*concurrency - *rampStart)
+	}
+	if *rampStart < *rampMax && *rampInterval == 0 {
+		launchWorkers(*rampMax - *rampStart)
+	}
+
+	var ticker *time.Ticker
+	if *rate > 0 {
+		interval := time.Duration(float64(time.Second) / *rate)
+		ticker = time.NewTicker(interval)
+		defer ticker.Stop()
+	}
+
+	sendJob := func() bool {
+		if ticker != nil {
+			select {
+			case <-ticker.C:
+			case <-ctx.Done():
+				return false
+			}
+		}
+		select {
+		case jobCh <- struct{}{}:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+
+	if *duration > 0 {
+		stop := time.NewTimer(*duration)
+	loopDuration:
+		for {
+			select {
+			case <-stop.C:
+				break loopDuration
+			default:
+				if !sendJob() {
+					break loopDuration
+				}
+			}
+		}
+	} else {
+		for i := 0; i < *count; i++ {
+			if !sendJob() {
+				break
+			}
+		}
+	}
+	close(jobCh)
+	wg.Wait()
+	elapsed := time.Since(start)
+	stats.finish(elapsed)
+	windowStats.finish()
+	if *jsonOut {
+		summary := stats.summary()
+		summary.Windows = windowStats.summaries()
+		out, err := json.MarshalIndent(summary, "", "  ")
+		if err != nil {
+			exitErr(err)
+		}
+		fmt.Println(string(out))
+		return
+	}
+	printSummary(stats.summary(), windowStats.summaries())
+}
+
+type loadStats struct {
+	mu        sync.Mutex
+	successes int
+	failures  int
+	latencies []time.Duration
+	elapsed   time.Duration
+	buckets   []int64
+	hist      []int
+}
+
+func newLoadStats(buckets []int64) *loadStats {
+	return &loadStats{
+		latencies: make([]time.Duration, 0, 1024),
+		buckets:   buckets,
+		hist:      make([]int, len(buckets)+1),
+	}
+}
+
+func (s *loadStats) record(ok bool, latency time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ok {
+		s.successes++
+	} else {
+		s.failures++
+	}
+	s.latencies = append(s.latencies, latency)
+	if len(s.buckets) > 0 {
+		ms := latency.Milliseconds()
+		idx := len(s.buckets)
+		for i, b := range s.buckets {
+			if ms <= b {
+				idx = i
+				break
+			}
+		}
+		s.hist[idx]++
+	}
+}
+
+func (s *loadStats) finish(elapsed time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.elapsed = elapsed
+}
+
+type loadSummary struct {
+	ElapsedSeconds float64         `json:"elapsed_seconds"`
+	Successes      int             `json:"successes"`
+	Failures       int             `json:"failures"`
+	Total          int             `json:"total"`
+	RPS            float64         `json:"rps"`
+	AvgMs          float64         `json:"avg_ms"`
+	P50Ms          float64         `json:"p50_ms"`
+	P95Ms          float64         `json:"p95_ms"`
+	P99Ms          float64         `json:"p99_ms"`
+	MaxMs          float64         `json:"max_ms"`
+	Histogram      []histBucket    `json:"histogram,omitempty"`
+	Windows        []windowSummary `json:"windows,omitempty"`
+}
+
+func (s *loadStats) summary() loadSummary {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	total := s.successes + s.failures
+	avg, p50, p95, p99, max := summarizeLatencies(s.latencies)
+	elapsedSec := s.elapsed.Seconds()
+	rps := 0.0
+	if elapsedSec > 0 {
+		rps = float64(total) / elapsedSec
+	}
+	summary := loadSummary{
+		ElapsedSeconds: elapsedSec,
+		Successes:      s.successes,
+		Failures:       s.failures,
+		Total:          total,
+		RPS:            rps,
+		AvgMs:          avg,
+		P50Ms:          p50,
+		P95Ms:          p95,
+		P99Ms:          p99,
+		MaxMs:          max,
+	}
+	if len(s.buckets) > 0 {
+		out := make([]histBucket, 0, len(s.hist))
+		for i := 0; i < len(s.hist); i++ {
+			var upper *int64
+			if i < len(s.buckets) {
+				val := s.buckets[i]
+				upper = &val
+			}
+			out = append(out, histBucket{
+				UpperMs: upper,
+				Count:   s.hist[i],
+			})
+		}
+		summary.Histogram = out
+	}
+	return summary
+}
+
+type histBucket struct {
+	UpperMs *int64 `json:"upper_ms"`
+	Count   int    `json:"count"`
+}
+
+type errorCount struct {
+	Error string `json:"error"`
+	Count int    `json:"count"`
+}
+
+func summarizeLatencies(lats []time.Duration) (avg, p50, p95, p99, max float64) {
+	if len(lats) == 0 {
+		return 0, 0, 0, 0, 0
+	}
+	values := make([]int64, len(lats))
+	var sum int64
+	for i, v := range lats {
+		ms := v.Milliseconds()
+		values[i] = ms
+		sum += ms
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	max = float64(values[len(values)-1])
+	avg = float64(sum) / float64(len(values))
+	p50 = percentile(values, 0.50)
+	p95 = percentile(values, 0.95)
+	p99 = percentile(values, 0.99)
+	return avg, p50, p95, p99, max
+}
+
+func percentile(values []int64, p float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	if p <= 0 {
+		return float64(values[0])
+	}
+	if p >= 1 {
+		return float64(values[len(values)-1])
+	}
+	pos := int(float64(len(values)-1) * p)
+	return float64(values[pos])
+}
+
+func printSummary(s loadSummary, windows []windowSummary) {
+	fmt.Printf("elapsed: %.2fs\n", s.ElapsedSeconds)
+	fmt.Printf("total: %d (ok=%d fail=%d)\n", s.Total, s.Successes, s.Failures)
+	fmt.Printf("rate: %.2f msg/s\n", s.RPS)
+	fmt.Printf("latency_ms: avg=%.2f p50=%.2f p95=%.2f p99=%.2f max=%.2f\n", s.AvgMs, s.P50Ms, s.P95Ms, s.P99Ms, s.MaxMs)
+	if len(s.Histogram) > 0 {
+		fmt.Println("histogram_ms:")
+		var lastUpper int64
+		for _, b := range s.Histogram {
+			if b.UpperMs == nil {
+				fmt.Printf("  >%d: %d\n", lastUpper, b.Count)
+				continue
+			}
+			fmt.Printf("  <=%d: %d\n", *b.UpperMs, b.Count)
+			lastUpper = *b.UpperMs
+		}
+	}
+	if len(windows) > 0 {
+		fmt.Println("window_stats:")
+		for _, w := range windows {
+			errInfo := ""
+			if len(w.ErrorTop) > 0 {
+				errInfo = fmt.Sprintf(" top_err=\"%s\" err_count=%d", w.ErrorTop[0].Error, w.ErrorTop[0].Count)
+			}
+			fmt.Printf("  %s ok=%d fail=%d rps=%.2f p50=%.2f p95=%.2f p99=%.2f max=%.2f%s\n", w.EndTime, w.Successes, w.Failures, w.RPS, w.P50Ms, w.P95Ms, w.P99Ms, w.MaxMs, errInfo)
+		}
+	}
+}
+
+func parseBuckets(raw string) ([]int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]int64, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		val, err := strconv.ParseInt(part, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid bucket: %s", part)
+		}
+		if val <= 0 {
+			return nil, errors.New("bucket values must be positive")
+		}
+		out = append(out, val)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out, nil
+}
+
+func topErrorCounts(counts map[string]int, limit int) []errorCount {
+	if len(counts) == 0 || limit <= 0 {
+		return nil
+	}
+	out := make([]errorCount, 0, len(counts))
+	for k, v := range counts {
+		out = append(out, errorCount{Error: k, Count: v})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count == out[j].Count {
+			return out[i].Error < out[j].Error
+		}
+		return out[i].Count > out[j].Count
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+type windowSummary struct {
+	EndTime   string       `json:"end_time"`
+	Successes int          `json:"successes"`
+	Failures  int          `json:"failures"`
+	RPS       float64      `json:"rps"`
+	P50Ms     float64      `json:"p50_ms"`
+	P95Ms     float64      `json:"p95_ms"`
+	P99Ms     float64      `json:"p99_ms"`
+	MaxMs     float64      `json:"max_ms"`
+	ErrorTop  []errorCount `json:"error_top,omitempty"`
+}
+
+type windowStats struct {
+	enabled   bool
+	window    time.Duration
+	live      bool
+	liveJSON  bool
+	mu        sync.Mutex
+	ok        int
+	fail      int
+	latencies []time.Duration
+	windows   []windowSummary
+	errCounts map[string]int
+	ticker    *time.Ticker
+	done      chan struct{}
+	closed    bool
+}
+
+func newWindowStats(window time.Duration, live bool, liveJSON bool) *windowStats {
+	return &windowStats{
+		enabled:   window > 0,
+		window:    window,
+		live:      live,
+		liveJSON:  liveJSON,
+		latencies: make([]time.Duration, 0, 512),
+		windows:   make([]windowSummary, 0, 16),
+		errCounts: map[string]int{},
+	}
+}
+
+func (w *windowStats) start() {
+	if !w.enabled || w.window <= 0 {
+		return
+	}
+	w.ticker = time.NewTicker(w.window)
+	w.done = make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-w.ticker.C:
+				w.flush(time.Now().UTC())
+			case <-w.done:
+				w.flush(time.Now().UTC())
+				return
+			}
+		}
+	}()
+}
+
+func (w *windowStats) stop() {
+	if !w.enabled {
+		return
+	}
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
+	w.closed = true
+	w.mu.Unlock()
+	if w.ticker != nil {
+		w.ticker.Stop()
+	}
+	if w.done != nil {
+		close(w.done)
+	}
+}
+
+func (w *windowStats) record(ok bool, latency time.Duration, errStr string) {
+	if !w.enabled {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if ok {
+		w.ok++
+	} else {
+		w.fail++
+		if strings.TrimSpace(errStr) != "" {
+			w.errCounts[errStr]++
+		}
+	}
+	w.latencies = append(w.latencies, latency)
+}
+
+func (w *windowStats) flush(now time.Time) {
+	w.mu.Lock()
+	ok := w.ok
+	fail := w.fail
+	lats := make([]time.Duration, len(w.latencies))
+	copy(lats, w.latencies)
+	errCounts := make(map[string]int, len(w.errCounts))
+	for k, v := range w.errCounts {
+		errCounts[k] = v
+	}
+	w.ok = 0
+	w.fail = 0
+	w.latencies = w.latencies[:0]
+	for k := range w.errCounts {
+		delete(w.errCounts, k)
+	}
+	w.mu.Unlock()
+	if ok == 0 && fail == 0 {
+		return
+	}
+	_, p50, p95, p99, max := summarizeLatencies(lats)
+	elapsedSec := w.window.Seconds()
+	rps := 0.0
+	if elapsedSec > 0 {
+		rps = float64(ok+fail) / elapsedSec
+	}
+	topErrors := topErrorCounts(errCounts, 3)
+	summary := windowSummary{
+		EndTime:   now.Format(time.RFC3339),
+		Successes: ok,
+		Failures:  fail,
+		RPS:       rps,
+		P50Ms:     p50,
+		P95Ms:     p95,
+		P99Ms:     p99,
+		MaxMs:     max,
+		ErrorTop:  topErrors,
+	}
+	w.mu.Lock()
+	w.windows = append(w.windows, summary)
+	w.mu.Unlock()
+	if w.liveJSON {
+		line, err := json.Marshal(summary)
+		if err == nil {
+			fmt.Println(string(line))
+		}
+	}
+	if w.live {
+		errInfo := ""
+		if len(topErrors) > 0 {
+			errInfo = fmt.Sprintf(" top_err=\"%s\" err_count=%d", topErrors[0].Error, topErrors[0].Count)
+		}
+		fmt.Printf("window %s ok=%d fail=%d rps=%.2f p50=%.2f p95=%.2f p99=%.2f max=%.2f%s\n", summary.EndTime, summary.Successes, summary.Failures, summary.RPS, summary.P50Ms, summary.P95Ms, summary.P99Ms, summary.MaxMs, errInfo)
+	}
+}
+
+func (w *windowStats) finish() {
+	if !w.enabled {
+		return
+	}
+	w.stop()
+}
+
+func (w *windowStats) summaries() []windowSummary {
+	if !w.enabled {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]windowSummary, len(w.windows))
+	copy(out, w.windows)
+	return out
 }
 
 func printIssues(name string, issues []string) {

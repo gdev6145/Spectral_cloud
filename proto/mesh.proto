@@ -14,6 +14,7 @@ message DataMessage {
   uint32 destination_id = 3;
   int64 timestamp = 4;
   bytes payload = 5;
+  string tenant_id = 6;
 }
 
 message ControlMessage {
@@ -25,4 +26,18 @@ message ControlMessage {
   ControlType control_type = 2;
   uint32 node_id = 3;
   bytes payload = 4;
+  string tenant_id = 5;
+}
+
+message Ack {
+  uint32 source_id = 1;
+  uint32 destination_id = 2;
+  int64 timestamp = 3;
+  string message = 4;
+  string tenant_id = 5;
+}
+
+service MeshService {
+  rpc SendData (DataMessage) returns (Ack);
+  rpc SendControl (ControlMessage) returns (Ack);
 }

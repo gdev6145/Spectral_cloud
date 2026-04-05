@@ -25,6 +25,7 @@ type Config struct {
 	RouteTTL          time.Duration
 	SharedKeys        []string
 	PeerKeys          map[string]string
+	TenantID          string
 }
 
 type Node struct {
@@ -38,10 +39,10 @@ type Node struct {
 }
 
 type Stats struct {
-	Received     uint64
-	Accepted     uint64
-	Rejected     uint64
-	RejectedAuth uint64
+	Received      uint64
+	Accepted      uint64
+	Rejected      uint64
+	RejectedAuth  uint64
 	RejectedParse uint64
 }
 
@@ -129,6 +130,7 @@ func (n *Node) broadcastControl(control meshpb.ControlMessage_ControlType) {
 		ControlType: control,
 		NodeId:      n.cfg.NodeID,
 		Payload:     payloadBytes,
+		TenantId:    n.cfg.TenantID,
 	}
 	for _, peer := range n.cfg.Peers {
 		peer = strings.TrimSpace(peer)
@@ -190,6 +192,13 @@ func (n *Node) handlePacket(data []byte, addr *net.UDPAddr) {
 		n.mu.Lock()
 		n.stats.Rejected++
 		n.stats.RejectedParse++
+		n.mu.Unlock()
+		return
+	}
+	if strings.TrimSpace(n.cfg.TenantID) != "" && msg.TenantId != "" && msg.TenantId != n.cfg.TenantID {
+		n.mu.Lock()
+		n.stats.Rejected++
+		n.stats.RejectedAuth++
 		n.mu.Unlock()
 		return
 	}

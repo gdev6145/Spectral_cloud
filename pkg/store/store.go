@@ -22,13 +22,18 @@ import (
 const (
 	dbVersion = 1
 
-	bucketMeta = "meta"
-	bucketData = "data"
+	bucketMeta    = "meta"
+	bucketData    = "data"
+	bucketTenants = "tenants"
 
 	keyVersion = "version"
 	keyBlocks  = "blocks"
 	keyRoutes  = "routes"
 )
+
+const defaultTenant = "default"
+
+var errFound = errors.New("found")
 
 type Store struct {
 	db *bolt.DB
@@ -63,6 +68,9 @@ func (s *Store) init() error {
 		if _, err := tx.CreateBucketIfNotExists([]byte(bucketData)); err != nil {
 			return err
 		}
+		if _, err := tx.CreateBucketIfNotExists([]byte(bucketTenants)); err != nil {
+			return err
+		}
 		current := meta.Get([]byte(keyVersion))
 		if current == nil {
 			return meta.Put([]byte(keyVersion), []byte{byte(dbVersion)})
@@ -77,6 +85,23 @@ func (s *Store) init() error {
 func (s *Store) HasData() (bool, error) {
 	var has bool
 	err := s.db.View(func(tx *bolt.Tx) error {
+		tenants := tx.Bucket([]byte(bucketTenants))
+		if tenants != nil {
+			return tenants.ForEach(func(k, v []byte) error {
+				if v != nil {
+					return nil
+				}
+				t := tenants.Bucket(k)
+				if t == nil {
+					return nil
+				}
+				if t.Get([]byte(keyBlocks)) != nil || t.Get([]byte(keyRoutes)) != nil {
+					has = true
+					return errFound
+				}
+				return nil
+			})
+		}
 		data := tx.Bucket([]byte(bucketData))
 		if data == nil {
 			return nil
@@ -86,23 +111,85 @@ func (s *Store) HasData() (bool, error) {
 		}
 		return nil
 	})
+	if err != nil && errors.Is(err, errFound) {
+		return true, nil
+	}
 	return has, err
 }
 
 func (s *Store) Load(chain *blockchain.Blockchain, router *routing.RoutingEngine) error {
-	return s.db.View(func(tx *bolt.Tx) error {
-		data := tx.Bucket([]byte(bucketData))
-		if data == nil {
+	return s.LoadTenant(defaultTenant, chain, router)
+}
+
+func (s *Store) ReadBlocks() ([]blockchain.Block, error) {
+	return s.ReadBlocksTenant(defaultTenant)
+}
+
+func (s *Store) ReadRoutes() ([]routing.Route, error) {
+	return s.ReadRoutesTenant(defaultTenant)
+}
+
+func (s *Store) WriteBlocks(blocks []blockchain.Block) error {
+	return s.WriteBlocksTenant(defaultTenant, blocks)
+}
+
+func (s *Store) WriteRoutes(routes []routing.Route) error {
+	return s.WriteRoutesTenant(defaultTenant, routes)
+}
+
+func (s *Store) SaveChain(chain *blockchain.Blockchain) error {
+	return s.SaveChainTenant(defaultTenant, chain)
+}
+
+func (s *Store) SaveRoutes(router *routing.RoutingEngine) error {
+	return s.SaveRoutesTenant(defaultTenant, router)
+}
+
+func (s *Store) EnsureTenant(tenant string) error {
+	if strings.TrimSpace(tenant) == "" {
+		return errors.New("tenant is empty")
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		tenants := tx.Bucket([]byte(bucketTenants))
+		if tenants == nil {
+			return errors.New("tenants bucket missing")
+		}
+		_, err := tenants.CreateBucketIfNotExists([]byte(tenant))
+		return err
+	})
+}
+
+func (s *Store) TenantNames() ([]string, error) {
+	var out []string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		tenants := tx.Bucket([]byte(bucketTenants))
+		if tenants == nil {
 			return nil
 		}
-		if raw := data.Get([]byte(keyBlocks)); raw != nil {
+		return tenants.ForEach(func(k, v []byte) error {
+			if v != nil {
+				return nil
+			}
+			out = append(out, string(k))
+			return nil
+		})
+	})
+	return out, err
+}
+
+func (s *Store) LoadTenant(tenant string, chain *blockchain.Blockchain, router *routing.RoutingEngine) error {
+	if strings.TrimSpace(tenant) == "" {
+		return errors.New("tenant is empty")
+	}
+	return s.db.View(func(tx *bolt.Tx) error {
+		if raw := readTenantKey(tx, tenant, keyBlocks); raw != nil {
 			var blocks []blockchain.Block
 			if err := json.Unmarshal(raw, &blocks); err != nil {
 				return err
 			}
 			chain.Load(blocks)
 		}
-		if raw := data.Get([]byte(keyRoutes)); raw != nil {
+		if raw := readTenantKey(tx, tenant, keyRoutes); raw != nil {
 			var routes []routing.Route
 			if err := json.Unmarshal(raw, &routes); err != nil {
 				return err
@@ -113,14 +200,10 @@ func (s *Store) Load(chain *blockchain.Blockchain, router *routing.RoutingEngine
 	})
 }
 
-func (s *Store) ReadBlocks() ([]blockchain.Block, error) {
+func (s *Store) ReadBlocksTenant(tenant string) ([]blockchain.Block, error) {
 	var blocks []blockchain.Block
 	err := s.db.View(func(tx *bolt.Tx) error {
-		data := tx.Bucket([]byte(bucketData))
-		if data == nil {
-			return nil
-		}
-		raw := data.Get([]byte(keyBlocks))
+		raw := readTenantKey(tx, tenant, keyBlocks)
 		if raw == nil {
 			return nil
 		}
@@ -129,14 +212,10 @@ func (s *Store) ReadBlocks() ([]blockchain.Block, error) {
 	return blocks, err
 }
 
-func (s *Store) ReadRoutes() ([]routing.Route, error) {
+func (s *Store) ReadRoutesTenant(tenant string) ([]routing.Route, error) {
 	var routes []routing.Route
 	err := s.db.View(func(tx *bolt.Tx) error {
-		data := tx.Bucket([]byte(bucketData))
-		if data == nil {
-			return nil
-		}
-		raw := data.Get([]byte(keyRoutes))
+		raw := readTenantKey(tx, tenant, keyRoutes)
 		if raw == nil {
 			return nil
 		}
@@ -145,50 +224,116 @@ func (s *Store) ReadRoutes() ([]routing.Route, error) {
 	return routes, err
 }
 
-func (s *Store) WriteBlocks(blocks []blockchain.Block) error {
+func (s *Store) WriteBlocksTenant(tenant string, blocks []blockchain.Block) error {
 	data, err := json.Marshal(blocks)
 	if err != nil {
 		return err
 	}
 	return s.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(bucketData))
-		return b.Put([]byte(keyBlocks), data)
+		b, err := tenantBucket(tx, tenant, true)
+		if err != nil {
+			return err
+		}
+		if err := b.Put([]byte(keyBlocks), data); err != nil {
+			return err
+		}
+		return cleanupLegacyDefault(tx, tenant, keyBlocks)
 	})
 }
 
-func (s *Store) WriteRoutes(routes []routing.Route) error {
+func (s *Store) WriteRoutesTenant(tenant string, routes []routing.Route) error {
 	data, err := json.Marshal(routes)
 	if err != nil {
 		return err
 	}
 	return s.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(bucketData))
-		return b.Put([]byte(keyRoutes), data)
+		b, err := tenantBucket(tx, tenant, true)
+		if err != nil {
+			return err
+		}
+		if err := b.Put([]byte(keyRoutes), data); err != nil {
+			return err
+		}
+		return cleanupLegacyDefault(tx, tenant, keyRoutes)
 	})
 }
 
-func (s *Store) SaveChain(chain *blockchain.Blockchain) error {
+func (s *Store) SaveChainTenant(tenant string, chain *blockchain.Blockchain) error {
 	blocks := chain.Snapshot()
 	data, err := json.Marshal(blocks)
 	if err != nil {
 		return err
 	}
 	return s.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(bucketData))
-		return b.Put([]byte(keyBlocks), data)
+		b, err := tenantBucket(tx, tenant, true)
+		if err != nil {
+			return err
+		}
+		if err := b.Put([]byte(keyBlocks), data); err != nil {
+			return err
+		}
+		return cleanupLegacyDefault(tx, tenant, keyBlocks)
 	})
 }
 
-func (s *Store) SaveRoutes(router *routing.RoutingEngine) error {
+func (s *Store) SaveRoutesTenant(tenant string, router *routing.RoutingEngine) error {
 	routes := router.ListRoutes()
 	data, err := json.Marshal(routes)
 	if err != nil {
 		return err
 	}
 	return s.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(bucketData))
-		return b.Put([]byte(keyRoutes), data)
+		b, err := tenantBucket(tx, tenant, true)
+		if err != nil {
+			return err
+		}
+		if err := b.Put([]byte(keyRoutes), data); err != nil {
+			return err
+		}
+		return cleanupLegacyDefault(tx, tenant, keyRoutes)
 	})
+}
+
+func readTenantKey(tx *bolt.Tx, tenant, key string) []byte {
+	if strings.TrimSpace(tenant) == "" {
+		return nil
+	}
+	t, _ := tenantBucket(tx, tenant, false)
+	if t != nil {
+		if raw := t.Get([]byte(key)); raw != nil {
+			return raw
+		}
+	}
+	if tenant == defaultTenant {
+		data := tx.Bucket([]byte(bucketData))
+		if data == nil {
+			return nil
+		}
+		return data.Get([]byte(key))
+	}
+	return nil
+}
+
+func tenantBucket(tx *bolt.Tx, tenant string, create bool) (*bolt.Bucket, error) {
+	tenants := tx.Bucket([]byte(bucketTenants))
+	if tenants == nil {
+		return nil, errors.New("tenants bucket missing")
+	}
+	if create {
+		return tenants.CreateBucketIfNotExists([]byte(tenant))
+	}
+	return tenants.Bucket([]byte(tenant)), nil
+}
+
+func cleanupLegacyDefault(tx *bolt.Tx, tenant, key string) error {
+	if tenant != defaultTenant {
+		return nil
+	}
+	data := tx.Bucket([]byte(bucketData))
+	if data == nil {
+		return nil
+	}
+	return data.Delete([]byte(key))
 }
 
 func DBPath(dataDir string) string {

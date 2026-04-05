@@ -27,12 +27,14 @@ Quick links:
 - `POST /blockchain/add` -> add block (JSON array of transactions)
 - `GET /routes` -> list routes
 - `POST /routes?destination=X&latency=1&throughput=10&ttlSeconds=60` -> add a route (optional TTL)
-- `POST /proto/data` -> protobuf `DataMessage` request, returns `DataMessage` ACK
-- `POST /proto/control` -> protobuf `ControlMessage` request, returns JSON summary
+- `POST /proto/data` -> protobuf `DataMessage` request, returns protobuf `Ack`
+- `POST /proto/control` -> protobuf `ControlMessage` request, returns protobuf `Ack`
 - `GET /admin/status` -> backup/compaction status (admin-only)
 - `GET /admin/mesh` -> mesh config/stats/anomaly state (admin-only)
+- `GET /admin/tenants` -> list tenants and per-tenant counts (admin-only)
 
-If `API_KEY` is set, include `Authorization: Bearer <key>` or `X-API-Key: <key>`.
+If `TENANT_KEYS` or `API_KEY` is set, include `Authorization: Bearer <key>` or `X-API-Key: <key>`.
+Multi-tenant mode uses `TENANT_KEYS=tenant:key` mappings and isolates blockchain/routes by tenant.
 
 **Docker Compose**
 
@@ -76,6 +78,19 @@ go run ./cmd/spectralctl compact --db-path ./data/spectral.db --in-place
 # key utilities
 go run ./cmd/spectralctl keygen
 go run ./cmd/spectralctl rekey --in ./data/spectral.db.enc --out ./data/spectral.db.rekey --old-key <base64> --new-key <base64>
+
+# gRPC mesh send
+go run ./cmd/spectralctl mesh-send --addr localhost:9091 --api-key devkey --tenant default --kind data --payload "hello"
+go run ./cmd/spectralctl mesh-send --addr localhost:9091 --api-key devkey --tenant default --kind control --control-type heartbeat
+
+# gRPC mesh load (count/rate) and watch
+go run ./cmd/spectralctl mesh-send --addr localhost:9091 --api-key devkey --tenant default --kind data --count 100 --rate 10
+go run ./cmd/spectralctl mesh-watch --addr localhost:9091 --api-key devkey --tenant default --interval 5s
+go run ./cmd/spectralctl mesh-load --addr localhost:9091 --api-key devkey --tenant default --kind data --duration 10s --concurrency 4 --rate 100
+go run ./cmd/spectralctl mesh-load --addr localhost:9091 --api-key devkey --tenant default --kind data --count 1000 --csv ./mesh.csv --hist 1,5,10,25,50,100,250,500,1000
+go run ./cmd/spectralctl mesh-load --addr localhost:9091 --api-key devkey --tenant default --kind data --duration 20s --ramp-start 2 --ramp-step 2 --ramp-interval 5s --ramp-max 8 --window 1s
+go run ./cmd/spectralctl mesh-load --addr localhost:9091 --api-key devkey --tenant default --kind data --duration 10s --window 1s --window-live --window-live-json
+go run ./cmd/spectralctl mesh-load --addr localhost:9091 --api-key devkey --tenant default --kind data --duration 10s --window 1s --window-live # includes top error reason
 ```
 
 **Observability**
