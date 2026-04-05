@@ -27,7 +27,7 @@ func makeHandler(db *store.Store, counter *prometheus.CounterVec, auth authConfi
 	meshReject := prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_mesh_reject_rate", Help: "test"})
 	meshAnom := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_mesh_anomaly", Help: "test"}, []string{"type"})
 	anomalyState := &meshAnomalyState{}
-	return newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, auth, 100, 200, status, meshNode, anomalyState)
+	return newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, auth, 100, 200, 0, 0, tenantLimits{}, status, meshNode, anomalyState)
 }
 
 func TestHealthEndpoint(t *testing.T) {

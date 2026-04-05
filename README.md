@@ -56,6 +56,8 @@ Update image settings in `spectral-cloud/values.yaml` if you publish a custom im
 
 Full configuration reference: `docs/configuration.md`.
 
+Tenant quotas and per-tenant rate limiting can be enabled with `TENANT_MAX_BLOCKS`, `TENANT_MAX_ROUTES`, `TENANT_RATE_RPS`, and `TENANT_RATE_BURST`.
+
 **Persistence Notes**
 - BoltDB is the primary store at `DATA_DIR/spectral.db`.
 - Legacy JSON files are migrated into BoltDB on startup.

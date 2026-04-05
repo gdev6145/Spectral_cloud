@@ -24,6 +24,12 @@ This document lists the environment variables used by Spectral-Cloud and their d
 ## Rate Limiting
 - `RATE_LIMIT_RPS` (default `10`)
 - `RATE_LIMIT_BURST` (default `20`)
+- `TENANT_RATE_RPS` (default `0`; per-tenant RPS limit when > 0)
+- `TENANT_RATE_BURST` (default `0`; per-tenant burst when > 0)
+
+## Tenant Quotas
+- `TENANT_MAX_BLOCKS` (default `0`; max blocks per tenant when > 0)
+- `TENANT_MAX_ROUTES` (default `0`; max routes per tenant when > 0)
 
 ## Storage
 - `DATA_DIR` (default `./data`, or `/data` in containers)

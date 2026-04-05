@@ -91,6 +91,11 @@ type authConfig struct {
 	adminCIDRs    []*net.IPNet
 }
 
+type tenantLimits struct {
+	maxBlocks int
+	maxRoutes int
+}
+
 type pathRule struct {
 	value  string
 	prefix bool
@@ -289,6 +294,10 @@ func main() {
 	}
 	rateRPS := getEnvFloat("RATE_LIMIT_RPS", 10)
 	rateBurst := getEnvInt("RATE_LIMIT_BURST", 20)
+	tenantRateRPS := getEnvFloat("TENANT_RATE_RPS", 0)
+	tenantRateBurst := getEnvInt("TENANT_RATE_BURST", 0)
+	tenantMaxBlocks := getEnvInt("TENANT_MAX_BLOCKS", 0)
+	tenantMaxRoutes := getEnvInt("TENANT_MAX_ROUTES", 0)
 
 	backupInterval := strings.TrimSpace(os.Getenv("BACKUP_INTERVAL"))
 	backupDir := strings.TrimSpace(os.Getenv("BACKUP_DIR"))
@@ -384,7 +393,11 @@ func main() {
 	}
 
 	anomalyState := &meshAnomalyState{}
-	handler := newHandler(tenantMgr, db, maxBodyBytes, requestsTotal, meshPackets, meshRejectRate, meshAnomaly, auth, rateRPS, rateBurst, status, meshNode, anomalyState)
+	limits := tenantLimits{
+		maxBlocks: tenantMaxBlocks,
+		maxRoutes: tenantMaxRoutes,
+	}
+	handler := newHandler(tenantMgr, db, maxBodyBytes, requestsTotal, meshPackets, meshRejectRate, meshAnomaly, auth, rateRPS, rateBurst, tenantRateRPS, tenantRateBurst, limits, status, meshNode, anomalyState)
 
 	srv := &http.Server{
 		Addr:              ":" + port,
@@ -445,7 +458,7 @@ func main() {
 	}
 }
 
-func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, requestsTotal *prometheus.CounterVec, meshPackets *prometheus.CounterVec, meshRejectRate prometheus.Gauge, meshAnomaly *prometheus.GaugeVec, auth authConfig, rateRPS float64, rateBurst int, status *statusTracker, meshNode *mesh.Node, anomalyState *meshAnomalyState) http.Handler {
+func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, requestsTotal *prometheus.CounterVec, meshPackets *prometheus.CounterVec, meshRejectRate prometheus.Gauge, meshAnomaly *prometheus.GaugeVec, auth authConfig, rateRPS float64, rateBurst int, tenantRateRPS float64, tenantRateBurst int, limits tenantLimits, status *statusTracker, meshNode *mesh.Node, anomalyState *meshAnomalyState) http.Handler {
 	mux := http.NewServeMux()
 	getState := func(r *http.Request) (*tenantState, string, error) {
 		tenant, ok := tenantFromContext(r.Context())
@@ -588,6 +601,10 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			writeError(w, http.StatusInternalServerError, "failed to load tenant")
 			return
 		}
+		if limits.maxBlocks > 0 && state.chain.Height() >= limits.maxBlocks {
+			writeError(w, http.StatusTooManyRequests, "tenant block limit reached")
+			return
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))
 		var txs []blockchain.Transaction
 		dec := json.NewDecoder(r.Body)
@@ -704,6 +721,10 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 		switch r.Method {
 		case http.MethodPost:
+			if limits.maxRoutes > 0 && state.router.RouteCount() >= limits.maxRoutes {
+				writeError(w, http.StatusTooManyRequests, "tenant route limit reached")
+				return
+			}
 			dest := r.URL.Query().Get("destination")
 			lat, ok, err := parseIntQuery(r, "latency")
 			if err != nil {
@@ -768,7 +789,12 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 	if rateRPS > 0 && rateBurst > 0 {
 		limiter = newIPLimiter(rate.Limit(rateRPS), rateBurst, 5*time.Minute)
 	}
+	var tenantLimiter *tenantLimiter
+	if tenantRateRPS > 0 && tenantRateBurst > 0 {
+		tenantLimiter = newTenantLimiter(rate.Limit(tenantRateRPS), tenantRateBurst, 10*time.Minute)
+	}
 	handler := withAuth(mux, auth)
+	handler = withTenantRateLimit(handler, tenantLimiter, auth.defaultTenant)
 	handler = withRateLimit(handler, limiter)
 	handler = withMetrics(handler, requestsTotal)
 	handler = withRecover(handler)
@@ -1685,6 +1711,71 @@ func withRateLimit(next http.Handler, limiter *ipLimiter) http.Handler {
 		}
 		if !limiter.get(ip).Allow() {
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+type tenantLimiter struct {
+	limit   rate.Limit
+	burst   int
+	mu      sync.Mutex
+	entries map[string]*tenantEntry
+	ttl     time.Duration
+}
+
+type tenantEntry struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
+func newTenantLimiter(limit rate.Limit, burst int, ttl time.Duration) *tenantLimiter {
+	return &tenantLimiter{
+		limit:   limit,
+		burst:   burst,
+		entries: map[string]*tenantEntry{},
+		ttl:     ttl,
+	}
+}
+
+func (l *tenantLimiter) get(tenant string) *rate.Limiter {
+	if strings.TrimSpace(tenant) == "" {
+		return nil
+	}
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if entry, ok := l.entries[tenant]; ok {
+		entry.lastSeen = now
+		return entry.limiter
+	}
+	l.cleanup(now)
+	lim := rate.NewLimiter(l.limit, l.burst)
+	l.entries[tenant] = &tenantEntry{limiter: lim, lastSeen: now}
+	return lim
+}
+
+func (l *tenantLimiter) cleanup(now time.Time) {
+	for key, entry := range l.entries {
+		if now.Sub(entry.lastSeen) > l.ttl {
+			delete(l.entries, key)
+		}
+	}
+}
+
+func withTenantRateLimit(next http.Handler, limiter *tenantLimiter, defaultTenant string) http.Handler {
+	if limiter == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tenant, ok := tenantFromContext(r.Context())
+		if !ok || strings.TrimSpace(tenant) == "" {
+			tenant = defaultTenant
+		}
+		lim := limiter.get(tenant)
+		if lim != nil && !lim.Allow() {
+			writeError(w, http.StatusTooManyRequests, "tenant rate limit exceeded")
 			return
 		}
 		next.ServeHTTP(w, r)
