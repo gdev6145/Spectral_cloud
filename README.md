@@ -52,6 +52,10 @@ helm install spectral-cloud ./spectral-cloud
 
 Update image settings in `spectral-cloud/values.yaml` if you publish a custom image.
 
+**Published Artifacts**
+- Docker image: `ghcr.io/gdev6145/spectral-cloud` (tags match releases)
+- Helm chart repo: `https://gdev6145.github.io/Spectral_cloud` (chart `spectral-cloud`)
+
 **Configuration**
 
 Full configuration reference: `docs/configuration.md`.

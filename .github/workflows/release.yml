@@ -36,3 +36,66 @@ jobs:
         with:
           files: |
             dist/*
+
+  publish_image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/spectral-cloud
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  publish_helm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set chart version
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          sed -i "s/^version: .*/version: ${TAG}/" spectral-cloud/Chart.yaml
+          sed -i "s/^appVersion: .*/appVersion: \"${TAG}\"/" spectral-cloud/Chart.yaml
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+      - name: Package chart
+        run: |
+          mkdir -p .cr-release-packages
+          helm package spectral-cloud --destination .cr-release-packages
+      - name: Release chart
+        uses: helm/chart-releaser-action@v1.6.0
+        with:
+          charts_dir: .
+          packages_dir: .cr-release-packages
+          skip_packaging: true
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
