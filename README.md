@@ -104,6 +104,7 @@ go run ./cmd/spectralctl mesh-send --addr localhost:9091 --api-key devkey --tena
 - Architecture overview: `docs/spectral-cloud-architecture.md`
 - API reference: `docs/api.md`
 - Configuration reference: `docs/configuration.md`
+- Mesh TLS setup: `docs/mesh-tls.md`
 - DevOps runbooks: `DevOps_Runbooks.md`
 
 **Tests**
