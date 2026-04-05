@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"embed"
 	"encoding/base64"
 	"encoding/csv"
@@ -23,6 +25,7 @@ import (
 	"github.com/gdev6145/Spectral_cloud/pkg/store"
 	"github.com/santhosh-tekuri/jsonschema/v5"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
@@ -224,6 +227,10 @@ func meshSendCmd(args []string) {
 	addr := fs.String("addr", "", "gRPC address (host:port)")
 	apiKey := fs.String("api-key", "", "API key")
 	tenant := fs.String("tenant", "default", "tenant id")
+	tlsEnabled := fs.Bool("tls", false, "enable TLS")
+	tlsCA := fs.String("tls-ca", "", "CA bundle path (optional)")
+	tlsServerName := fs.String("tls-server-name", "", "TLS server name override")
+	tlsInsecure := fs.Bool("tls-insecure-skip-verify", false, "skip TLS verification (not recommended)")
 	kind := fs.String("kind", "data", "data or control")
 	sourceID := fs.Uint("source-id", 1, "source id (data)")
 	destID := fs.Uint("destination-id", 2, "destination id (data)")
@@ -246,7 +253,26 @@ func meshSendCmd(args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	conn, err := grpc.DialContext(ctx, *addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	creds := insecure.NewCredentials()
+	if *tlsEnabled {
+		tlsCfg := &tls.Config{InsecureSkipVerify: *tlsInsecure, MinVersion: tls.VersionTLS12}
+		if strings.TrimSpace(*tlsServerName) != "" {
+			tlsCfg.ServerName = *tlsServerName
+		}
+		if strings.TrimSpace(*tlsCA) != "" {
+			caBytes, err := os.ReadFile(*tlsCA)
+			if err != nil {
+				exitErr(err)
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(caBytes) {
+				exitErr(errors.New("invalid CA bundle"))
+			}
+			tlsCfg.RootCAs = pool
+		}
+		creds = credentials.NewTLS(tlsCfg)
+	}
+	conn, err := grpc.DialContext(ctx, *addr, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		exitErr(err)
 	}
@@ -288,6 +314,10 @@ func meshWatchCmd(args []string) {
 	addr := fs.String("addr", "", "gRPC address (host:port)")
 	apiKey := fs.String("api-key", "", "API key")
 	tenant := fs.String("tenant", "default", "tenant id")
+	tlsEnabled := fs.Bool("tls", false, "enable TLS")
+	tlsCA := fs.String("tls-ca", "", "CA bundle path (optional)")
+	tlsServerName := fs.String("tls-server-name", "", "TLS server name override")
+	tlsInsecure := fs.Bool("tls-insecure-skip-verify", false, "skip TLS verification (not recommended)")
 	interval := fs.Duration("interval", 5*time.Second, "interval between heartbeats")
 	timeout := fs.Duration("timeout", 5*time.Second, "request timeout")
 	_ = fs.Parse(args)
@@ -302,7 +332,26 @@ func meshWatchCmd(args []string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	conn, err := grpc.DialContext(ctx, *addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	creds := insecure.NewCredentials()
+	if *tlsEnabled {
+		tlsCfg := &tls.Config{InsecureSkipVerify: *tlsInsecure, MinVersion: tls.VersionTLS12}
+		if strings.TrimSpace(*tlsServerName) != "" {
+			tlsCfg.ServerName = *tlsServerName
+		}
+		if strings.TrimSpace(*tlsCA) != "" {
+			caBytes, err := os.ReadFile(*tlsCA)
+			if err != nil {
+				exitErr(err)
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(caBytes) {
+				exitErr(errors.New("invalid CA bundle"))
+			}
+			tlsCfg.RootCAs = pool
+		}
+		creds = credentials.NewTLS(tlsCfg)
+	}
+	conn, err := grpc.DialContext(ctx, *addr, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		exitErr(err)
 	}
@@ -376,6 +425,10 @@ func meshLoadCmd(args []string) {
 	addr := fs.String("addr", "", "gRPC address (host:port)")
 	apiKey := fs.String("api-key", "", "API key")
 	tenant := fs.String("tenant", "default", "tenant id")
+	tlsEnabled := fs.Bool("tls", false, "enable TLS")
+	tlsCA := fs.String("tls-ca", "", "CA bundle path (optional)")
+	tlsServerName := fs.String("tls-server-name", "", "TLS server name override")
+	tlsInsecure := fs.Bool("tls-insecure-skip-verify", false, "skip TLS verification (not recommended)")
 	kind := fs.String("kind", "data", "data or control")
 	sourceID := fs.Uint("source-id", 1, "source id (data)")
 	destID := fs.Uint("destination-id", 2, "destination id (data)")
@@ -430,7 +483,26 @@ func meshLoadCmd(args []string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	conn, err := grpc.DialContext(ctx, *addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	creds := insecure.NewCredentials()
+	if *tlsEnabled {
+		tlsCfg := &tls.Config{InsecureSkipVerify: *tlsInsecure, MinVersion: tls.VersionTLS12}
+		if strings.TrimSpace(*tlsServerName) != "" {
+			tlsCfg.ServerName = *tlsServerName
+		}
+		if strings.TrimSpace(*tlsCA) != "" {
+			caBytes, err := os.ReadFile(*tlsCA)
+			if err != nil {
+				exitErr(err)
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(caBytes) {
+				exitErr(errors.New("invalid CA bundle"))
+			}
+			tlsCfg.RootCAs = pool
+		}
+		creds = credentials.NewTLS(tlsCfg)
+	}
+	conn, err := grpc.DialContext(ctx, *addr, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		exitErr(err)
 	}

@@ -58,6 +58,7 @@ Use `spectralctl mesh-load` for load testing with latency statistics.
 `mesh-load` supports per-window stats (`--window`) and concurrency ramping (`--ramp-*`).
 `mesh-load` can stream window stats live with `--window-live` or JSON lines with `--window-live-json`.
 Live window output includes the top error reason (if any) and count.
+All mesh CLI commands support TLS flags: `--tls`, `--tls-ca`, `--tls-server-name`, and `--tls-insecure-skip-verify`.
 
 ## Admin Endpoints
 

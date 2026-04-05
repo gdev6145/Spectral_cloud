@@ -53,6 +53,8 @@ This document lists the environment variables used by Spectral-Cloud and their d
 - `MESH_PEER_KEYS` (comma-separated `peer=key` entries to override shared keys)
 - `MESH_TENANT` (default `DEFAULT_TENANT`; tenant used for mesh routing updates)
 - `MESH_GRPC_ADDR` (optional; enables gRPC MeshService on the given address)
+- `MESH_GRPC_TLS_CERT` / `MESH_GRPC_TLS_KEY` (optional; enable TLS for gRPC)
+- `MESH_GRPC_TLS_CLIENT_CA` (optional; when set, require client certs signed by this CA)
 - `MESH_ANOMALY_WINDOW` (default `5`)
 - `MESH_REJECT_RATE_THRESHOLD` (default `0.3`)
 - `MESH_REJECT_BURST_THRESHOLD` (default `20`)

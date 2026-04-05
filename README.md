@@ -91,6 +91,7 @@ go run ./cmd/spectralctl mesh-load --addr localhost:9091 --api-key devkey --tena
 go run ./cmd/spectralctl mesh-load --addr localhost:9091 --api-key devkey --tenant default --kind data --duration 20s --ramp-start 2 --ramp-step 2 --ramp-interval 5s --ramp-max 8 --window 1s
 go run ./cmd/spectralctl mesh-load --addr localhost:9091 --api-key devkey --tenant default --kind data --duration 10s --window 1s --window-live --window-live-json
 go run ./cmd/spectralctl mesh-load --addr localhost:9091 --api-key devkey --tenant default --kind data --duration 10s --window 1s --window-live # includes top error reason
+go run ./cmd/spectralctl mesh-send --addr localhost:9091 --api-key devkey --tenant default --kind data --tls --tls-ca ./ca.pem --tls-server-name spectral-cloud
 ```
 
 **Observability**

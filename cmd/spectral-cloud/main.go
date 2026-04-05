@@ -371,8 +371,12 @@ func main() {
 		if authManager == nil {
 			log.Printf("mesh gRPC disabled: no auth keys configured")
 		} else {
+			tlsCfg, err := loadMeshTLSConfig()
+			if err != nil {
+				log.Printf("mesh gRPC TLS config error: %v", err)
+			}
 			go func() {
-				if err := startMeshGRPC(ctx, meshGrpcAddr, authManager); err != nil {
+				if err := startMeshGRPC(ctx, meshGrpcAddr, authManager, tlsCfg); err != nil {
 					log.Printf("mesh gRPC failed: %v", err)
 				}
 			}()
