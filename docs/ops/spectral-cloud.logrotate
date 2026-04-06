@@ -1,0 +1,8 @@
+/var/log/spectral-cloud/*.log /var/log/spectral-cloud/*.err {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+    copytruncate
+}

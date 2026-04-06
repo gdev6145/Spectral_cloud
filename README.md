@@ -112,6 +112,9 @@ go run ./cmd/spectralctl mesh-send --addr localhost:9091 --api-key devkey --tena
 - API reference: `docs/api.md`
 - Configuration reference: `docs/configuration.md`
 - Mesh TLS setup: `docs/mesh-tls.md`
+- Backup and restore runbook: `docs/ops/backup-restore.md`
+- Systemd deployment: `docs/ops/systemd.md`
+- Release process: `docs/ops/release.md`
 - DevOps runbooks: `DevOps_Runbooks.md`
 
 **Tests**

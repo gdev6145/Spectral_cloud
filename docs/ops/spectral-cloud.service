@@ -1,0 +1,23 @@
+[Unit]
+Description=Spectral-Cloud
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=spectral
+Group=spectral
+WorkingDirectory=/var/lib/spectral-cloud
+StateDirectory=spectral-cloud
+EnvironmentFile=-/etc/spectral-cloud.env
+ExecStart=/usr/local/bin/spectral-cloud
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=65535
+
+# Uncomment to log to files instead of journald
+# StandardOutput=append:/var/log/spectral-cloud/spectral-cloud.log
+# StandardError=append:/var/log/spectral-cloud/spectral-cloud.err
+
+[Install]
+WantedBy=multi-user.target

@@ -37,6 +37,16 @@ jobs:
           path: .
           format: spdx-json
           output-file: dist/sbom.spdx.json
+      - name: Install cosign
+        if: ${{ secrets.COSIGN_PRIVATE_KEY != '' }}
+        uses: sigstore/cosign-installer@v3
+      - name: Sign checksums (cosign)
+        if: ${{ secrets.COSIGN_PRIVATE_KEY != '' }}
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          cosign sign-blob --key env://COSIGN_PRIVATE_KEY --output-signature dist/checksums.txt.sig dist/checksums.txt
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:

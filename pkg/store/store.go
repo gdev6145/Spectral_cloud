@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -366,6 +367,13 @@ func Backup(dbPath, outPath string) error {
 	})
 }
 
+func Restore(dbPath, inPath string) error {
+	if err := Verify(inPath); err != nil {
+		return err
+	}
+	return copyFile(inPath, dbPath, 0o600)
+}
+
 func BackupEncrypted(dbPath, outPath, keyB64 string) error {
 	key, err := decodeKey(keyB64)
 	if err != nil {
@@ -407,6 +415,36 @@ func BackupEncrypted(dbPath, outPath, keyB64 string) error {
 	})
 }
 
+func RestoreEncrypted(dbPath, inPath, keyB64 string) error {
+	plaintext, err := decryptEncryptedFile(inPath, keyB64)
+	if err != nil {
+		return err
+	}
+	if err := verifyPlaintextDB(plaintext, filepath.Dir(inPath)); err != nil {
+		return err
+	}
+	dir := filepath.Dir(dbPath)
+	tmp, err := os.CreateTemp(dir, "restore-*.db")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(plaintext); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := Verify(tmpPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, dbPath)
+}
+
 func Compact(dbPath, outPath string) error {
 	db, err := bolt.Open(dbPath, 0o600, &bolt.Options{ReadOnly: true, Timeout: 1 * time.Second})
 	if err != nil {
@@ -427,6 +465,23 @@ func createFile(path string, mode uint32) (*os.File, error) {
 		return nil, err
 	}
 	return f, nil
+}
+
+func copyFile(src, dst string, mode uint32) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := createFile(dst, mode)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = out.Close() }()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
 }
 
 func Verify(dbPath string) error {

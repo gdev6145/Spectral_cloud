@@ -57,6 +57,8 @@ func main() {
 		repairCmd(os.Args[2:])
 	case "backup":
 		backupCmd(os.Args[2:])
+	case "restore":
+		restoreCmd(os.Args[2:])
 	case "compact":
 		compactCmd(os.Args[2:])
 	case "keygen":
@@ -80,6 +82,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  spectralctl validate --data-dir <dir>")
 	fmt.Fprintln(os.Stderr, "  spectralctl repair --data-dir <dir>")
 	fmt.Fprintln(os.Stderr, "  spectralctl backup --db-path <path> --out <path> [--key <base64>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl restore --db-path <path> --in <path> [--key <base64>]")
 	fmt.Fprintln(os.Stderr, "  spectralctl compact --db-path <path> --out <path>")
 	fmt.Fprintln(os.Stderr, "  spectralctl compact --db-path <path> --in-place")
 	fmt.Fprintln(os.Stderr, "  spectralctl keygen")
@@ -166,6 +169,28 @@ func backupCmd(args []string) {
 		exitErr(err)
 	}
 	fmt.Println("backup completed (encrypted)")
+}
+
+func restoreCmd(args []string) {
+	fs := flag.NewFlagSet("restore", flag.ExitOnError)
+	dbPath := fs.String("db-path", "", "db path")
+	inPath := fs.String("in", "", "input backup path")
+	key := fs.String("key", "", "base64-encoded 32-byte key (optional)")
+	_ = fs.Parse(args)
+	if *dbPath == "" || *inPath == "" {
+		exitErr(errors.New("db-path and in are required"))
+	}
+	if strings.TrimSpace(*key) == "" {
+		if err := store.Restore(*dbPath, *inPath); err != nil {
+			exitErr(err)
+		}
+		fmt.Println("restore completed")
+		return
+	}
+	if err := store.RestoreEncrypted(*dbPath, *inPath, *key); err != nil {
+		exitErr(err)
+	}
+	fmt.Println("restore completed (encrypted)")
 }
 
 func compactCmd(args []string) {
