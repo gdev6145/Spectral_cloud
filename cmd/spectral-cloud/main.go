@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gdev6145/Spectral_cloud/pkg/agent"
 	"github.com/gdev6145/Spectral_cloud/pkg/auth"
 	"github.com/gdev6145/Spectral_cloud/pkg/blockchain"
 	"github.com/gdev6145/Spectral_cloud/pkg/mesh"
@@ -397,7 +398,31 @@ func main() {
 		maxBlocks: tenantMaxBlocks,
 		maxRoutes: tenantMaxRoutes,
 	}
-	handler := newHandler(tenantMgr, db, maxBodyBytes, requestsTotal, meshPackets, meshRejectRate, meshAnomaly, auth, rateRPS, rateBurst, tenantRateRPS, tenantRateBurst, limits, status, meshNode, anomalyState)
+
+	agentReg := agent.NewRegistry()
+	go func() {
+		// Prune expired agents every minute.
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				agentReg.Prune()
+			}
+		}
+	}()
+
+	corsCfg := parseCORSConfig(
+		strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS")),
+		strings.TrimSpace(os.Getenv("CORS_ALLOWED_METHODS")),
+		strings.TrimSpace(os.Getenv("CORS_ALLOWED_HEADERS")),
+		strings.TrimSpace(os.Getenv("CORS_MAX_AGE")),
+	)
+	enableAccessLog := getEnvBool("ACCESS_LOG", false)
+
+	handler := newHandler(tenantMgr, db, maxBodyBytes, requestsTotal, meshPackets, meshRejectRate, meshAnomaly, auth, rateRPS, rateBurst, tenantRateRPS, tenantRateBurst, limits, status, meshNode, anomalyState, agentReg, corsCfg, enableAccessLog)
 
 	srv := &http.Server{
 		Addr:              ":" + port,
@@ -458,7 +483,7 @@ func main() {
 	}
 }
 
-func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, requestsTotal *prometheus.CounterVec, meshPackets *prometheus.CounterVec, meshRejectRate prometheus.Gauge, meshAnomaly *prometheus.GaugeVec, auth authConfig, rateRPS float64, rateBurst int, tenantRateRPS float64, tenantRateBurst int, limits tenantLimits, status *statusTracker, meshNode *mesh.Node, anomalyState *meshAnomalyState) http.Handler {
+func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, requestsTotal *prometheus.CounterVec, meshPackets *prometheus.CounterVec, meshRejectRate prometheus.Gauge, meshAnomaly *prometheus.GaugeVec, auth authConfig, rateRPS float64, rateBurst int, tenantRateRPS float64, tenantRateBurst int, limits tenantLimits, status *statusTracker, meshNode *mesh.Node, anomalyState *meshAnomalyState, agentReg *agent.Registry, corsCfg corsConfig, enableAccessLog bool) http.Handler {
 	mux := http.NewServeMux()
 	getState := func(r *http.Request) (*tenantState, string, error) {
 		tenant, ok := tenantFromContext(r.Context())
@@ -783,12 +808,186 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				return
 			}
 			w.WriteHeader(http.StatusCreated)
+		case http.MethodDelete:
+			dest := strings.TrimSpace(r.URL.Query().Get("destination"))
+			if dest == "" {
+				writeError(w, http.StatusBadRequest, "destination is required")
+				return
+			}
+			if err := state.router.DeleteRoute(dest); err != nil {
+				writeError(w, http.StatusNotFound, "route not found")
+				return
+			}
+			if err := db.SaveRoutesTenant(tenant, state.router); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to persist routes")
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 		case http.MethodGet:
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(state.router.ListRoutes())
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	})
+
+	mux.HandleFunc("/routes/best", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		state, _, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		best, err := state.router.SelectBestNextHop()
+		if err != nil {
+			writeError(w, http.StatusNotFound, "no routes available")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(best)
+	})
+
+	mux.HandleFunc("/blockchain", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		state, _, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		height := state.chain.Height()
+		limit, _, err := parseIntQueryMulti(r, "limit")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		offset, _, err := parseIntQueryMulti(r, "offset")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if limit <= 0 || limit > 1000 {
+			limit = 100
+		}
+		if offset < 0 {
+			offset = 0
+		}
+		blocks := state.chain.BlockRange(offset, offset+limit)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"height": height,
+			"offset": offset,
+			"limit":  limit,
+			"blocks": blocks,
+		})
+	})
+
+	mux.HandleFunc("/blockchain/height", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		state, _, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]int{"height": state.chain.Height()})
+	})
+
+	defaultAgentTTL := getEnvInt("AGENT_TTL_SECONDS", 300)
+
+	mux.HandleFunc("/agents", func(w http.ResponseWriter, r *http.Request) {
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			agents := agentReg.List(tenant)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(agents)
+		case http.MethodDelete:
+			id := strings.TrimSpace(r.URL.Query().Get("id"))
+			if id == "" {
+				writeError(w, http.StatusBadRequest, "id is required")
+				return
+			}
+			if err := agentReg.Deregister(tenant, id); err != nil {
+				writeError(w, http.StatusNotFound, "agent not found")
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
+
+	mux.HandleFunc("/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))
+		var req agent.RegisterRequest
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		// Tenant is always taken from the authenticated context; the caller
+		// cannot override it.
+		req.TenantID = tenant
+		if req.TTLSeconds == 0 {
+			req.TTLSeconds = defaultAgentTTL
+		}
+		if err := agentReg.Register(req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a, _ := agentReg.Get(tenant, req.ID)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(a)
+	})
+
+	mux.HandleFunc("/agents/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		id := strings.TrimSpace(r.URL.Query().Get("id"))
+		if id == "" {
+			writeError(w, http.StatusBadRequest, "id is required")
+			return
+		}
+		ttl, _, _ := parseIntQueryMulti(r, "ttl_seconds")
+		if ttl <= 0 {
+			ttl = defaultAgentTTL
+		}
+		if err := agentReg.Heartbeat(tenant, id, ttl); err != nil {
+			writeError(w, http.StatusNotFound, "agent not found")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -813,6 +1012,11 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 	handler = withTenantRateLimit(handler, tenantLimiter, auth.defaultTenant)
 	handler = withRateLimit(handler, limiter)
 	handler = withMetrics(handler, requestsTotal)
+	handler = withCORS(handler, corsCfg)
+	if enableAccessLog {
+		handler = withLogger(handler)
+	}
+	handler = withRequestID(handler)
 	handler = withRecover(handler)
 	return handler
 }
@@ -970,6 +1174,15 @@ func loadMeshConfig() (mesh.Config, error) {
 			ttl = d
 		}
 	}
+	gossipIntervalRaw := strings.TrimSpace(os.Getenv("MESH_GOSSIP_INTERVAL"))
+	gossipInterval := time.Duration(0) // 0 = disabled
+	if gossipIntervalRaw != "" {
+		if d, err := time.ParseDuration(gossipIntervalRaw); err == nil && d > 0 {
+			gossipInterval = d
+		}
+	}
+	gossipMaxRoutes := getEnvInt("MESH_GOSSIP_MAX_ROUTES", 50)
+
 	return mesh.Config{
 		NodeID:            nodeID,
 		BindAddr:          bind,
@@ -978,6 +1191,8 @@ func loadMeshConfig() (mesh.Config, error) {
 		RouteTTL:          ttl,
 		SharedKeys:        sharedKeys,
 		PeerKeys:          peerKeys,
+		GossipInterval:    gossipInterval,
+		GossipMaxRoutes:   gossipMaxRoutes,
 	}, nil
 }
 

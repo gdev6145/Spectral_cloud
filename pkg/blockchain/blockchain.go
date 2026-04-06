@@ -139,6 +139,39 @@ func (bc *Blockchain) Snapshot() []Block {
 	return out
 }
 
+// GetBlock returns the block at the given index. The second return value is
+// false when the index is out of range.
+func (bc *Blockchain) GetBlock(index int) (Block, bool) {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	if index < 0 || index >= len(bc.blocks) {
+		return Block{}, false
+	}
+	return *bc.blocks[index], true
+}
+
+// BlockRange returns blocks in the half-open range [start, end). Indices are
+// clamped to valid bounds; a zero-length range returns nil.
+func (bc *Blockchain) BlockRange(start, end int) []Block {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	n := len(bc.blocks)
+	if start < 0 {
+		start = 0
+	}
+	if end > n {
+		end = n
+	}
+	if start >= end {
+		return nil
+	}
+	out := make([]Block, end-start)
+	for i, b := range bc.blocks[start:end] {
+		out[i] = *b
+	}
+	return out
+}
+
 // Load replaces the chain with the provided blocks.
 func (bc *Blockchain) Load(blocks []Block) {
 	bc.mu.Lock()

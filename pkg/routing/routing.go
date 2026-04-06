@@ -180,6 +180,27 @@ func (re *RoutingEngine) SelectBestNextHop() (Route, error) {
 	return *best, nil
 }
 
+// DeleteRoute removes the first route whose Destination matches the given string.
+// Returns an error if no matching route is found.
+func (re *RoutingEngine) DeleteRoute(destination string) error {
+	re.mu.Lock()
+	defer re.mu.Unlock()
+	for i, route := range re.Routes {
+		if route.Destination == destination {
+			re.Routes = append(re.Routes[:i], re.Routes[i+1:]...)
+			return nil
+		}
+	}
+	return errors.New("route not found")
+}
+
+// DeleteAll removes all routes.
+func (re *RoutingEngine) DeleteAll() {
+	re.mu.Lock()
+	defer re.mu.Unlock()
+	re.Routes = re.Routes[:0]
+}
+
 // RemoveExpiredRoutes cleans up expired routes.
 func (re *RoutingEngine) RemoveExpiredRoutes() {
 	re.mu.Lock()

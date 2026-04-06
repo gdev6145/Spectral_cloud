@@ -26,6 +26,12 @@ type Config struct {
 	SharedKeys        []string
 	PeerKeys          map[string]string
 	TenantID          string
+	// GossipInterval controls how often the node broadcasts its known routes to
+	// peers. 0 disables gossip; defaults to 60s when the mesh is started.
+	GossipInterval time.Duration
+	// GossipMaxRoutes caps how many routes are included per gossip packet.
+	// 0 defaults to 50.
+	GossipMaxRoutes int
 }
 
 type Node struct {
@@ -59,6 +65,9 @@ func Start(ctx context.Context, cfg Config, router *routing.RoutingEngine) (*Nod
 	if cfg.RouteTTL <= 0 {
 		cfg.RouteTTL = 30 * time.Second
 	}
+	if cfg.GossipMaxRoutes <= 0 {
+		cfg.GossipMaxRoutes = 50
+	}
 
 	addr, err := net.ResolveUDPAddr("udp", cfg.BindAddr)
 	if err != nil {
@@ -78,6 +87,9 @@ func Start(ctx context.Context, cfg Config, router *routing.RoutingEngine) (*Nod
 	go node.readLoop(ctx)
 	go node.heartbeatLoop(ctx)
 	go node.handshakeOnce(ctx)
+	if cfg.GossipInterval > 0 {
+		go node.gossipLoop(ctx)
+	}
 
 	return node, nil
 }
@@ -96,6 +108,73 @@ func (n *Node) Snapshot() (Stats, Config) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return *n.stats, n.cfg
+}
+
+// gossipLoop periodically broadcasts the node's known routes to all peers
+// embedded inside a HEARTBEAT control message. Recipients add the routes to
+// their own routing tables with the configured RouteTTL.
+func (n *Node) gossipLoop(ctx context.Context) {
+	ticker := time.NewTicker(n.cfg.GossipInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n.broadcastGossip()
+		}
+	}
+}
+
+func (n *Node) broadcastGossip() {
+	routes := n.router.ListRoutes()
+	max := n.cfg.GossipMaxRoutes
+	if len(routes) > max {
+		routes = routes[:max]
+	}
+	if len(routes) == 0 {
+		return
+	}
+	gossip := make([]gossipRoute, 0, len(routes))
+	for _, r := range routes {
+		gossip = append(gossip, gossipRoute{
+			Dst: r.Destination,
+			Lat: r.Metric.Latency,
+			Thr: r.Metric.Throughput,
+		})
+	}
+	for _, peer := range n.cfg.Peers {
+		peer = strings.TrimSpace(peer)
+		if peer == "" {
+			continue
+		}
+		key := n.sharedKeyFor(peer)
+		payload := controlPayload{
+			Timestamp: time.Now().UTC().UnixMilli(),
+			Addr:      n.cfg.BindAddr,
+			Routes:    gossip,
+		}
+		payloadBytes, err := marshalControlPayload(payload, key)
+		if err != nil {
+			continue
+		}
+		msg := &meshpb.ControlMessage{
+			MsgType:     meshpb.DataMessage_DATA,
+			ControlType: meshpb.ControlMessage_HEARTBEAT,
+			NodeId:      n.cfg.NodeID,
+			Payload:     payloadBytes,
+			TenantId:    n.cfg.TenantID,
+		}
+		wire, err := proto.Marshal(msg)
+		if err != nil {
+			continue
+		}
+		addr, err := net.ResolveUDPAddr("udp", peer)
+		if err != nil {
+			continue
+		}
+		_, _ = n.conn.WriteToUDP(wire, addr)
+	}
 }
 
 func (n *Node) heartbeatLoop(ctx context.Context) {
@@ -233,15 +312,34 @@ func (n *Node) handlePacket(data []byte, addr *net.UDPAddr) {
 		Throughput: 0,
 	}, n.cfg.RouteTTL)
 
+	// Apply gossip routes embedded in the payload.
+	for _, gr := range payload.Routes {
+		if strings.TrimSpace(gr.Dst) == "" {
+			continue
+		}
+		_ = n.router.AddRouteWithTTL(gr.Dst, routing.RouteMetric{
+			Latency:    gr.Lat,
+			Throughput: gr.Thr,
+		}, n.cfg.RouteTTL)
+	}
+
 	n.mu.Lock()
 	n.stats.Accepted++
 	n.mu.Unlock()
 }
 
+// gossipRoute is a compact route summary embedded in control payloads.
+type gossipRoute struct {
+	Dst string `json:"dst"`
+	Lat int    `json:"lat"`
+	Thr int    `json:"thr"`
+}
+
 type controlPayload struct {
-	Timestamp int64  `json:"ts"`
-	Addr      string `json:"addr"`
-	Signature string `json:"sig,omitempty"`
+	Timestamp int64         `json:"ts"`
+	Addr      string        `json:"addr"`
+	Routes    []gossipRoute `json:"routes,omitempty"`
+	Signature string        `json:"sig,omitempty"`
 }
 
 func marshalControlPayload(payload controlPayload, key string) ([]byte, error) {

@@ -12,6 +12,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"sort"
 	"strconv"
@@ -71,6 +73,14 @@ func main() {
 		meshWatchCmd(os.Args[2:])
 	case "mesh-load":
 		meshLoadCmd(os.Args[2:])
+	case "route-best":
+		routeBestCmd(os.Args[2:])
+	case "api-health":
+		apiHealthCmd(os.Args[2:])
+	case "api-routes":
+		apiRoutesCmd(os.Args[2:])
+	case "api-agents":
+		apiAgentsCmd(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -90,6 +100,10 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  spectralctl mesh-send --addr <host:port> --api-key <key> --tenant <tenant> --kind data|control [options]")
 	fmt.Fprintln(os.Stderr, "  spectralctl mesh-watch --addr <host:port> --api-key <key> --tenant <tenant> [--interval 5s]")
 	fmt.Fprintln(os.Stderr, "  spectralctl mesh-load --addr <host:port> --api-key <key> --tenant <tenant> --kind data|control [--count N | --duration 10s] [--concurrency 4] [--ramp-start 2 --ramp-step 2 --ramp-interval 5s --ramp-max 8] [--rate 100] [--window 1s --window-live --window-live-json] [--hist ...] [--csv path] [--json]")
+	fmt.Fprintln(os.Stderr, "  spectralctl route-best --db-path <path> [--tenant <tenant>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl api-health --url <http://host:port>")
+	fmt.Fprintln(os.Stderr, "  spectralctl api-routes --url <http://host:port> [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl api-agents --url <http://host:port> [--api-key <key>] [--tenant <tenant>]")
 }
 
 func validateCmd(args []string) {
@@ -1375,4 +1389,174 @@ func writeJSON(path string, value any) error {
 func exitErr(err error) {
 	fmt.Fprintln(os.Stderr, err)
 	os.Exit(1)
+}
+
+// ---------------------------------------------------------------------------
+// route-best: find the best next hop from the local BoltDB
+// ---------------------------------------------------------------------------
+
+func routeBestCmd(args []string) {
+	fs := flag.NewFlagSet("route-best", flag.ExitOnError)
+	dbPath := fs.String("db-path", "", "path to BoltDB file")
+	tenant := fs.String("tenant", "default", "tenant name")
+	_ = fs.Parse(args)
+	if *dbPath == "" {
+		exitErr(errors.New("--db-path is required"))
+	}
+
+	db, err := store.Open(*dbPath)
+	if err != nil {
+		exitErr(fmt.Errorf("open db: %w", err))
+	}
+	defer func() { _ = db.Close() }()
+
+	routes, err := db.ReadRoutesTenant(*tenant)
+	if err != nil {
+		exitErr(fmt.Errorf("read routes: %w", err))
+	}
+	engine := routing.NewRoutingEngineFromRoutes(routes)
+	best, err := engine.SelectBestNextHop()
+	if err != nil {
+		exitErr(fmt.Errorf("no routes available: %w", err))
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(best)
+}
+
+// ---------------------------------------------------------------------------
+// api-health: HTTP health check against a running spectral-cloud server
+// ---------------------------------------------------------------------------
+
+func apiHealthCmd(args []string) {
+	fs := flag.NewFlagSet("api-health", flag.ExitOnError)
+	serverURL := fs.String("url", "", "base URL of the spectral-cloud server (e.g. http://localhost:8080)")
+	timeout := fs.Duration("timeout", 5*time.Second, "request timeout")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+
+	body, status, err := apiGET(strings.TrimRight(*serverURL, "/")+"/health", "", *timeout)
+	if err != nil {
+		exitErr(fmt.Errorf("health check failed: %w", err))
+	}
+	if status != 200 {
+		fmt.Fprintf(os.Stderr, "unhealthy (HTTP %d): %s\n", status, string(body))
+		os.Exit(1)
+	}
+	fmt.Printf("healthy (HTTP %d): %s\n", status, string(body))
+}
+
+// ---------------------------------------------------------------------------
+// api-routes: list routes from a running spectral-cloud server
+// ---------------------------------------------------------------------------
+
+func apiRoutesCmd(args []string) {
+	fs := flag.NewFlagSet("api-routes", flag.ExitOnError)
+	serverURL := fs.String("url", "", "base URL of the spectral-cloud server")
+	apiKey := fs.String("api-key", "", "API key (optional)")
+	timeout := fs.Duration("timeout", 5*time.Second, "request timeout")
+	jsonOut := fs.Bool("json", false, "output raw JSON")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+
+	body, status, err := apiGET(strings.TrimRight(*serverURL, "/")+"/routes", *apiKey, *timeout)
+	if err != nil {
+		exitErr(fmt.Errorf("api-routes failed: %w", err))
+	}
+	if status != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", status, string(body)))
+	}
+	if *jsonOut {
+		fmt.Println(string(body))
+		return
+	}
+	var routes []map[string]any
+	if err := json.Unmarshal(body, &routes); err != nil {
+		fmt.Println(string(body))
+		return
+	}
+	fmt.Printf("%-40s %10s %12s\n", "DESTINATION", "LATENCY(ms)", "THROUGHPUT(Mbps)")
+	for _, r := range routes {
+		dst := fmt.Sprint(r["destination"])
+		lat := ""
+		thr := ""
+		if m, ok := r["metric"].(map[string]any); ok {
+			lat = fmt.Sprint(m["latency"])
+			thr = fmt.Sprint(m["throughput"])
+		}
+		fmt.Printf("%-40s %10s %12s\n", dst, lat, thr)
+	}
+	fmt.Printf("\n%d route(s)\n", len(routes))
+}
+
+// ---------------------------------------------------------------------------
+// api-agents: list agents from a running spectral-cloud server
+// ---------------------------------------------------------------------------
+
+func apiAgentsCmd(args []string) {
+	fs := flag.NewFlagSet("api-agents", flag.ExitOnError)
+	serverURL := fs.String("url", "", "base URL of the spectral-cloud server")
+	apiKey := fs.String("api-key", "", "API key (optional)")
+	timeout := fs.Duration("timeout", 5*time.Second, "request timeout")
+	jsonOut := fs.Bool("json", false, "output raw JSON")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+
+	body, status, err := apiGET(strings.TrimRight(*serverURL, "/")+"/agents", *apiKey, *timeout)
+	if err != nil {
+		exitErr(fmt.Errorf("api-agents failed: %w", err))
+	}
+	if status != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", status, string(body)))
+	}
+	if *jsonOut {
+		fmt.Println(string(body))
+		return
+	}
+	var agents []map[string]any
+	if err := json.Unmarshal(body, &agents); err != nil {
+		fmt.Println(string(body))
+		return
+	}
+	fmt.Printf("%-20s %-30s %-10s %s\n", "ID", "ADDR", "STATUS", "LAST_SEEN")
+	for _, a := range agents {
+		id := fmt.Sprint(a["id"])
+		addr := fmt.Sprint(a["addr"])
+		status := fmt.Sprint(a["status"])
+		lastSeen := fmt.Sprint(a["last_seen"])
+		fmt.Printf("%-20s %-30s %-10s %s\n", id, addr, status, lastSeen)
+	}
+	fmt.Printf("\n%d agent(s)\n", len(agents))
+}
+
+// ---------------------------------------------------------------------------
+// HTTP helpers for CLI commands
+// ---------------------------------------------------------------------------
+
+func apiGET(url, apiKey string, timeout time.Duration) ([]byte, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	if strings.TrimSpace(apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return body, resp.StatusCode, nil
 }

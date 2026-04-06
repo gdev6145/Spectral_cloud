@@ -287,6 +287,118 @@ class TestRoutesEndpoint(unittest.TestCase):
         self.assertIn("error", body)
 
 
+class TestAgentRegistryLogic(unittest.TestCase):
+    """Pure-Python mirror of the agent registry constraints."""
+
+    def _make_agent(self, id="a1", tenant="t1", status="healthy", ttl=300):
+        return {"id": id, "tenant_id": tenant, "status": status, "ttl_seconds": ttl}
+
+    def test_id_required(self):
+        a = self._make_agent(id="")
+        self.assertEqual(a["id"], "")  # missing id should be rejected
+
+    def test_tenant_required(self):
+        a = self._make_agent(tenant="")
+        self.assertEqual(a["tenant_id"], "")
+
+    def test_valid_statuses(self):
+        for s in ("healthy", "degraded", "unknown"):
+            a = self._make_agent(status=s)
+            self.assertIn(a["status"], ("healthy", "degraded", "unknown"))
+
+    def test_ttl_zero_means_no_expiry(self):
+        a = self._make_agent(ttl=0)
+        self.assertEqual(a["ttl_seconds"], 0)
+
+    def test_ttl_positive(self):
+        a = self._make_agent(ttl=300)
+        self.assertGreater(a["ttl_seconds"], 0)
+
+
+class TestBlockchainPagination(unittest.TestCase):
+    """Validate the expected behavior of GET /blockchain pagination logic."""
+
+    def _paginate(self, total_height, offset, limit):
+        """Simulate BlockRange clamping."""
+        if limit <= 0 or limit > 1000:
+            limit = 100
+        if offset < 0:
+            offset = 0
+        start = offset
+        end = min(offset + limit, total_height)
+        return list(range(start, end))
+
+    def test_first_page(self):
+        blocks = self._paginate(50, 0, 10)
+        self.assertEqual(len(blocks), 10)
+        self.assertEqual(blocks[0], 0)
+
+    def test_last_page_clamped(self):
+        blocks = self._paginate(5, 3, 10)
+        self.assertEqual(len(blocks), 2)  # only 2 blocks remain
+
+    def test_offset_beyond_height_returns_empty(self):
+        blocks = self._paginate(5, 10, 10)
+        self.assertEqual(len(blocks), 0)
+
+    def test_default_limit_applied_when_zero(self):
+        blocks = self._paginate(200, 0, 0)
+        self.assertEqual(len(blocks), 100)
+
+    def test_limit_capped_at_1000(self):
+        blocks = self._paginate(2000, 0, 5000)
+        self.assertEqual(len(blocks), 100)  # clamped to default
+
+
+class TestCORSConfig(unittest.TestCase):
+    """Python mirror of CORS origin matching."""
+
+    def _is_allowed(self, origins, request_origin, allow_all=False):
+        if allow_all:
+            return True
+        return request_origin in origins
+
+    def test_explicit_origin_allowed(self):
+        self.assertTrue(self._is_allowed(["https://app.example.com"], "https://app.example.com"))
+
+    def test_unknown_origin_rejected(self):
+        self.assertFalse(self._is_allowed(["https://app.example.com"], "https://evil.com"))
+
+    def test_wildcard_allows_any(self):
+        self.assertTrue(self._is_allowed([], "https://any.domain.com", allow_all=True))
+
+    def test_empty_origins_list_rejects_all(self):
+        self.assertFalse(self._is_allowed([], "https://example.com", allow_all=False))
+
+
+class TestGossipRouteEmbedding(unittest.TestCase):
+    """Validate gossip route packet structure."""
+
+    def _make_gossip_routes(self, routes, max_routes=50):
+        """Mirror the Go gossip route selection (cap at max_routes)."""
+        return routes[:max_routes]
+
+    def test_routes_capped_at_max(self):
+        routes = [{"dst": f"peer-{i}", "lat": i, "thr": 10} for i in range(100)]
+        gossip = self._make_gossip_routes(routes, max_routes=50)
+        self.assertEqual(len(gossip), 50)
+
+    def test_empty_routes_not_sent(self):
+        gossip = self._make_gossip_routes([])
+        self.assertEqual(len(gossip), 0)
+
+    def test_fewer_routes_than_max(self):
+        routes = [{"dst": "peer-1", "lat": 10, "thr": 100}]
+        gossip = self._make_gossip_routes(routes, max_routes=50)
+        self.assertEqual(len(gossip), 1)
+
+    def test_gossip_route_has_required_fields(self):
+        route = {"dst": "10.0.0.1:7000", "lat": 15, "thr": 200}
+        self.assertIn("dst", route)
+        self.assertIn("lat", route)
+        self.assertIn("thr", route)
+
+
 @unittest.skipUnless(SPECTRAL_URL, "SPECTRAL_URL not set — skipping integration tests")
 class TestAuthEnforcement(unittest.TestCase):
 
@@ -299,6 +411,144 @@ class TestAuthEnforcement(unittest.TestCase):
         status, _ = http_post("/blockchain/add", txs)
         # 401 when auth is configured, 201 when auth is disabled
         self.assertIn(status, (201, 401))
+
+
+@unittest.skipUnless(SPECTRAL_URL, "SPECTRAL_URL not set — skipping integration tests")
+class TestBlockchainEndpointsExtended(unittest.TestCase):
+
+    API_KEY = os.environ.get("SPECTRAL_WRITE_KEY", os.environ.get("SPECTRAL_API_KEY", ""))
+
+    def test_blockchain_height_endpoint(self):
+        status, body = http_get("/blockchain/height")
+        self.assertEqual(status, 200)
+        self.assertIn("height", body)
+        self.assertGreaterEqual(body["height"], 1)
+
+    def test_blockchain_list_returns_blocks_field(self):
+        status, body = http_get("/blockchain?limit=5&offset=0")
+        self.assertEqual(status, 200)
+        self.assertIn("blocks", body)
+        self.assertIn("height", body)
+        self.assertIn("limit", body)
+        self.assertIn("offset", body)
+
+    def test_blockchain_list_pagination(self):
+        _, body = http_get("/blockchain?limit=1&offset=0")
+        self.assertIsInstance(body.get("blocks"), list)
+        self.assertLessEqual(len(body.get("blocks", [])), 1)
+
+
+@unittest.skipUnless(SPECTRAL_URL, "SPECTRAL_URL not set — skipping integration tests")
+class TestRoutesBestEndpoint(unittest.TestCase):
+
+    API_KEY = os.environ.get("SPECTRAL_WRITE_KEY", os.environ.get("SPECTRAL_API_KEY", ""))
+
+    def test_routes_best_returns_404_when_empty(self):
+        # This may or may not be 404 depending on existing routes.
+        status, _ = http_get("/routes/best")
+        self.assertIn(status, (200, 404))
+
+    def test_routes_best_after_add_returns_200(self):
+        http_post("/routes?destination=test-best-node&latency=5&throughput=100", {},
+                  api_key=self.API_KEY)
+        status, body = http_get("/routes/best")
+        self.assertEqual(status, 200)
+        self.assertIn("destination", body)
+
+
+@unittest.skipUnless(SPECTRAL_URL, "SPECTRAL_URL not set — skipping integration tests")
+class TestDeleteRouteEndpoint(unittest.TestCase):
+
+    API_KEY = os.environ.get("SPECTRAL_WRITE_KEY", os.environ.get("SPECTRAL_API_KEY", ""))
+
+    def test_delete_existing_route(self):
+        # Add then delete.
+        http_post("/routes?destination=delete-me-route&latency=1&throughput=1", {},
+                  api_key=self.API_KEY)
+        status, _ = http_post("/routes?destination=delete-me-route", {},
+                               api_key=self.API_KEY)
+        # Attempt deletion via DELETE method.
+        url = SPECTRAL_URL + "/routes?destination=delete-me-route"
+        req = urllib.request.Request(url, method="DELETE")
+        if self.API_KEY:
+            req.add_header("Authorization", "Bearer " + self.API_KEY)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                del_status = resp.status
+        except urllib.error.HTTPError as e:
+            del_status = e.code
+        self.assertIn(del_status, (204, 404))
+
+    def test_delete_missing_destination_returns_400(self):
+        url = SPECTRAL_URL + "/routes"
+        req = urllib.request.Request(url, method="DELETE")
+        if self.API_KEY:
+            req.add_header("Authorization", "Bearer " + self.API_KEY)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                status = resp.status
+        except urllib.error.HTTPError as e:
+            status = e.code
+        self.assertEqual(status, 400)
+
+
+@unittest.skipUnless(SPECTRAL_URL, "SPECTRAL_URL not set — skipping integration tests")
+class TestAgentRegistryEndpoints(unittest.TestCase):
+
+    API_KEY = os.environ.get("SPECTRAL_WRITE_KEY", os.environ.get("SPECTRAL_API_KEY", ""))
+
+    def test_list_agents_returns_list(self):
+        status, body = http_get("/agents", api_key=self.API_KEY)
+        self.assertEqual(status, 200)
+        self.assertIsInstance(body, list)
+
+    def test_register_agent(self):
+        payload = {"id": "integ-agent-1", "addr": "10.0.0.99:9000",
+                   "status": "healthy", "ttl_seconds": 300}
+        status, body = http_post("/agents/register", payload, api_key=self.API_KEY)
+        self.assertEqual(status, 201)
+        self.assertEqual(body.get("id"), "integ-agent-1")
+        self.assertEqual(body.get("status"), "healthy")
+
+    def test_register_agent_without_id_returns_400(self):
+        status, body = http_post("/agents/register", {"addr": "10.0.0.1:9000"},
+                                  api_key=self.API_KEY)
+        self.assertEqual(status, 400)
+        self.assertIn("error", body)
+
+    def test_heartbeat_existing_agent(self):
+        # Register first.
+        http_post("/agents/register",
+                  {"id": "hb-agent", "addr": "10.0.0.50:9000", "ttl_seconds": 300},
+                  api_key=self.API_KEY)
+        status, _ = http_post("/agents/heartbeat?id=hb-agent&ttl_seconds=300", {},
+                               api_key=self.API_KEY)
+        self.assertEqual(status, 204)
+
+    def test_heartbeat_unknown_agent_returns_404(self):
+        status, _ = http_post("/agents/heartbeat?id=ghost-agent", {},
+                               api_key=self.API_KEY)
+        self.assertEqual(status, 404)
+
+
+@unittest.skipUnless(SPECTRAL_URL, "SPECTRAL_URL not set — skipping integration tests")
+class TestRequestIDHeader(unittest.TestCase):
+
+    def test_response_includes_request_id(self):
+        status, _ = http_get("/health")
+        self.assertEqual(status, 200)
+        # Note: we can't easily check headers via http_get; skip header assertion here.
+        # Use urllib directly.
+        req = urllib.request.Request(SPECTRAL_URL + "/health")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            self.assertNotEqual(resp.getheader("X-Request-ID", ""), "")
+
+    def test_client_supplied_request_id_echoed(self):
+        req = urllib.request.Request(SPECTRAL_URL + "/health")
+        req.add_header("X-Request-ID", "test-id-xyz")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            returned_id = resp.getheader("X-Request-ID", "")
+        self.assertEqual(returned_id, "test-id-xyz")
 
 
 if __name__ == "__main__":

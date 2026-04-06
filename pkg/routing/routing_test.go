@@ -42,6 +42,39 @@ func TestRoutingValidation(t *testing.T) {
 	}
 }
 
+func TestDeleteRoute(t *testing.T) {
+	re := NewRoutingEngine()
+	_ = re.AddRoute("node-1", RouteMetric{Latency: 10, Throughput: 100})
+	_ = re.AddRoute("node-2", RouteMetric{Latency: 20, Throughput: 50})
+
+	if err := re.DeleteRoute("node-1"); err != nil {
+		t.Fatalf("unexpected error deleting route: %v", err)
+	}
+	if re.RouteCount() != 1 {
+		t.Fatalf("expected 1 route after delete, got %d", re.RouteCount())
+	}
+	if _, err := re.GetRoute("node-1"); err == nil {
+		t.Fatal("expected deleted route to be gone")
+	}
+}
+
+func TestDeleteRouteNotFound(t *testing.T) {
+	re := NewRoutingEngine()
+	if err := re.DeleteRoute("ghost"); err == nil {
+		t.Fatal("expected error deleting non-existent route")
+	}
+}
+
+func TestDeleteAll(t *testing.T) {
+	re := NewRoutingEngine()
+	_ = re.AddRoute("a", RouteMetric{Latency: 1, Throughput: 1})
+	_ = re.AddRoute("b", RouteMetric{Latency: 2, Throughput: 2})
+	re.DeleteAll()
+	if re.RouteCount() != 0 {
+		t.Fatalf("expected 0 routes after DeleteAll, got %d", re.RouteCount())
+	}
+}
+
 func TestSelectBestNextHopEmpty(t *testing.T) {
 	re := NewRoutingEngine()
 	if _, err := re.SelectBestNextHop(); err == nil {

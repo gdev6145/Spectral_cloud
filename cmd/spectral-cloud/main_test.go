@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gdev6145/Spectral_cloud/pkg/agent"
 	"github.com/gdev6145/Spectral_cloud/pkg/mesh"
 	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
 	"github.com/gdev6145/Spectral_cloud/pkg/store"
@@ -23,11 +24,12 @@ func makeHandler(db *store.Store, counter *prometheus.CounterVec, auth authConfi
 	}
 	tenantMgr := newTenantManager(db)
 	_, _ = tenantMgr.getTenant(auth.defaultTenant)
-	meshCounter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_mesh_packets_total", Help: "test"}, []string{"outcome"})
-	meshReject := prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_mesh_reject_rate", Help: "test"})
-	meshAnom := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_mesh_anomaly", Help: "test"}, []string{"type"})
+	meshCounter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_mesh_packets_total_h", Help: "test"}, []string{"outcome"})
+	meshReject := prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_mesh_reject_rate_h", Help: "test"})
+	meshAnom := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_mesh_anomaly_h", Help: "test"}, []string{"type"})
 	anomalyState := &meshAnomalyState{}
-	return newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, auth, 100, 200, 0, 0, tenantLimits{}, status, meshNode, anomalyState)
+	agentReg := agent.NewRegistry()
+	return newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, auth, 100, 200, 0, 0, tenantLimits{}, status, meshNode, anomalyState, agentReg, corsConfig{}, false)
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -539,6 +541,262 @@ func TestPersistenceBackwardCompat(t *testing.T) {
 	}
 	if len(routes) != 1 {
 		t.Fatalf("expected 1 route, got %d", len(routes))
+	}
+}
+
+func TestDeleteRouteEndpoint(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_del", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// Add a route first.
+	resp, err := http.Post(srv.URL+"/routes?destination=node-del&latency=5&throughput=50", "text/plain", nil)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+
+	// Delete it.
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/routes?destination=node-del", nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+
+	// Confirm it's gone.
+	resp, err = http.Get(srv.URL + "/routes")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	var routes []map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&routes)
+	resp.Body.Close()
+	for _, r := range routes {
+		if r["destination"] == "node-del" {
+			t.Fatal("deleted route still present in list")
+		}
+	}
+}
+
+func TestRoutesBestEndpoint(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_best", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// No routes yet → 404.
+	resp, err := http.Get(srv.URL + "/routes/best")
+	if err != nil {
+		t.Fatalf("get best: %v", err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 when no routes, got %d", resp.StatusCode)
+	}
+
+	// Add two routes; the one with lower latency should win.
+	_, _ = http.Post(srv.URL+"/routes?destination=slow&latency=100&throughput=10", "text/plain", nil)
+	_, _ = http.Post(srv.URL+"/routes?destination=fast&latency=10&throughput=10", "text/plain", nil)
+
+	resp, err = http.Get(srv.URL + "/routes/best")
+	if err != nil {
+		t.Fatalf("get best: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var best map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&best)
+	resp.Body.Close()
+	if best["destination"] != "fast" {
+		t.Fatalf("expected fast route, got %v", best["destination"])
+	}
+}
+
+func TestBlockchainListEndpoint(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_bclist", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// Add a block.
+	resp, err := http.Post(srv.URL+"/blockchain/add", "application/json", bytes.NewBufferString(`[{"sender":"a","recipient":"b","amount":1}]`))
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+
+	resp, err = http.Get(srv.URL + "/blockchain?limit=10&offset=0")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	resp.Body.Close()
+	if body["height"].(float64) < 2 {
+		t.Fatalf("expected height >= 2, got %v", body["height"])
+	}
+
+	resp, err = http.Get(srv.URL + "/blockchain/height")
+	if err != nil {
+		t.Fatalf("height: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var h map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&h)
+	resp.Body.Close()
+	if h["height"].(float64) < 2 {
+		t.Fatalf("expected height >= 2 from /blockchain/height, got %v", h["height"])
+	}
+}
+
+func TestAgentEndpoints(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_agents", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// List should be empty.
+	resp, err := http.Get(srv.URL + "/agents")
+	if err != nil {
+		t.Fatalf("list agents: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var list []any
+	_ = json.NewDecoder(resp.Body).Decode(&list)
+	resp.Body.Close()
+	if len(list) != 0 {
+		t.Fatalf("expected empty list, got %d agents", len(list))
+	}
+
+	// Register an agent.
+	body := `{"id":"agent-1","addr":"10.0.0.1:9000","status":"healthy","ttl_seconds":300}`
+	resp, err = http.Post(srv.URL+"/agents/register", "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	var registered map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&registered)
+	resp.Body.Close()
+	if registered["id"] != "agent-1" {
+		t.Fatalf("expected id agent-1, got %v", registered["id"])
+	}
+
+	// List should now have one agent.
+	resp, err = http.Get(srv.URL + "/agents")
+	if err != nil {
+		t.Fatalf("list after register: %v", err)
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&list)
+	resp.Body.Close()
+	if len(list) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(list))
+	}
+
+	// Heartbeat.
+	resp, err = http.Post(srv.URL+"/agents/heartbeat?id=agent-1&ttl_seconds=300", "text/plain", nil)
+	if err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+
+	// Deregister.
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/agents?id=agent-1", nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("deregister: %v", err)
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+
+	// List should be empty again.
+	resp, err = http.Get(srv.URL + "/agents")
+	if err != nil {
+		t.Fatalf("list after deregister: %v", err)
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&list)
+	resp.Body.Close()
+	if len(list) != 0 {
+		t.Fatalf("expected empty list after deregister, got %d agents", len(list))
+	}
+}
+
+func TestRequestIDHeader(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_reqid", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// Server should generate a request ID when none is provided.
+	resp, err := http.Get(srv.URL + "/health")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	resp.Body.Close()
+	if resp.Header.Get("X-Request-ID") == "" {
+		t.Fatal("expected X-Request-ID header in response")
+	}
+
+	// Client-supplied ID should be echoed back.
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/health", nil)
+	req.Header.Set("X-Request-ID", "my-test-id-123")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get with id: %v", err)
+	}
+	resp.Body.Close()
+	if resp.Header.Get("X-Request-ID") != "my-test-id-123" {
+		t.Fatalf("expected echoed request ID, got %q", resp.Header.Get("X-Request-ID"))
 	}
 }
 
