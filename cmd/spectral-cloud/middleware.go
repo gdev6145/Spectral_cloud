@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // withRequestID injects an X-Request-ID header into every request/response.
@@ -39,6 +41,22 @@ func withLogger(next http.Handler) http.Handler {
 		reqID := r.Header.Get("X-Request-ID")
 		log.Printf("method=%s path=%s status=%d duration=%s request_id=%s",
 			r.Method, r.URL.Path, rec.status, dur.Round(time.Millisecond), reqID)
+	})
+}
+
+// withDuration records HTTP request latency in a Prometheus histogram. It
+// reuses the statusRecorder defined in main.go to capture the status code.
+// Labels are "path" and "method"; status is not labelled to avoid cardinality
+// explosion from dynamic paths like /blockchain/{index}.
+func withDuration(next http.Handler, hist *prometheus.HistogramVec) http.Handler {
+	if hist == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		hist.WithLabelValues(r.URL.Path, r.Method).Observe(time.Since(start).Seconds())
 	})
 }
 

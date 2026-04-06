@@ -1,7 +1,9 @@
 package blockchain
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -14,6 +16,9 @@ type Block struct {
 	Transactions []Transaction `json:"transactions"`
 	PreviousHash string        `json:"previous_hash"`
 	Hash         string        `json:"hash"`
+	// Signature is an optional HMAC-SHA256 of the block Hash using a signing
+	// key. It provides verifiable authorship without changing the Hash itself.
+	Signature    string        `json:"signature,omitempty"`
 }
 
 // Transaction represents a transaction in the blockchain
@@ -73,6 +78,38 @@ func Verify(block *Block) bool {
 	return block.Hash == expected
 }
 
+// SignBlock computes an HMAC-SHA256 over the block's Hash using signingKey and
+// stores it in block.Signature. It returns the signature hex string.
+func SignBlock(block *Block, signingKey string) string {
+	if block == nil || signingKey == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(signingKey))
+	mac.Write([]byte(block.Hash))
+	sig := hex.EncodeToString(mac.Sum(nil))
+	block.Signature = sig
+	return sig
+}
+
+// VerifySignature checks block.Signature against the expected HMAC-SHA256 of
+// block.Hash using the provided key. Returns false if block is nil or unsigned.
+func VerifySignature(block *Block, signingKey string) bool {
+	if block == nil || block.Signature == "" || signingKey == "" {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(signingKey))
+	mac.Write([]byte(block.Hash))
+	expected := hex.EncodeToString(mac.Sum(nil))
+	if len(block.Signature) != len(expected) {
+		return false
+	}
+	var diff byte
+	for i := 0; i < len(block.Signature); i++ {
+		diff |= block.Signature[i] ^ expected[i]
+	}
+	return diff == 0
+}
+
 // AddBlock adds a new block to the blockchain
 func (bc *Blockchain) AddBlock(transactions []Transaction) *Block {
 	bc.mu.Lock()
@@ -90,6 +127,16 @@ func (bc *Blockchain) AddBlock(transactions []Transaction) *Block {
 	}
 	bc.blocks = append(bc.blocks, newBlock)
 	return newBlock
+}
+
+// AddSignedBlock adds a new block and signs it with signingKey. If signingKey
+// is empty the block is added without a signature (same as AddBlock).
+func (bc *Blockchain) AddSignedBlock(transactions []Transaction, signingKey string) *Block {
+	block := bc.AddBlock(transactions)
+	if signingKey != "" {
+		SignBlock(block, signingKey)
+	}
+	return block
 }
 
 // Height returns the current height of the chain.

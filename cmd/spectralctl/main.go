@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -81,6 +82,10 @@ func main() {
 		apiRoutesCmd(os.Args[2:])
 	case "api-agents":
 		apiAgentsCmd(os.Args[2:])
+	case "blockchain-inspect":
+		blockchainInspectCmd(os.Args[2:])
+	case "agent-register":
+		agentRegisterCmd(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -104,6 +109,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  spectralctl api-health --url <http://host:port>")
 	fmt.Fprintln(os.Stderr, "  spectralctl api-routes --url <http://host:port> [--api-key <key>]")
 	fmt.Fprintln(os.Stderr, "  spectralctl api-agents --url <http://host:port> [--api-key <key>] [--tenant <tenant>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl blockchain-inspect --url <http://host:port> --index <N> [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl agent-register --url <http://host:port> --id <id> [--addr <addr>] [--capability <c1,c2>] [--ttl 300] [--api-key <key>]")
 }
 
 func validateCmd(args []string) {
@@ -1533,6 +1540,118 @@ func apiAgentsCmd(args []string) {
 		fmt.Printf("%-20s %-30s %-10s %s\n", id, addr, status, lastSeen)
 	}
 	fmt.Printf("\n%d agent(s)\n", len(agents))
+}
+
+// ---------------------------------------------------------------------------
+// blockchain-inspect: fetch a specific block by index from a live server
+// ---------------------------------------------------------------------------
+
+func blockchainInspectCmd(args []string) {
+	fs := flag.NewFlagSet("blockchain-inspect", flag.ExitOnError)
+	serverURL := fs.String("url", "", "base URL of the spectral-cloud server")
+	apiKey := fs.String("api-key", "", "API key (optional)")
+	index := fs.Int("index", -1, "block index to fetch")
+	timeout := fs.Duration("timeout", 5*time.Second, "request timeout")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	if *index < 0 {
+		exitErr(errors.New("--index must be >= 0"))
+	}
+
+	path := fmt.Sprintf("%s/blockchain/%d", strings.TrimRight(*serverURL, "/"), *index)
+	body, status, err := apiGET(path, *apiKey, *timeout)
+	if err != nil {
+		exitErr(fmt.Errorf("blockchain-inspect failed: %w", err))
+	}
+	if status == 404 {
+		exitErr(fmt.Errorf("block %d not found", *index))
+	}
+	if status != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", status, string(body)))
+	}
+	var block map[string]any
+	if err := json.Unmarshal(body, &block); err != nil {
+		fmt.Println(string(body))
+		return
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(block)
+}
+
+// ---------------------------------------------------------------------------
+// agent-register: register an agent via the HTTP API
+// ---------------------------------------------------------------------------
+
+func agentRegisterCmd(args []string) {
+	fs := flag.NewFlagSet("agent-register", flag.ExitOnError)
+	serverURL := fs.String("url", "", "base URL of the spectral-cloud server")
+	apiKey := fs.String("api-key", "", "API key")
+	id := fs.String("id", "", "agent ID (required)")
+	addr := fs.String("addr", "", "agent address (e.g. 10.0.0.1:9000)")
+	capsRaw := fs.String("capability", "", "comma-separated list of capabilities")
+	ttl := fs.Int("ttl", 300, "TTL in seconds")
+	timeout := fs.Duration("timeout", 5*time.Second, "request timeout")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	if *id == "" {
+		exitErr(errors.New("--id is required"))
+	}
+
+	var caps []string
+	if *capsRaw != "" {
+		for _, c := range strings.Split(*capsRaw, ",") {
+			if c = strings.TrimSpace(c); c != "" {
+				caps = append(caps, c)
+			}
+		}
+	}
+
+	payload := map[string]any{
+		"id":           *id,
+		"addr":         *addr,
+		"status":       "healthy",
+		"ttl_seconds":  *ttl,
+		"capabilities": caps,
+	}
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		exitErr(fmt.Errorf("marshal payload: %w", err))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	url := strings.TrimRight(*serverURL, "/") + "/agents/register"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		exitErr(fmt.Errorf("build request: %w", err))
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(*apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+*apiKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		exitErr(fmt.Errorf("agent-register failed: %w", err))
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 201 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", resp.StatusCode, string(respBody)))
+	}
+	var agent map[string]any
+	if err := json.Unmarshal(respBody, &agent); err != nil {
+		fmt.Println(string(respBody))
+		return
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(agent)
+	fmt.Printf("agent %q registered successfully\n", *id)
 }
 
 // ---------------------------------------------------------------------------

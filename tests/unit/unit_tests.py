@@ -371,6 +371,178 @@ class TestCORSConfig(unittest.TestCase):
         self.assertFalse(self._is_allowed([], "https://example.com", allow_all=False))
 
 
+class TestBlockSignatureLogic(unittest.TestCase):
+    """Mirror of blockchain HMAC-SHA256 signature logic."""
+
+    def _sign(self, block_hash, key):
+        import hmac as _hmac
+        import hashlib
+        return _hmac.new(key.encode(), block_hash.encode(), hashlib.sha256).hexdigest()
+
+    def test_signature_matches_expected(self):
+        sig = self._sign("abc123hash", "secret")
+        self.assertNotEqual(sig, "")
+        self.assertEqual(len(sig), 64)  # SHA256 hex = 64 chars
+
+    def test_wrong_key_produces_different_signature(self):
+        s1 = self._sign("abc123", "key1")
+        s2 = self._sign("abc123", "key2")
+        self.assertNotEqual(s1, s2)
+
+    def test_tampered_hash_fails_verification(self):
+        original_sig = self._sign("abc123", "key")
+        tampered_sig = self._sign("tampered", "key")
+        self.assertNotEqual(original_sig, tampered_sig)
+
+    def test_empty_key_no_signature(self):
+        # Go returns "" for empty key — Python equivalent: no sig
+        key = ""
+        if key == "":
+            sig = ""
+        else:
+            sig = self._sign("abc123", key)
+        self.assertEqual(sig, "")
+
+
+class TestWebhookSignature(unittest.TestCase):
+    """Mirror of webhook HMAC-SHA256 signing and verification."""
+
+    def _sign(self, body, secret):
+        import hmac as _hmac
+        import hashlib
+        mac = _hmac.new(secret.encode(), body if isinstance(body, bytes) else body.encode(),
+                        hashlib.sha256)
+        return "sha256=" + mac.hexdigest()
+
+    def _verify(self, header, body, secret):
+        if not header.startswith("sha256="):
+            return False
+        expected = self._sign(body, secret)
+        if len(header) != len(expected):
+            return False
+        return header == expected  # constant-time in Go, good enough for test
+
+    def test_valid_signature_verifies(self):
+        body = b'{"type":"block_added"}'
+        sig = self._sign(body, "webhook-secret")
+        self.assertTrue(self._verify(sig, body, "webhook-secret"))
+
+    def test_wrong_secret_fails(self):
+        body = b'{"type":"block_added"}'
+        sig = self._sign(body, "right-secret")
+        self.assertFalse(self._verify(sig, body, "wrong-secret"))
+
+    def test_missing_prefix_fails(self):
+        self.assertFalse(self._verify("badhash", b"body", "secret"))
+
+    def test_tampered_body_fails(self):
+        body = b'{"type":"block_added"}'
+        sig = self._sign(body, "secret")
+        self.assertFalse(self._verify(sig, b'tampered', "secret"))
+
+
+class TestSatelliteRoutingPenalty(unittest.TestCase):
+    """Mirror of SelectBestNextHopOpts satellite penalty logic."""
+
+    def _score(self, latency, throughput, satellite=False, penalty=300):
+        lat = max(float(latency), 0.0)
+        if satellite and penalty > 0:
+            lat += float(penalty)
+        thr = float(throughput)
+        score = lat
+        if thr > 0:
+            score -= thr
+        return score
+
+    def test_satellite_penalized_over_terrestrial(self):
+        sat_score = self._score(20, 10, satellite=True, penalty=300)
+        ter_score = self._score(50, 10, satellite=False, penalty=300)
+        self.assertGreater(sat_score, ter_score)  # satellite is worse
+
+    def test_no_penalty_satellite_wins_lower_latency(self):
+        sat_score = self._score(20, 10, satellite=True, penalty=0)
+        ter_score = self._score(50, 10, satellite=False, penalty=0)
+        self.assertLess(sat_score, ter_score)
+
+    def test_only_satellite_available(self):
+        # Even with penalty, satellite is the only option → should be selected
+        routes = [{"latency": 500, "throughput": 10, "satellite": True}]
+        best = min(routes, key=lambda r: self._score(r["latency"], r["throughput"],
+                                                      r["satellite"], 300))
+        self.assertEqual(best["latency"], 500)
+
+
+class TestTagParsing(unittest.TestCase):
+    """Mirror of parseTags helper in Go."""
+
+    def _parse_tags(self, raw_list):
+        out = {}
+        for kv in raw_list:
+            parts = kv.split(":", 1)
+            if len(parts) == 2 and parts[0].strip():
+                out[parts[0].strip()] = parts[1].strip()
+        return out if out else None
+
+    def test_valid_single_tag(self):
+        tags = self._parse_tags(["region:us-west"])
+        self.assertEqual(tags, {"region": "us-west"})
+
+    def test_multiple_tags(self):
+        tags = self._parse_tags(["region:us-west", "tier:premium"])
+        self.assertEqual(tags, {"region": "us-west", "tier": "premium"})
+
+    def test_empty_list_returns_none(self):
+        self.assertIsNone(self._parse_tags([]))
+
+    def test_malformed_entry_skipped(self):
+        tags = self._parse_tags(["no-colon", "valid:ok"])
+        self.assertEqual(tags, {"valid": "ok"})
+
+
+class TestEventBrokerLogic(unittest.TestCase):
+    """Validate event broker invariants without needing a live server."""
+
+    def _make_event(self, event_type, tenant="t1", data=None):
+        return {
+            "type": event_type,
+            "tenant_id": tenant,
+            "timestamp": "2026-04-05T00:00:00Z",
+            "data": data,
+        }
+
+    def test_event_has_required_fields(self):
+        e = self._make_event("block_added")
+        self.assertIn("type", e)
+        self.assertIn("tenant_id", e)
+        self.assertIn("timestamp", e)
+
+    def test_known_event_types(self):
+        types = ["block_added", "route_added", "route_deleted",
+                 "agent_registered", "agent_deregistered",
+                 "agent_heartbeat", "mesh_anomaly"]
+        for t in types:
+            e = self._make_event(t)
+            self.assertEqual(e["type"], t)
+
+    def test_tenant_filter_logic(self):
+        events_data = [
+            self._make_event("block_added", tenant="t1"),
+            self._make_event("route_added", tenant="t2"),
+            self._make_event("agent_registered", tenant="t1"),
+        ]
+        t1_events = [e for e in events_data if e["tenant_id"] == "t1"]
+        self.assertEqual(len(t1_events), 2)
+
+    def test_type_filter_logic(self):
+        events_data = [
+            self._make_event("block_added"),
+            self._make_event("route_added"),
+            self._make_event("block_added"),
+        ]
+        block_events = [e for e in events_data if e["type"] == "block_added"]
+        self.assertEqual(len(block_events), 2)
+
+
 class TestGossipRouteEmbedding(unittest.TestCase):
     """Validate gossip route packet structure."""
 

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -21,10 +22,12 @@ import (
 	"github.com/gdev6145/Spectral_cloud/pkg/agent"
 	"github.com/gdev6145/Spectral_cloud/pkg/auth"
 	"github.com/gdev6145/Spectral_cloud/pkg/blockchain"
+	"github.com/gdev6145/Spectral_cloud/pkg/events"
 	"github.com/gdev6145/Spectral_cloud/pkg/mesh"
 	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
 	"github.com/gdev6145/Spectral_cloud/pkg/routing"
 	"github.com/gdev6145/Spectral_cloud/pkg/store"
+	"github.com/gdev6145/Spectral_cloud/pkg/webhook"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/time/rate"
@@ -268,6 +271,16 @@ func main() {
 	)
 	prometheus.MustRegister(meshAnomaly)
 
+	requestDuration := prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "spectral_cloud_request_duration_seconds",
+			Help:    "HTTP request latency distribution.",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"path", "method"},
+	)
+	prometheus.MustRegister(requestDuration)
+
 	authKey := strings.TrimSpace(os.Getenv("API_KEY"))
 	adminKey := strings.TrimSpace(os.Getenv("ADMIN_API_KEY"))
 	adminWriteKey := strings.TrimSpace(os.Getenv("ADMIN_WRITE_KEY"))
@@ -414,6 +427,21 @@ func main() {
 		}
 	}()
 
+	eventBroker := events.NewBroker()
+
+	webhookURL := strings.TrimSpace(os.Getenv("WEBHOOK_URL"))
+	webhookSecret := strings.TrimSpace(os.Getenv("WEBHOOK_SECRET"))
+	webhookTimeout := strings.TrimSpace(os.Getenv("WEBHOOK_TIMEOUT"))
+	var webhookDur time.Duration
+	if webhookTimeout != "" {
+		if d, err := time.ParseDuration(webhookTimeout); err == nil {
+			webhookDur = d
+		}
+	}
+	hookDispatcher := webhook.New(webhookURL, webhookSecret, webhookDur)
+
+	blockSigningKey := strings.TrimSpace(os.Getenv("BLOCK_SIGNING_KEY"))
+
 	corsCfg := parseCORSConfig(
 		strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS")),
 		strings.TrimSpace(os.Getenv("CORS_ALLOWED_METHODS")),
@@ -422,7 +450,7 @@ func main() {
 	)
 	enableAccessLog := getEnvBool("ACCESS_LOG", false)
 
-	handler := newHandler(tenantMgr, db, maxBodyBytes, requestsTotal, meshPackets, meshRejectRate, meshAnomaly, auth, rateRPS, rateBurst, tenantRateRPS, tenantRateBurst, limits, status, meshNode, anomalyState, agentReg, corsCfg, enableAccessLog)
+	handler := newHandler(tenantMgr, db, maxBodyBytes, requestsTotal, meshPackets, meshRejectRate, meshAnomaly, requestDuration, auth, rateRPS, rateBurst, tenantRateRPS, tenantRateBurst, limits, status, meshNode, anomalyState, agentReg, corsCfg, enableAccessLog, eventBroker, hookDispatcher, blockSigningKey)
 
 	srv := &http.Server{
 		Addr:              ":" + port,
@@ -483,7 +511,7 @@ func main() {
 	}
 }
 
-func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, requestsTotal *prometheus.CounterVec, meshPackets *prometheus.CounterVec, meshRejectRate prometheus.Gauge, meshAnomaly *prometheus.GaugeVec, auth authConfig, rateRPS float64, rateBurst int, tenantRateRPS float64, tenantRateBurst int, limits tenantLimits, status *statusTracker, meshNode *mesh.Node, anomalyState *meshAnomalyState, agentReg *agent.Registry, corsCfg corsConfig, enableAccessLog bool) http.Handler {
+func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, requestsTotal *prometheus.CounterVec, meshPackets *prometheus.CounterVec, meshRejectRate prometheus.Gauge, meshAnomaly *prometheus.GaugeVec, requestDuration *prometheus.HistogramVec, auth authConfig, rateRPS float64, rateBurst int, tenantRateRPS float64, tenantRateBurst int, limits tenantLimits, status *statusTracker, meshNode *mesh.Node, anomalyState *meshAnomalyState, agentReg *agent.Registry, corsCfg corsConfig, enableAccessLog bool, eventBroker *events.Broker, hookDispatcher *webhook.Dispatcher, blockSigningKey string) http.Handler {
 	mux := http.NewServeMux()
 	getState := func(r *http.Request) (*tenantState, string, error) {
 		tenant, ok := tenantFromContext(r.Context())
@@ -658,10 +686,24 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		state.chain.AddBlock(txs)
+		block := state.chain.AddSignedBlock(txs, blockSigningKey)
 		if err := db.SaveChainTenant(tenant, state.chain); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to persist blockchain")
 			return
+		}
+		if eventBroker != nil {
+			eventBroker.Publish(events.Event{
+				Type:     events.EventBlockAdded,
+				TenantID: tenant,
+				Data:     block,
+			})
+		}
+		if hookDispatcher != nil {
+			hookDispatcher.Dispatch(r.Context(), events.Event{
+				Type:     events.EventBlockAdded,
+				TenantID: tenant,
+				Data:     block,
+			})
 		}
 		w.WriteHeader(http.StatusCreated)
 	})
@@ -796,16 +838,29 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			if ttlSeconds > 0 {
 				ttl = time.Duration(ttlSeconds) * time.Second
 			}
-			if err := state.router.AddRouteWithTTL(dest, routing.RouteMetric{
+			satellite := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("satellite"))) == "true"
+			tags := parseTags(r.URL.Query()["tag"])
+			if err := state.router.AddRouteWithOptions(dest, routing.RouteMetric{
 				Latency:    lat,
 				Throughput: thr,
-			}, ttl); err != nil {
+			}, routing.RouteOptions{
+				TTL:       ttl,
+				Satellite: satellite,
+				Tags:      tags,
+			}); err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
 			if err := db.SaveRoutesTenant(tenant, state.router); err != nil {
 				writeError(w, http.StatusInternalServerError, "failed to persist routes")
 				return
+			}
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{
+					Type:     events.EventRouteAdded,
+					TenantID: tenant,
+					Data:     map[string]any{"destination": dest, "satellite": satellite},
+				})
 			}
 			w.WriteHeader(http.StatusCreated)
 		case http.MethodDelete:
@@ -822,10 +877,22 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				writeError(w, http.StatusInternalServerError, "failed to persist routes")
 				return
 			}
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{
+					Type:     events.EventRouteDeleted,
+					TenantID: tenant,
+					Data:     map[string]string{"destination": dest},
+				})
+			}
 			w.WriteHeader(http.StatusNoContent)
 		case http.MethodGet:
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(state.router.ListRoutes())
+			tagFilter := parseTags(r.URL.Query()["tag"])
+			if len(tagFilter) > 0 {
+				_ = json.NewEncoder(w).Encode(state.router.FilterByTags(tagFilter))
+			} else {
+				_ = json.NewEncoder(w).Encode(state.router.ListRoutes())
+			}
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -911,7 +978,13 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 		switch r.Method {
 		case http.MethodGet:
-			agents := agentReg.List(tenant)
+			capability := strings.TrimSpace(r.URL.Query().Get("capability"))
+			var agents []agent.Agent
+			if capability != "" {
+				agents = agentReg.ListByCapability(tenant, capability)
+			} else {
+				agents = agentReg.List(tenant)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(agents)
 		case http.MethodDelete:
@@ -959,6 +1032,20 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			return
 		}
 		a, _ := agentReg.Get(tenant, req.ID)
+		if eventBroker != nil {
+			eventBroker.Publish(events.Event{
+				Type:     events.EventAgentRegistered,
+				TenantID: tenant,
+				Data:     a,
+			})
+		}
+		if hookDispatcher != nil {
+			hookDispatcher.Dispatch(r.Context(), events.Event{
+				Type:     events.EventAgentRegistered,
+				TenantID: tenant,
+				Data:     a,
+			})
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(a)
@@ -990,6 +1077,105 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	// GET /blockchain/{index} — fetch a single block by index.
+	// Registered as a subtree pattern ("/blockchain/") so it catches paths
+	// not matched by the more-specific "/blockchain/add", "/blockchain/height".
+	mux.HandleFunc("/blockchain/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		// Strip prefix and parse the index segment.
+		suffix := strings.TrimPrefix(r.URL.Path, "/blockchain/")
+		suffix = strings.TrimSuffix(suffix, "/")
+		if suffix == "" {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		idx, err := strconv.Atoi(suffix)
+		if err != nil || idx < 0 {
+			writeError(w, http.StatusBadRequest, "invalid block index")
+			return
+		}
+		state, _, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		block, ok := state.chain.GetBlock(idx)
+		if !ok {
+			writeError(w, http.StatusNotFound, "block not found")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(block)
+	})
+
+	// GET /events — Server-Sent Events stream for real-time event fan-out.
+	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if eventBroker == nil {
+			writeError(w, http.StatusServiceUnavailable, "event broker unavailable")
+			return
+		}
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			writeError(w, http.StatusInternalServerError, "streaming not supported")
+			return
+		}
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		typeFilter := strings.TrimSpace(r.URL.Query().Get("type"))
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+
+		subID := r.Header.Get("X-Request-ID")
+		if subID == "" {
+			subID = "sse-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+		}
+
+		ch := eventBroker.Subscribe(subID, 64)
+		defer eventBroker.Unsubscribe(subID)
+
+		// Send a connected confirmation event.
+		_, _ = io.WriteString(w, "event: connected\ndata: {\"subscriber_id\":\""+subID+"\"}\n\n")
+		flusher.Flush()
+
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case ev, open := <-ch:
+				if !open {
+					return
+				}
+				// Filter by tenant (skip if tenant set and event is for a different one).
+				if strings.TrimSpace(tenant) != "" && ev.TenantID != "" && ev.TenantID != tenant {
+					continue
+				}
+				// Filter by event type if requested.
+				if typeFilter != "" && string(ev.Type) != typeFilter {
+					continue
+				}
+				data, err := json.Marshal(ev)
+				if err != nil {
+					continue
+				}
+				_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, data)
+				flusher.Flush()
+			}
+		}
+	})
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1012,6 +1198,7 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 	handler = withTenantRateLimit(handler, tenantLimiter, auth.defaultTenant)
 	handler = withRateLimit(handler, limiter)
 	handler = withMetrics(handler, requestsTotal)
+	handler = withDuration(handler, requestDuration)
 	handler = withCORS(handler, corsCfg)
 	if enableAccessLog {
 		handler = withLogger(handler)
@@ -1245,6 +1432,25 @@ func parsePeerKeys(raw string) (map[string]string, error) {
 		out[peer] = key
 	}
 	return out, nil
+}
+
+// parseTags converts a slice of "key:value" strings into a map.
+// Entries that are not in "key:value" format are silently skipped.
+func parseTags(raw []string) map[string]string {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for _, kv := range raw {
+		parts := strings.SplitN(kv, ":", 2)
+		if len(parts) == 2 && strings.TrimSpace(parts[0]) != "" {
+			out[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func validateTransactions(txs []blockchain.Transaction) error {

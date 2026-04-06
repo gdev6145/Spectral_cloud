@@ -72,6 +72,58 @@ func TestBlockRange(t *testing.T) {
 	}
 }
 
+func TestBlockSignature(t *testing.T) {
+	bc := NewBlockchain()
+	b := bc.AddBlock([]Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+
+	// Unsigned block — VerifySignature should return false.
+	if VerifySignature(b, "secret") {
+		t.Fatal("unsigned block should not verify")
+	}
+
+	sig := SignBlock(b, "secret")
+	if sig == "" {
+		t.Fatal("expected non-empty signature")
+	}
+	if b.Signature != sig {
+		t.Fatal("block.Signature should match returned sig")
+	}
+	if !VerifySignature(b, "secret") {
+		t.Fatal("expected valid signature to verify")
+	}
+	if VerifySignature(b, "wrong-key") {
+		t.Fatal("expected signature to fail with wrong key")
+	}
+}
+
+func TestSignBlockNilSafe(t *testing.T) {
+	if got := SignBlock(nil, "key"); got != "" {
+		t.Fatalf("expected empty string for nil block, got %q", got)
+	}
+	if VerifySignature(nil, "key") {
+		t.Fatal("expected false for nil block")
+	}
+}
+
+func TestAddSignedBlock(t *testing.T) {
+	bc := NewBlockchain()
+	b := bc.AddSignedBlock([]Transaction{{Sender: "x", Recipient: "y", Amount: 5}}, "signing-key")
+	if b.Signature == "" {
+		t.Fatal("expected non-empty signature from AddSignedBlock")
+	}
+	if !VerifySignature(b, "signing-key") {
+		t.Fatal("expected signed block to verify")
+	}
+}
+
+func TestAddSignedBlockNoKey(t *testing.T) {
+	bc := NewBlockchain()
+	b := bc.AddSignedBlock([]Transaction{{Sender: "x", Recipient: "y", Amount: 1}}, "")
+	if b.Signature != "" {
+		t.Fatal("expected no signature when no key provided")
+	}
+}
+
 func TestVerify(t *testing.T) {
 	bc := NewBlockchain()
 	b := bc.AddBlock([]Transaction{{Sender: "a", Recipient: "b", Amount: 5}})

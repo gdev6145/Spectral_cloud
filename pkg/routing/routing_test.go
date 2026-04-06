@@ -42,6 +42,75 @@ func TestRoutingValidation(t *testing.T) {
 	}
 }
 
+func TestSatellitePenalty(t *testing.T) {
+	re := NewRoutingEngine()
+	_ = re.AddRouteWithOptions("terrestrial", RouteMetric{Latency: 50, Throughput: 10}, RouteOptions{})
+	_ = re.AddRouteWithOptions("satellite", RouteMetric{Latency: 20, Throughput: 10}, RouteOptions{Satellite: true})
+
+	// Without penalty satellite wins (lower latency).
+	best0, _ := re.SelectBestNextHopOpts(0)
+	if best0.Destination != "satellite" {
+		t.Fatalf("without penalty expected satellite, got %s", best0.Destination)
+	}
+	// With penalty of 300 satellite costs 320, terrestrial costs 40 → terrestrial wins.
+	bestP, _ := re.SelectBestNextHopOpts(300)
+	if bestP.Destination != "terrestrial" {
+		t.Fatalf("with penalty expected terrestrial, got %s", bestP.Destination)
+	}
+}
+
+func TestFilterByTags(t *testing.T) {
+	re := NewRoutingEngine()
+	_ = re.AddRouteWithOptions("us-west", RouteMetric{Latency: 10}, RouteOptions{
+		Tags: map[string]string{"region": "us-west", "tier": "premium"},
+	})
+	_ = re.AddRouteWithOptions("eu-central", RouteMetric{Latency: 20}, RouteOptions{
+		Tags: map[string]string{"region": "eu-central", "tier": "standard"},
+	})
+	_ = re.AddRoute("untagged", RouteMetric{Latency: 5, Throughput: 100})
+
+	west := re.FilterByTags(map[string]string{"region": "us-west"})
+	if len(west) != 1 || west[0].Destination != "us-west" {
+		t.Fatalf("expected 1 us-west route, got %+v", west)
+	}
+
+	premium := re.FilterByTags(map[string]string{"tier": "premium"})
+	if len(premium) != 1 {
+		t.Fatalf("expected 1 premium route, got %d", len(premium))
+	}
+
+	none := re.FilterByTags(map[string]string{"region": "ap-southeast"})
+	if len(none) != 0 {
+		t.Fatalf("expected 0 routes, got %d", len(none))
+	}
+
+	all := re.FilterByTags(map[string]string{})
+	if len(all) != 3 {
+		t.Fatalf("expected all 3 routes for empty filter, got %d", len(all))
+	}
+}
+
+func TestAddRouteWithOptions(t *testing.T) {
+	re := NewRoutingEngine()
+	err := re.AddRouteWithOptions("node-opts", RouteMetric{Latency: 10, Throughput: 100}, RouteOptions{
+		Satellite: true,
+		Tags:      map[string]string{"region": "us-west"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r, err := re.GetRoute("node-opts")
+	if err != nil {
+		t.Fatalf("route not found: %v", err)
+	}
+	if !r.Satellite {
+		t.Fatal("expected satellite flag to be set")
+	}
+	if r.Tags["region"] != "us-west" {
+		t.Fatalf("expected region=us-west, got %q", r.Tags["region"])
+	}
+}
+
 func TestDeleteRoute(t *testing.T) {
 	re := NewRoutingEngine()
 	_ = re.AddRoute("node-1", RouteMetric{Latency: 10, Throughput: 100})

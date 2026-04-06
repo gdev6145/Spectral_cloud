@@ -28,6 +28,9 @@ type Agent struct {
 	Addr         string            `json:"addr,omitempty"`
 	Status       Status            `json:"status"`
 	Tags         map[string]string `json:"tags,omitempty"`
+	// Capabilities is a free-form list of strings describing what this agent
+	// can do (e.g. "inference", "storage", "relay"). Used for discovery.
+	Capabilities []string          `json:"capabilities,omitempty"`
 	RegisteredAt time.Time         `json:"registered_at"`
 	LastSeen     time.Time         `json:"last_seen"`
 	ExpiresAt    *time.Time        `json:"expires_at,omitempty"`
@@ -35,11 +38,12 @@ type Agent struct {
 
 // RegisterRequest carries the fields a caller may set when registering.
 type RegisterRequest struct {
-	ID       string            `json:"id"`
-	TenantID string            `json:"tenant_id"`
-	Addr     string            `json:"addr,omitempty"`
-	Status   Status            `json:"status,omitempty"`
-	Tags     map[string]string `json:"tags,omitempty"`
+	ID           string            `json:"id"`
+	TenantID     string            `json:"tenant_id"`
+	Addr         string            `json:"addr,omitempty"`
+	Status       Status            `json:"status,omitempty"`
+	Tags         map[string]string `json:"tags,omitempty"`
+	Capabilities []string          `json:"capabilities,omitempty"`
 	// TTLSeconds, if > 0, sets an expiry on the registration.
 	TTLSeconds int `json:"ttl_seconds,omitempty"`
 }
@@ -93,12 +97,18 @@ func (r *Registry) Register(req RegisterRequest) error {
 		tags = map[string]string{}
 	}
 
+	caps := req.Capabilities
+	if caps == nil {
+		caps = []string{}
+	}
+
 	r.agents[key] = &Agent{
 		ID:           req.ID,
 		TenantID:     req.TenantID,
 		Addr:         req.Addr,
 		Status:       status,
 		Tags:         tags,
+		Capabilities: caps,
 		RegisteredAt: registeredAt,
 		LastSeen:     now,
 		ExpiresAt:    expiresAt,
@@ -198,6 +208,25 @@ func (r *Registry) List(tenantID string) []Agent {
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].RegisteredAt.Before(out[j].RegisteredAt)
 	})
+	return out
+}
+
+// ListByCapability returns all live agents for a tenant that declare the given
+// capability. Pass "" for tenantID to search all tenants.
+func (r *Registry) ListByCapability(tenantID, capability string) []Agent {
+	all := r.List(tenantID)
+	if capability == "" {
+		return all
+	}
+	out := make([]Agent, 0)
+	for _, a := range all {
+		for _, c := range a.Capabilities {
+			if c == capability {
+				out = append(out, a)
+				break
+			}
+		}
+	}
 	return out
 }
 

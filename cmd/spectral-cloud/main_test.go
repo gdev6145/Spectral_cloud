@@ -27,9 +27,10 @@ func makeHandler(db *store.Store, counter *prometheus.CounterVec, auth authConfi
 	meshCounter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_mesh_packets_total_h", Help: "test"}, []string{"outcome"})
 	meshReject := prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_mesh_reject_rate_h", Help: "test"})
 	meshAnom := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_mesh_anomaly_h", Help: "test"}, []string{"type"})
+	durHist := prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "test_request_duration_h", Help: "test"}, []string{"path", "method"})
 	anomalyState := &meshAnomalyState{}
 	agentReg := agent.NewRegistry()
-	return newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, auth, 100, 200, 0, 0, tenantLimits{}, status, meshNode, anomalyState, agentReg, corsConfig{}, false)
+	return newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist, auth, 100, 200, 0, 0, tenantLimits{}, status, meshNode, anomalyState, agentReg, corsConfig{}, false, nil, nil, "")
 }
 
 func TestHealthEndpoint(t *testing.T) {
