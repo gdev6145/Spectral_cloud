@@ -59,6 +59,15 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+func (s *Store) Ping() error {
+	if s == nil || s.db == nil {
+		return errors.New("store not initialized")
+	}
+	return s.db.View(func(tx *bolt.Tx) error {
+		return nil
+	})
+}
+
 func (s *Store) init() error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		meta, err := tx.CreateBucketIfNotExists([]byte(bucketMeta))

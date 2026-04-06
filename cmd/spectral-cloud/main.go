@@ -326,7 +326,7 @@ func main() {
 		log.Printf("invalid ADMIN_ALLOWLIST_CIDRS: %v", err)
 	}
 
-	publicRules := parsePathRules(os.Getenv("PUBLIC_PATHS"), []string{"/health"})
+	publicRules := parsePathRules(os.Getenv("PUBLIC_PATHS"), []string{"/health", "/ready"})
 	adminRules := parsePathRules(os.Getenv("ADMIN_PATHS"), []string{"/admin/status"})
 
 	auth := authConfig{
@@ -542,6 +542,22 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			},
 			"stats":   stats,
 			"anomaly": anomaly,
+		})
+	})
+
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if err := db.Ping(); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "not ready")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":    "ready",
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
 		})
 	})
 

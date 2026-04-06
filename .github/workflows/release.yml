@@ -31,6 +31,12 @@ jobs:
             GOOS=$GOOS GOARCH=$GOARCH go build -o "dist/spectralctl-${GOOS}-${GOARCH}${ext}" ./cmd/spectralctl
           done
           (cd dist && sha256sum * > checksums.txt)
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0.17.2
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/sbom.spdx.json
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:

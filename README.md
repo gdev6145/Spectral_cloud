@@ -23,6 +23,7 @@ Quick links:
 **Core Endpoints**
 - `GET /` -> basic banner
 - `GET /health` -> JSON health
+- `GET /ready` -> readiness (DB + server ready)
 - `GET /metrics` -> Prometheus metrics
 - `POST /blockchain/add` -> add block (JSON array of transactions)
 - `GET /routes` -> list routes

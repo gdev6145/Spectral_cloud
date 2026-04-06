@@ -60,6 +60,38 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
+func TestReadyEndpoint(t *testing.T) {
+	chain := blockchain.NewBlockchain()
+	router := routing.NewRoutingEngine()
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_ready", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(chain, router, db, counter, authConfig{}, nil, nil)
+
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/ready")
+	if err != nil {
+		t.Fatalf("ready request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if body["status"] != "ready" {
+		t.Fatalf("expected status ready, got %v", body["status"])
+	}
+}
+
 func TestBlockchainAddEndpoint(t *testing.T) {
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_2", Help: "test"}, []string{"path", "method", "code"})
 	tmp := t.TempDir()

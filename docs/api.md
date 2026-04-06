@@ -21,6 +21,14 @@ Example response:
 {"status":"ok","timestamp":"2026-04-04T12:34:56Z","blocks":0,"routes":0}
 ```
 
+`GET /ready`
+Returns readiness status (DB + server readiness).
+
+Example response:
+```json
+{"status":"ready","timestamp":"2026-04-04T12:34:56Z"}
+```
+
 `GET /metrics`
 Prometheus metrics endpoint.
 
