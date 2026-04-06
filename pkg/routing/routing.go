@@ -4,6 +4,7 @@ package routing
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -144,15 +145,39 @@ func (re *RoutingEngine) Load(routes []Route) {
 	re.Routes = out
 }
 
-// SelectBestNextHop implements an algorithm to select the best next hop.
+// SelectBestNextHop selects the route with the lowest cost based on latency
+// and throughput. Lower latency and higher throughput both reduce the score.
+// Expired routes are skipped. Returns an error if no valid route exists.
 func (re *RoutingEngine) SelectBestNextHop() (Route, error) {
 	re.mu.RLock()
 	defer re.mu.RUnlock()
-	if len(re.Routes) == 0 {
+	now := time.Now().UTC()
+	var best *Route
+	bestScore := float64(1<<62)
+	for i := range re.Routes {
+		r := &re.Routes[i]
+		if r.ExpiresAt != nil && now.After(*r.ExpiresAt) {
+			continue
+		}
+		latency := float64(r.Metric.Latency)
+		if latency < 0 {
+			latency = 0
+		}
+		throughput := float64(r.Metric.Throughput)
+		// Score = latency cost minus throughput benefit. Lower is better.
+		score := latency
+		if throughput > 0 {
+			score -= throughput
+		}
+		if best == nil || score < bestScore {
+			best = r
+			bestScore = score
+		}
+	}
+	if best == nil {
 		return Route{}, errors.New("no routes available")
 	}
-	// Simplified for example purposes
-	return re.Routes[0], nil
+	return *best, nil
 }
 
 // RemoveExpiredRoutes cleans up expired routes.
@@ -177,12 +202,22 @@ func (re *RoutingEngine) pruneExpiredLocked() {
 	re.Routes = filtered
 }
 
-// PrintRoutes prints all routes for debugging.
+// PrintRoutes prints all routes to stdout for debugging.
 func (re *RoutingEngine) PrintRoutes() {
 	re.mu.RLock()
 	defer re.mu.RUnlock()
+	now := time.Now().UTC()
 	for _, route := range re.Routes {
-		// Placeholder to avoid unused variable; real logging can be added later.
-		_ = route
+		expired := ""
+		if route.ExpiresAt != nil && now.After(*route.ExpiresAt) {
+			expired = " [EXPIRED]"
+		}
+		fmt.Printf("route dst=%s latency=%dms throughput=%dMbps added=%s%s\n",
+			route.Destination,
+			route.Metric.Latency,
+			route.Metric.Throughput,
+			route.AddedAt.UTC().Format(time.RFC3339),
+			expired,
+		)
 	}
 }
