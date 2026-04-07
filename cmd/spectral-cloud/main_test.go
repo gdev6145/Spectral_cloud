@@ -61,8 +61,6 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestReadyEndpoint(t *testing.T) {
-	chain := blockchain.NewBlockchain()
-	router := routing.NewRoutingEngine()
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_ready", Help: "test"}, []string{"path", "method", "code"})
 	tmp := t.TempDir()
 	db, err := store.Open(store.DBPath(tmp))
@@ -70,7 +68,7 @@ func TestReadyEndpoint(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	handler := makeHandler(chain, router, db, counter, authConfig{}, nil, nil)
+	handler := makeHandler(db, counter, authConfig{}, nil, nil)
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
