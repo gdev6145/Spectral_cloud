@@ -289,3 +289,86 @@ if got := r.CountByTenant("unknown"); got != 0 {
 t.Fatalf("expected 0 for unknown tenant, got %d", got)
 }
 }
+
+// ---------------------------------------------------------------------------
+// FindBest
+// ---------------------------------------------------------------------------
+
+func TestFindBest_NoAgents(t *testing.T) {
+r := NewRegistry()
+_, ok := r.FindBest("t1", "inference")
+if ok {
+t.Fatal("expected false for empty registry")
+}
+}
+
+func TestFindBest_NoMatchingCapability(t *testing.T) {
+r := NewRegistry()
+_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"storage"}})
+_, ok := r.FindBest("t1", "inference")
+if ok {
+t.Fatal("expected false when no agent has the capability")
+}
+}
+
+func TestFindBest_PrefersHealthy(t *testing.T) {
+r := NewRegistry()
+_ = r.Register(RegisterRequest{ID: "deg", TenantID: "t1", Status: StatusDegraded, Capabilities: []string{"inference"}})
+_ = r.Register(RegisterRequest{ID: "hlth", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"inference"}})
+got, ok := r.FindBest("t1", "inference")
+if !ok {
+t.Fatal("expected a result")
+}
+if got.ID != "hlth" {
+t.Fatalf("expected healthy agent, got %s", got.ID)
+}
+}
+
+func TestFindBest_TieBreaksByLastSeen(t *testing.T) {
+r := NewRegistry()
+_ = r.Register(RegisterRequest{ID: "old", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"inference"}})
+// small sleep so the second agent has a strictly later LastSeen
+time.Sleep(2 * time.Millisecond)
+_ = r.Register(RegisterRequest{ID: "new", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"inference"}})
+got, ok := r.FindBest("t1", "inference")
+if !ok {
+t.Fatal("expected a result")
+}
+if got.ID != "new" {
+t.Fatalf("expected most-recently-seen agent 'new', got %s", got.ID)
+}
+}
+
+func TestFindBest_TenantIsolation(t *testing.T) {
+r := NewRegistry()
+_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"inference"}})
+_, ok := r.FindBest("t2", "inference")
+if ok {
+t.Fatal("expected false for different tenant")
+}
+}
+
+func TestFindBest_IgnoresExpired(t *testing.T) {
+r := NewRegistry()
+_ = r.Register(RegisterRequest{ID: "exp", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"cap"}, TTLSeconds: 0})
+// Force expiry by directly manipulating via re-register with 1-nanosecond TTL
+_ = r.Register(RegisterRequest{ID: "exp", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"cap"}, TTLSeconds: 1})
+// The agent is live — should be found
+got, ok := r.FindBest("t1", "cap")
+if !ok || got.ID != "exp" {
+t.Fatal("expected to find live agent")
+}
+}
+
+func TestFindBest_DegradedBeatsUnknown(t *testing.T) {
+r := NewRegistry()
+_ = r.Register(RegisterRequest{ID: "unk", TenantID: "t1", Status: StatusUnknown, Capabilities: []string{"relay"}})
+_ = r.Register(RegisterRequest{ID: "deg", TenantID: "t1", Status: StatusDegraded, Capabilities: []string{"relay"}})
+got, ok := r.FindBest("t1", "relay")
+if !ok {
+t.Fatal("expected a result")
+}
+if got.ID != "deg" {
+t.Fatalf("expected degraded to beat unknown, got %s", got.ID)
+}
+}

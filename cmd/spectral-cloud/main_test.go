@@ -1366,6 +1366,17 @@ func TestJobsEndpoints(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
+	// Pre-register an agent with the "inference" capability so auto-dispatch works.
+	regBody := `{"id":"agent-1","addr":"127.0.0.1:9000","status":"healthy","capabilities":["inference"]}`
+	regResp, err := http.Post(srv.URL+"/agents/register", "application/json", bytes.NewBufferString(regBody))
+	if err != nil {
+		t.Fatalf("register agent: %v", err)
+	}
+	_ = regResp.Body.Close()
+	if regResp.StatusCode != 201 {
+		t.Fatalf("expected 201 from register, got %d", regResp.StatusCode)
+	}
+
 	// Submit a job.
 	jobBody := `{"capability":"inference","payload":{"prompt":"test"}}`
 	resp, err := http.Post(srv.URL+"/agents/jobs", "application/json", bytes.NewBufferString(jobBody))
@@ -1418,6 +1429,143 @@ func TestJobsEndpoints(t *testing.T) {
 	_ = json.NewDecoder(resp3.Body).Decode(&updated)
 	if updated.Status != "done" || updated.Result != "42" {
 		t.Errorf("unexpected update: %+v", updated)
+	}
+}
+
+func TestJobsClaimAndCancel(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_claim_req_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	tenantMgr := newTenantManager(db)
+	_, _ = tenantMgr.getTenant("default")
+	meshCounter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_claim_mesh_total", Help: "test"}, []string{"outcome"})
+	meshReject := prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_claim_mesh_reject", Help: "test"})
+	meshAnom := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_claim_mesh_anom", Help: "test"}, []string{"type"})
+	durHist := prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "test_claim_dur", Help: "test"}, []string{"path", "method"})
+	agentReg := agent.NewRegistry()
+	broker := events.NewBroker()
+	jq := jobs.NewQueue()
+	handler := newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist,
+		authConfig{defaultTenant: "default"}, 100, 200, 0, 0, tenantLimits{}, nil, nil, &meshAnomalyState{},
+		agentReg, corsConfig{}, false, broker, nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq))
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// Register an agent.
+	regBody := `{"id":"worker-1","addr":"10.0.0.1:9000","status":"healthy","capabilities":["ocr"]}`
+	rr, _ := http.Post(srv.URL+"/agents/register", "application/json", bytes.NewBufferString(regBody))
+	_ = rr.Body.Close()
+
+	// Submit a job — auto-dispatched to worker-1.
+	jResp, _ := http.Post(srv.URL+"/agents/jobs", "application/json",
+		bytes.NewBufferString(`{"capability":"ocr","payload":{"file":"doc.pdf"}}`))
+	var submitted struct{ ID string `json:"id"` }
+	_ = json.NewDecoder(jResp.Body).Decode(&submitted)
+	_ = jResp.Body.Close()
+	if submitted.ID == "" {
+		t.Fatal("expected job ID from auto-dispatch")
+	}
+
+	// Submit a second job for cancel test.
+	jResp2, _ := http.Post(srv.URL+"/agents/jobs", "application/json",
+		bytes.NewBufferString(`{"capability":"ocr"}`))
+	var submitted2 struct{ ID string `json:"id"` }
+	_ = json.NewDecoder(jResp2.Body).Decode(&submitted2)
+	_ = jResp2.Body.Close()
+
+	// Agent claims the oldest pending job.
+	claimResp, err := http.Get(srv.URL + "/agents/jobs/claim?agent_id=worker-1")
+	if err != nil {
+		t.Fatalf("claim GET: %v", err)
+	}
+	defer claimResp.Body.Close()
+	if claimResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from claim, got %d", claimResp.StatusCode)
+	}
+	var claimed struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	_ = json.NewDecoder(claimResp.Body).Decode(&claimed)
+	if claimed.Status != "running" {
+		t.Fatalf("expected running after claim, got %s", claimed.Status)
+	}
+
+	// No more matching pending jobs for worker-1 (second job not yet submitted to same agent).
+	// Cancel the second job.
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/agents/jobs/"+submitted2.ID, nil)
+	delResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE /agents/jobs: %v", err)
+	}
+	_ = delResp.Body.Close()
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 from cancel, got %d", delResp.StatusCode)
+	}
+
+	// Cancelling again (already cancelled) should return 404.
+	req2, _ := http.NewRequest(http.MethodDelete, srv.URL+"/agents/jobs/"+submitted2.ID, nil)
+	del2, _ := http.DefaultClient.Do(req2)
+	_ = del2.Body.Close()
+	if del2.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 on double-cancel, got %d", del2.StatusCode)
+	}
+}
+
+func TestJobsClaim_NoPendingJobs(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_noclaim_req_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	t.Cleanup(func() { _ = db.Close() })
+	tenantMgr := newTenantManager(db)
+	_, _ = tenantMgr.getTenant("default")
+	meshCounter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_noclaim_mesh_total", Help: "test"}, []string{"outcome"})
+	meshReject := prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_noclaim_mesh_reject", Help: "test"})
+	meshAnom := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_noclaim_mesh_anom", Help: "test"}, []string{"type"})
+	durHist := prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "test_noclaim_dur", Help: "test"}, []string{"path", "method"})
+	jq := jobs.NewQueue()
+	handler := newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist,
+		authConfig{defaultTenant: "default"}, 100, 200, 0, 0, tenantLimits{}, nil, nil, &meshAnomalyState{},
+		agent.NewRegistry(), corsConfig{}, false, events.NewBroker(), nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq))
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	resp, _ := http.Get(srv.URL + "/agents/jobs/claim?agent_id=nobody")
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 when no jobs, got %d", resp.StatusCode)
+	}
+}
+
+func TestJobsAutoDispatch_NoAgent(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_nodispatch_req_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	t.Cleanup(func() { _ = db.Close() })
+	tenantMgr := newTenantManager(db)
+	_, _ = tenantMgr.getTenant("default")
+	meshCounter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_nodispatch_mesh_total", Help: "test"}, []string{"outcome"})
+	meshReject := prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_nodispatch_mesh_reject", Help: "test"})
+	meshAnom := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_nodispatch_mesh_anom", Help: "test"}, []string{"type"})
+	durHist := prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "test_nodispatch_dur", Help: "test"}, []string{"path", "method"})
+	jq := jobs.NewQueue()
+	handler := newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist,
+		authConfig{defaultTenant: "default"}, 100, 200, 0, 0, tenantLimits{}, nil, nil, &meshAnomalyState{},
+		agent.NewRegistry(), corsConfig{}, false, events.NewBroker(), nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq))
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// No agents registered — capability-only submit should fail with 503.
+	resp, _ := http.Post(srv.URL+"/agents/jobs", "application/json",
+		bytes.NewBufferString(`{"capability":"gpu-inference"}`))
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when no agent available, got %d", resp.StatusCode)
 	}
 }
 

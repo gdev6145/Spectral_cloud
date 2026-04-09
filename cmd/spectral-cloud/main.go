@@ -1721,6 +1721,16 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				writeError(w, http.StatusBadRequest, "agent_id or capability is required")
 				return
 			}
+			// Auto-dispatch: if only a capability was given, assign to the best
+			// available healthy agent that advertises that capability.
+			if req.AgentID == "" && req.Capability != "" {
+				best, ok := agentReg.FindBest(tenant, req.Capability)
+				if !ok {
+					writeError(w, http.StatusServiceUnavailable, "no healthy agent available for capability: "+req.Capability)
+					return
+				}
+				req.AgentID = best.ID
+			}
 			j := jobQueue.Submit(tenant, req.AgentID, req.Capability, req.Payload)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
@@ -1730,41 +1740,83 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 	})
 
-	// PATCH /agents/jobs/{id} — update a job's status.
+	// /agents/jobs/claim   — GET: agent claims its next pending job
+	// /agents/jobs/{id}   — PATCH: update status   DELETE: cancel
 	mux.HandleFunc("/agents/jobs/", func(w http.ResponseWriter, r *http.Request) {
 		if jobQueue == nil {
 			writeError(w, http.StatusServiceUnavailable, "job queue unavailable")
 			return
 		}
-		if r.Method != http.MethodPatch {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
 			return
 		}
-		id := strings.TrimPrefix(r.URL.Path, "/agents/jobs/")
+		_ = tenant // used for future per-tenant claim scoping
+
+		path := strings.TrimPrefix(r.URL.Path, "/agents/jobs/")
+
+		// GET /agents/jobs/claim?agent_id=X&capability=Y
+		if path == "claim" {
+			if r.Method != http.MethodGet {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			agentID := strings.TrimSpace(r.URL.Query().Get("agent_id"))
+			capability := strings.TrimSpace(r.URL.Query().Get("capability"))
+			if agentID == "" && capability == "" {
+				writeError(w, http.StatusBadRequest, "agent_id or capability is required")
+				return
+			}
+			j, ok := jobQueue.Claim(agentID, capability)
+			if !ok {
+				writeError(w, http.StatusNoContent, "no pending job available")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(j)
+			return
+		}
+
+		id := path
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "job id is required")
 			return
 		}
-		var req struct {
-			Status jobs.Status `json:"status"`
-			Result string      `json:"result,omitempty"`
-			Error  string      `json:"error,omitempty"`
+
+		switch r.Method {
+		case http.MethodPatch:
+			var req struct {
+				Status jobs.Status `json:"status"`
+				Result string      `json:"result,omitempty"`
+				Error  string      `json:"error,omitempty"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+			if req.Status == "" {
+				writeError(w, http.StatusBadRequest, "status is required")
+				return
+			}
+			if !jobQueue.Update(id, req.Status, req.Result, req.Error) {
+				writeError(w, http.StatusNotFound, "job not found")
+				return
+			}
+			j, _ := jobQueue.Get(id)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(j)
+
+		case http.MethodDelete:
+			if !jobQueue.Cancel(id) {
+				writeError(w, http.StatusNotFound, "job not found or already in terminal state")
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid request body")
-			return
-		}
-		if req.Status == "" {
-			writeError(w, http.StatusBadRequest, "status is required")
-			return
-		}
-		if !jobQueue.Update(id, req.Status, req.Result, req.Error) {
-			writeError(w, http.StatusNotFound, "job not found")
-			return
-		}
-		j, _ := jobQueue.Get(id)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(j)
 	})
 
 	// GET /audit?tenant=X&limit=N — query the audit log.

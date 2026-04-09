@@ -111,3 +111,143 @@ func TestPruneKeepsPending(t *testing.T) {
 		t.Errorf("expected 1 job after prune, got %d", q.Count())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Cancel
+// ---------------------------------------------------------------------------
+
+func TestCancel_Pending(t *testing.T) {
+q := NewQueue()
+j := q.Submit("t", "a", "cap", nil)
+if !q.Cancel(j.ID) {
+t.Fatal("expected Cancel to return true for pending job")
+}
+got, _ := q.Get(j.ID)
+if got.Status != StatusCancelled {
+t.Fatalf("expected cancelled, got %s", got.Status)
+}
+}
+
+func TestCancel_Running(t *testing.T) {
+q := NewQueue()
+j := q.Submit("t", "a", "cap", nil)
+q.Update(j.ID, StatusRunning, "", "")
+if !q.Cancel(j.ID) {
+t.Fatal("expected Cancel to return true for running job")
+}
+got, _ := q.Get(j.ID)
+if got.Status != StatusCancelled {
+t.Fatalf("expected cancelled, got %s", got.Status)
+}
+}
+
+func TestCancel_AlreadyDone(t *testing.T) {
+q := NewQueue()
+j := q.Submit("t", "a", "cap", nil)
+q.Update(j.ID, StatusDone, "ok", "")
+if q.Cancel(j.ID) {
+t.Fatal("expected Cancel to return false for terminal job")
+}
+}
+
+func TestCancel_AlreadyCancelled(t *testing.T) {
+q := NewQueue()
+j := q.Submit("t", "a", "cap", nil)
+q.Cancel(j.ID)
+if q.Cancel(j.ID) {
+t.Fatal("expected false on double-cancel")
+}
+}
+
+func TestCancel_Missing(t *testing.T) {
+q := NewQueue()
+if q.Cancel("nonexistent") {
+t.Fatal("expected false for missing job")
+}
+}
+
+// ---------------------------------------------------------------------------
+// Claim
+// ---------------------------------------------------------------------------
+
+func TestClaim_ByAgentID(t *testing.T) {
+q := NewQueue()
+j := q.Submit("t", "agent-1", "cap", nil)
+got, ok := q.Claim("agent-1", "")
+if !ok {
+t.Fatal("expected claim to succeed")
+}
+if got.ID != j.ID {
+t.Fatalf("expected job %s, got %s", j.ID, got.ID)
+}
+if got.Status != StatusRunning {
+t.Fatalf("expected running, got %s", got.Status)
+}
+}
+
+func TestClaim_ByCapability(t *testing.T) {
+q := NewQueue()
+j := q.Submit("t", "", "inference", nil)
+got, ok := q.Claim("", "inference")
+if !ok {
+t.Fatal("expected claim to succeed")
+}
+if got.ID != j.ID {
+t.Fatalf("expected job %s, got %s", j.ID, got.ID)
+}
+if got.Status != StatusRunning {
+t.Fatalf("expected running, got %s", got.Status)
+}
+}
+
+func TestClaim_OldestFirst(t *testing.T) {
+q := NewQueue()
+j1 := q.Submit("t", "agent-x", "cap", nil)
+time.Sleep(2 * time.Millisecond)
+_ = q.Submit("t", "agent-x", "cap", nil)
+got, ok := q.Claim("agent-x", "")
+if !ok {
+t.Fatal("expected claim to succeed")
+}
+if got.ID != j1.ID {
+t.Fatalf("expected oldest job %s first, got %s", j1.ID, got.ID)
+}
+}
+
+func TestClaim_NoPendingJobs(t *testing.T) {
+q := NewQueue()
+_, ok := q.Claim("agent-z", "")
+if ok {
+t.Fatal("expected false when no pending jobs")
+}
+}
+
+func TestClaim_SkipsRunning(t *testing.T) {
+q := NewQueue()
+j := q.Submit("t", "agent-1", "cap", nil)
+q.Update(j.ID, StatusRunning, "", "")
+_, ok := q.Claim("agent-1", "")
+if ok {
+t.Fatal("expected false — running job should not be claimable")
+}
+}
+
+func TestClaim_SkipsCancelled(t *testing.T) {
+q := NewQueue()
+j := q.Submit("t", "agent-1", "cap", nil)
+q.Cancel(j.ID)
+_, ok := q.Claim("agent-1", "")
+if ok {
+t.Fatal("expected false — cancelled job should not be claimable")
+}
+}
+
+func TestPrune_IncludesCancelled(t *testing.T) {
+q := NewQueue()
+j := q.Submit("t", "a", "c", nil)
+q.Cancel(j.ID)
+n := q.Prune(time.Nanosecond)
+if n != 1 {
+t.Fatalf("expected 1 pruned (cancelled), got %d", n)
+}
+}

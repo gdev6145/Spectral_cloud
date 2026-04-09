@@ -12,10 +12,11 @@ import (
 type Status string
 
 const (
-	StatusPending Status = "pending"
-	StatusRunning Status = "running"
-	StatusDone    Status = "done"
-	StatusFailed  Status = "failed"
+	StatusPending   Status = "pending"
+	StatusRunning   Status = "running"
+	StatusDone      Status = "done"
+	StatusFailed    Status = "failed"
+	StatusCancelled Status = "cancelled"
 )
 
 // Job represents a unit of work dispatched to an agent.
@@ -116,14 +117,69 @@ func (q *Queue) Count() int {
 	return len(q.jobs)
 }
 
-// Prune removes completed/failed jobs older than maxAge. Returns count removed.
+// Cancel transitions a pending or running job to cancelled.
+// Returns false if the job is not found or is already in a terminal state.
+func (q *Queue) Cancel(id string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	j, ok := q.jobs[id]
+	if !ok {
+		return false
+	}
+	if j.Status == StatusDone || j.Status == StatusFailed || j.Status == StatusCancelled {
+		return false
+	}
+	j.Status = StatusCancelled
+	j.UpdatedAt = time.Now().UTC()
+	return true
+}
+
+// Claim atomically finds the oldest pending job matching agentID or capability
+// and transitions it to running, assigning it to the claimant. agentID takes
+// priority: if provided, only jobs assigned to that agent are considered.
+// Otherwise, jobs whose Capability matches are eligible (including unassigned
+// jobs with a matching capability).  Returns (Job, true) on success.
+func (q *Queue) Claim(agentID, capability string) (Job, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	var best *Job
+	for _, j := range q.jobs {
+		if j.Status != StatusPending {
+			continue
+		}
+		var match bool
+		if agentID != "" {
+			match = j.AgentID == agentID
+		} else if capability != "" {
+			match = j.Capability == capability
+		}
+		if !match {
+			continue
+		}
+		if best == nil || j.CreatedAt.Before(best.CreatedAt) {
+			best = j
+		}
+	}
+	if best == nil {
+		return Job{}, false
+	}
+	if agentID != "" {
+		best.AgentID = agentID
+	}
+	best.Status = StatusRunning
+	best.UpdatedAt = time.Now().UTC()
+	return *best, true
+}
+
+// Prune removes completed/failed/cancelled jobs older than maxAge. Returns count removed.
 func (q *Queue) Prune(maxAge time.Duration) int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	cutoff := time.Now().Add(-maxAge)
 	n := 0
 	for id, j := range q.jobs {
-		if (j.Status == StatusDone || j.Status == StatusFailed) && j.UpdatedAt.Before(cutoff) {
+		if (j.Status == StatusDone || j.Status == StatusFailed || j.Status == StatusCancelled) && j.UpdatedAt.Before(cutoff) {
 			delete(q.jobs, id)
 			n++
 		}

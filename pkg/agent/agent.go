@@ -264,6 +264,36 @@ func (r *Registry) CountByTenant(tenantID string) int {
 	return count
 }
 
+// FindBest returns the best available agent for the given capability within the
+// tenant. Healthy agents are preferred over degraded ones; within the same
+// status tier the most-recently-seen agent wins. Returns false when no live
+// agent with the requested capability exists.
+func (r *Registry) FindBest(tenantID, capability string) (Agent, bool) {
+	candidates := r.ListByCapability(tenantID, capability)
+	if len(candidates) == 0 {
+		return Agent{}, false
+	}
+	// Score: healthy=2, degraded=1, unknown=0.
+	score := func(s Status) int {
+		switch s {
+		case StatusHealthy:
+			return 2
+		case StatusDegraded:
+			return 1
+		default:
+			return 0
+		}
+	}
+	best := candidates[0]
+	for _, a := range candidates[1:] {
+		as, bs := score(a.Status), score(best.Status)
+		if as > bs || (as == bs && a.LastSeen.After(best.LastSeen)) {
+			best = a
+		}
+	}
+	return best, true
+}
+
 // Count returns the number of live agents across all tenants.
 func (r *Registry) Count() int {
 	r.mu.RLock()
