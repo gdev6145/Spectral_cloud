@@ -183,3 +183,22 @@ func TestDispatch_SignatureMatchesBody(t *testing.T) {
 		t.Fatal("timed out")
 	}
 }
+
+func TestDispatch_HTTP4xxLogged(t *testing.T) {
+// 4xx responses should not panic; they log a warning
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.WriteHeader(http.StatusBadRequest) // 400
+}))
+defer srv.Close()
+
+d := New(srv.URL, "", 5*time.Second)
+d.Dispatch(context.Background(), events.Event{Type: "test.4xx"})
+time.Sleep(200 * time.Millisecond) // let goroutine complete
+}
+
+func TestDispatch_ServerDown(t *testing.T) {
+// Should not panic when server is unreachable
+d := New("http://127.0.0.1:19999", "", 500*time.Millisecond)
+d.Dispatch(context.Background(), events.Event{Type: "test.down"})
+time.Sleep(600 * time.Millisecond)
+}

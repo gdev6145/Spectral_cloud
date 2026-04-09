@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/base64"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -487,4 +488,344 @@ t.Fatalf("backup: %v", err)
 	if len(blocks) != 2 {
 		t.Fatalf("expected 2 blocks after rotate, got %d", len(blocks))
 	}
+}
+
+func TestVerify_Valid(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "spectral.db")
+s, err := Open(dbPath)
+if err != nil {
+t.Fatal(err)
+}
+s.Close()
+if err := Verify(dbPath); err != nil {
+t.Fatalf("expected valid db, got: %v", err)
+}
+}
+
+func TestVerify_Missing(t *testing.T) {
+if err := Verify("/nonexistent/path.db"); err == nil {
+t.Fatal("expected error for nonexistent file")
+}
+}
+
+func TestRestoreEncrypted_RoundTrip(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "spectral.db")
+s, err := Open(dbPath)
+if err != nil {
+t.Fatal(err)
+}
+s.Close()
+
+key := make([]byte, 32)
+for i := range key {
+key[i] = byte(i + 7)
+}
+keyB64 := base64.StdEncoding.EncodeToString(key)
+
+backupPath := filepath.Join(dir, "backup.enc")
+if err := BackupEncrypted(dbPath, backupPath, keyB64); err != nil {
+t.Fatalf("BackupEncrypted: %v", err)
+}
+
+restoreDir := t.TempDir()
+restorePath := filepath.Join(restoreDir, "restored.db")
+if err := RestoreEncrypted(restorePath, backupPath, keyB64); err != nil {
+t.Fatalf("RestoreEncrypted: %v", err)
+}
+if err := Verify(restorePath); err != nil {
+t.Fatalf("restored db invalid: %v", err)
+}
+}
+
+func TestRestoreEncrypted_BadKey(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "spectral.db")
+s, err := Open(dbPath)
+if err != nil {
+t.Fatal(err)
+}
+s.Close()
+
+key := make([]byte, 32)
+keyB64 := base64.StdEncoding.EncodeToString(key)
+backupPath := filepath.Join(dir, "backup.enc")
+if err := BackupEncrypted(dbPath, backupPath, keyB64); err != nil {
+t.Fatal(err)
+}
+
+badKey := make([]byte, 32)
+for i := range badKey {
+badKey[i] = 0xFF
+}
+badKeyB64 := base64.StdEncoding.EncodeToString(badKey)
+if err := RestoreEncrypted(filepath.Join(dir, "out.db"), backupPath, badKeyB64); err == nil {
+t.Fatal("expected error with wrong key")
+}
+}
+
+func TestVerifyEncrypted(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "spectral.db")
+s, err := Open(dbPath)
+if err != nil {
+t.Fatal(err)
+}
+s.Close()
+
+key := make([]byte, 32)
+for i := range key {
+key[i] = byte(i + 3)
+}
+keyB64 := base64.StdEncoding.EncodeToString(key)
+backupPath := filepath.Join(dir, "backup.enc")
+if err := BackupEncrypted(dbPath, backupPath, keyB64); err != nil {
+t.Fatal(err)
+}
+if err := VerifyEncrypted(backupPath, keyB64); err != nil {
+t.Fatalf("VerifyEncrypted: %v", err)
+}
+}
+
+func TestCompactInPlace_Basic(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "spectral.db")
+s, err := Open(dbPath)
+if err != nil {
+t.Fatal(err)
+}
+s.Close()
+
+if err := CompactInPlace(dbPath); err != nil {
+t.Fatalf("CompactInPlace: %v", err)
+}
+// After compact, db should still be valid
+if err := Verify(dbPath); err != nil {
+t.Fatalf("db invalid after compact: %v", err)
+}
+}
+
+func TestCompactInPlace_Nonexistent(t *testing.T) {
+// Should be a no-op for missing files
+if err := CompactInPlace("/nonexistent/path.db"); err != nil {
+t.Fatalf("expected nil for nonexistent, got: %v", err)
+}
+}
+
+func TestRestore_RoundTrip(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "spectral.db")
+s, err := Open(dbPath)
+if err != nil {
+t.Fatal(err)
+}
+s.Close()
+
+backupPath := filepath.Join(dir, "backup.db")
+if err := Backup(dbPath, backupPath); err != nil {
+t.Fatalf("Backup: %v", err)
+}
+
+restorePath := filepath.Join(dir, "restored.db")
+if err := Restore(restorePath, backupPath); err != nil {
+t.Fatalf("Restore: %v", err)
+}
+if err := Verify(restorePath); err != nil {
+t.Fatalf("restored db invalid: %v", err)
+}
+}
+
+func TestRestore_InvalidBackup(t *testing.T) {
+dir := t.TempDir()
+// Write garbage file
+badPath := filepath.Join(dir, "bad.db")
+if err := os.WriteFile(badPath, []byte("not a bolt db"), 0o600); err != nil {
+t.Fatal(err)
+}
+if err := Restore(filepath.Join(dir, "out.db"), badPath); err == nil {
+t.Fatal("expected error for corrupt backup")
+}
+}
+
+func TestHasData_WithTenantData(t *testing.T) {
+s := openTestStore(t)
+defer s.Close()
+
+has, err := s.HasData()
+if err != nil {
+t.Fatal(err)
+}
+if has {
+t.Fatal("expected no data in fresh store")
+}
+
+if err := s.EnsureTenant("acme"); err != nil {
+t.Fatal(err)
+}
+chain := blockchain.NewBlockchain()
+chain.AddBlock([]blockchain.Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+if err := s.WriteBlocksTenant("acme", chain.Snapshot()); err != nil {
+t.Fatal(err)
+}
+
+has, err = s.HasData()
+if err != nil {
+t.Fatal(err)
+}
+if !has {
+t.Fatal("expected HasData=true after writing blocks")
+}
+}
+
+func TestReadWriteBlocksTenant_Extra(t *testing.T) {
+s := openTestStore(t)
+defer s.Close()
+if err := s.EnsureTenant("acme"); err != nil {
+t.Fatal(err)
+}
+chain := blockchain.NewBlockchain()
+chain.AddBlock([]blockchain.Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+if err := s.WriteBlocksTenant("acme", chain.Snapshot()); err != nil {
+t.Fatal(err)
+}
+blocks, err := s.ReadBlocksTenant("acme")
+if err != nil {
+t.Fatal(err)
+}
+if len(blocks) != 2 {
+t.Fatalf("expected 2 blocks, got %d", len(blocks))
+}
+}
+
+func TestReadWriteRoutesTenant_Extra(t *testing.T) {
+s := openTestStore(t)
+defer s.Close()
+if err := s.EnsureTenant("acme"); err != nil {
+t.Fatal(err)
+}
+router := routing.NewRoutingEngine()
+router.AddRoute("1.2.3.4:9000", routing.RouteMetric{Latency: 10, Throughput: 100})
+if err := s.WriteRoutesTenant("acme", router.ListRoutes()); err != nil {
+t.Fatal(err)
+}
+routes, err := s.ReadRoutesTenant("acme")
+if err != nil {
+t.Fatal(err)
+}
+if len(routes) != 1 {
+t.Fatalf("expected 1 route, got %d", len(routes))
+}
+}
+
+func TestSaveChainTenant_Extra(t *testing.T) {
+s := openTestStore(t)
+defer s.Close()
+if err := s.EnsureTenant("acme"); err != nil {
+t.Fatal(err)
+}
+chain := blockchain.NewBlockchain()
+chain.AddBlock([]blockchain.Transaction{{Sender: "a", Recipient: "b", Amount: 2}})
+if err := s.SaveChainTenant("acme", chain); err != nil {
+t.Fatal(err)
+}
+blocks, err := s.ReadBlocksTenant("acme")
+if err != nil {
+t.Fatal(err)
+}
+if len(blocks) != 2 {
+t.Fatalf("expected 2 blocks, got %d", len(blocks))
+}
+}
+
+func TestSaveRoutesTenant_Extra(t *testing.T) {
+s := openTestStore(t)
+defer s.Close()
+if err := s.EnsureTenant("acme"); err != nil {
+t.Fatal(err)
+}
+router := routing.NewRoutingEngine()
+router.AddRoute("5.6.7.8:9000", routing.RouteMetric{Latency: 5, Throughput: 50})
+if err := s.SaveRoutesTenant("acme", router); err != nil {
+t.Fatal(err)
+}
+routes, err := s.ReadRoutesTenant("acme")
+if err != nil {
+t.Fatal(err)
+}
+if len(routes) != 1 {
+t.Fatalf("expected 1 route, got %d", len(routes))
+}
+}
+
+func TestTenantNames_Extra(t *testing.T) {
+s := openTestStore(t)
+defer s.Close()
+for _, name := range []string{"alpha", "beta", "gamma"} {
+if err := s.EnsureTenant(name); err != nil {
+t.Fatal(err)
+}
+}
+names, err := s.TenantNames()
+if err != nil {
+t.Fatal(err)
+}
+found := make(map[string]bool)
+for _, n := range names {
+found[n] = true
+}
+for _, want := range []string{"alpha", "beta", "gamma"} {
+if !found[want] {
+t.Errorf("expected tenant %s in list", want)
+}
+}
+}
+
+func TestDeleteTenant_Extra(t *testing.T) {
+s := openTestStore(t)
+defer s.Close()
+if err := s.EnsureTenant("todelete"); err != nil {
+t.Fatal(err)
+}
+if err := s.DeleteTenant("todelete"); err != nil {
+t.Fatalf("DeleteTenant: %v", err)
+}
+names, _ := s.TenantNames()
+for _, n := range names {
+if n == "todelete" {
+t.Fatal("tenant should have been deleted")
+}
+}
+}
+
+func TestDeleteTenant_DefaultExtra(t *testing.T) {
+s := openTestStore(t)
+defer s.Close()
+if err := s.DeleteTenant("default"); err == nil {
+t.Fatal("expected error deleting default tenant")
+}
+}
+
+func TestLoadTenant_Extra(t *testing.T) {
+s := openTestStore(t)
+defer s.Close()
+if err := s.EnsureTenant("acme"); err != nil {
+t.Fatal(err)
+}
+chain := blockchain.NewBlockchain()
+chain.AddBlock([]blockchain.Transaction{{Sender: "a", Recipient: "b", Amount: 3}})
+if err := s.WriteBlocksTenant("acme", chain.Snapshot()); err != nil {
+t.Fatal(err)
+}
+router := routing.NewRoutingEngine()
+router.AddRoute("9.9.9.9:9000", routing.RouteMetric{Latency: 1, Throughput: 200})
+if err := s.WriteRoutesTenant("acme", router.ListRoutes()); err != nil {
+t.Fatal(err)
+}
+
+chain2 := blockchain.NewBlockchain()
+router2 := routing.NewRoutingEngine()
+if err := s.LoadTenant("acme", chain2, router2); err != nil {
+t.Fatalf("LoadTenant: %v", err)
+}
 }

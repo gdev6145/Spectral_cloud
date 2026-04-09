@@ -1909,3 +1909,293 @@ func TestSchedulerEndpoints(t *testing.T) {
 		t.Fatalf("DELETE expected 204, got %d", dr.StatusCode)
 	}
 }
+
+func TestBlockchainHeightEndpoint(t *testing.T) {
+counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_bc_height_total", Help: "test"}, []string{"path", "method", "code"})
+tmp := t.TempDir()
+db, _ := store.Open(store.DBPath(tmp))
+defer db.Close()
+handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+srv := httptest.NewServer(handler)
+t.Cleanup(srv.Close)
+
+resp, _ := http.Get(srv.URL + "/blockchain/height")
+defer resp.Body.Close()
+if resp.StatusCode != http.StatusOK {
+t.Fatalf("expected 200, got %d", resp.StatusCode)
+}
+var result map[string]int
+json.NewDecoder(resp.Body).Decode(&result)
+if _, ok := result["height"]; !ok {
+t.Fatal("expected 'height' field in response")
+}
+}
+
+func TestRoutesStatsEndpoint(t *testing.T) {
+counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_rt_stats_total", Help: "test"}, []string{"path", "method", "code"})
+tmp := t.TempDir()
+db, _ := store.Open(store.DBPath(tmp))
+defer db.Close()
+handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+srv := httptest.NewServer(handler)
+t.Cleanup(srv.Close)
+
+resp, _ := http.Get(srv.URL + "/routes/stats")
+defer resp.Body.Close()
+if resp.StatusCode != http.StatusOK {
+t.Fatalf("expected 200, got %d", resp.StatusCode)
+}
+var result map[string]any
+json.NewDecoder(resp.Body).Decode(&result)
+if _, ok := result["total"]; !ok {
+t.Fatal("expected 'total' in routes/stats")
+}
+}
+
+func TestAgentsStatsEndpoint(t *testing.T) {
+counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_ag_stats_total", Help: "test"}, []string{"path", "method", "code"})
+tmp := t.TempDir()
+db, _ := store.Open(store.DBPath(tmp))
+defer db.Close()
+handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+srv := httptest.NewServer(handler)
+t.Cleanup(srv.Close)
+
+resp, _ := http.Get(srv.URL + "/agents/stats")
+defer resp.Body.Close()
+if resp.StatusCode != http.StatusOK {
+t.Fatalf("expected 200, got %d", resp.StatusCode)
+}
+var result map[string]any
+json.NewDecoder(resp.Body).Decode(&result)
+if _, ok := result["total"]; !ok {
+t.Fatal("expected 'total' in agents/stats")
+}
+}
+
+func TestBlockchainStatsEndpoint(t *testing.T) {
+counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_bc_stats_total", Help: "test"}, []string{"path", "method", "code"})
+tmp := t.TempDir()
+db, _ := store.Open(store.DBPath(tmp))
+defer db.Close()
+handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+srv := httptest.NewServer(handler)
+t.Cleanup(srv.Close)
+
+resp, _ := http.Get(srv.URL + "/blockchain/stats")
+defer resp.Body.Close()
+if resp.StatusCode != http.StatusOK {
+t.Fatalf("expected 200, got %d", resp.StatusCode)
+}
+var result map[string]any
+json.NewDecoder(resp.Body).Decode(&result)
+if _, ok := result["height"]; !ok {
+t.Fatal("expected 'height' in blockchain/stats")
+}
+}
+
+func TestSystemInfoEndpoint(t *testing.T) {
+counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_sysinfo_total", Help: "test"}, []string{"path", "method", "code"})
+tmp := t.TempDir()
+db, _ := store.Open(store.DBPath(tmp))
+defer db.Close()
+handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+srv := httptest.NewServer(handler)
+t.Cleanup(srv.Close)
+
+resp, _ := http.Get(srv.URL + "/system/info")
+defer resp.Body.Close()
+if resp.StatusCode != http.StatusOK {
+t.Fatalf("expected 200, got %d", resp.StatusCode)
+}
+var result map[string]any
+json.NewDecoder(resp.Body).Decode(&result)
+if _, ok := result["version"]; !ok {
+t.Fatal("expected 'version' in system/info")
+}
+if _, ok := result["goroutines"]; !ok {
+t.Fatal("expected 'goroutines' in system/info")
+}
+}
+
+func TestAgentsHealthEndpoint(t *testing.T) {
+counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_ag_health_total", Help: "test"}, []string{"path", "method", "code"})
+tmp := t.TempDir()
+db, _ := store.Open(store.DBPath(tmp))
+defer db.Close()
+handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+srv := httptest.NewServer(handler)
+t.Cleanup(srv.Close)
+
+resp, _ := http.Get(srv.URL + "/agents/health")
+defer resp.Body.Close()
+if resp.StatusCode != http.StatusOK {
+t.Fatalf("expected 200, got %d", resp.StatusCode)
+}
+var result map[string]any
+json.NewDecoder(resp.Body).Decode(&result)
+if _, ok := result["status"]; !ok {
+t.Fatal("expected 'status' in agents/health")
+}
+}
+
+func TestMetricsTimeseriesEndpoint(t *testing.T) {
+counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_mts_total", Help: "test"}, []string{"path", "method", "code"})
+tmp := t.TempDir()
+db, _ := store.Open(store.DBPath(tmp))
+defer db.Close()
+handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+srv := httptest.NewServer(handler)
+t.Cleanup(srv.Close)
+
+resp, _ := http.Get(srv.URL + "/metrics/timeseries?n=5")
+defer resp.Body.Close()
+if resp.StatusCode != http.StatusOK {
+t.Fatalf("expected 200, got %d", resp.StatusCode)
+}
+}
+
+func TestRoutesFilterEndpoint(t *testing.T) {
+counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_rfilt_total", Help: "test"}, []string{"path", "method", "code"})
+tmp := t.TempDir()
+db, _ := store.Open(store.DBPath(tmp))
+defer db.Close()
+handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+srv := httptest.NewServer(handler)
+t.Cleanup(srv.Close)
+
+// First add a route
+body := `{"destination":"10.0.0.1:9000","metric":{"latency":10,"throughput":100}}`
+pr, _ := http.Post(srv.URL+"/routes", "application/json", bytes.NewBufferString(body))
+defer pr.Body.Close()
+
+// Filter with max_latency
+resp, _ := http.Get(srv.URL + "/routes/filter?max_latency=50")
+defer resp.Body.Close()
+if resp.StatusCode != http.StatusOK {
+t.Fatalf("expected 200, got %d", resp.StatusCode)
+}
+var result map[string]any
+json.NewDecoder(resp.Body).Decode(&result)
+if _, ok := result["routes"]; !ok {
+t.Fatal("expected 'routes' key")
+}
+}
+
+func TestAdminBackupList_NilStatus(t *testing.T) {
+counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_bkup_list_total", Help: "test"}, []string{"path", "method", "code"})
+tmp := t.TempDir()
+db, _ := store.Open(store.DBPath(tmp))
+defer db.Close()
+handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+srv := httptest.NewServer(handler)
+t.Cleanup(srv.Close)
+
+resp, _ := http.Get(srv.URL + "/admin/backup/list")
+defer resp.Body.Close()
+if resp.StatusCode != http.StatusOK {
+t.Fatalf("expected 200 with nil status, got %d", resp.StatusCode)
+}
+var result map[string]any
+json.NewDecoder(resp.Body).Decode(&result)
+if result["backups"] == nil {
+t.Fatal("expected 'backups' key")
+}
+}
+
+func TestAdminBackup_NilStatus(t *testing.T) {
+counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_bkup_nil_total", Help: "test"}, []string{"path", "method", "code"})
+tmp := t.TempDir()
+db, _ := store.Open(store.DBPath(tmp))
+defer db.Close()
+handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+srv := httptest.NewServer(handler)
+t.Cleanup(srv.Close)
+
+resp, _ := http.Post(srv.URL+"/admin/backup", "application/json", nil)
+defer resp.Body.Close()
+if resp.StatusCode != http.StatusServiceUnavailable {
+t.Fatalf("expected 503 with nil status, got %d", resp.StatusCode)
+}
+}
+
+func TestAdminCompact_NilStatus(t *testing.T) {
+counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_cmp_nil_total", Help: "test"}, []string{"path", "method", "code"})
+tmp := t.TempDir()
+db, _ := store.Open(store.DBPath(tmp))
+defer db.Close()
+handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+srv := httptest.NewServer(handler)
+t.Cleanup(srv.Close)
+
+resp, _ := http.Post(srv.URL+"/admin/compact", "application/json", nil)
+defer resp.Body.Close()
+if resp.StatusCode != http.StatusServiceUnavailable {
+t.Fatalf("expected 503 with nil status, got %d", resp.StatusCode)
+}
+}
+
+func TestAdminMeshEndpoint(t *testing.T) {
+counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_mesh_ep_total", Help: "test"}, []string{"path", "method", "code"})
+tmp := t.TempDir()
+db, _ := store.Open(store.DBPath(tmp))
+defer db.Close()
+handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+srv := httptest.NewServer(handler)
+t.Cleanup(srv.Close)
+
+resp, _ := http.Get(srv.URL + "/admin/mesh")
+defer resp.Body.Close()
+if resp.StatusCode != http.StatusOK {
+t.Fatalf("expected 200, got %d", resp.StatusCode)
+}
+}
+
+func TestBlockchainHeightMethodNotAllowed(t *testing.T) {
+counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_bc_ht_405_total", Help: "test"}, []string{"path", "method", "code"})
+tmp := t.TempDir()
+db, _ := store.Open(store.DBPath(tmp))
+defer db.Close()
+handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+srv := httptest.NewServer(handler)
+t.Cleanup(srv.Close)
+
+resp, _ := http.Post(srv.URL+"/blockchain/height", "application/json", nil)
+defer resp.Body.Close()
+if resp.StatusCode != http.StatusMethodNotAllowed {
+t.Fatalf("expected 405, got %d", resp.StatusCode)
+}
+}
+
+func TestJobsSubmitWithPriority(t *testing.T) {
+counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_jobs_prio_total", Help: "test"}, []string{"path", "method", "code"})
+tmp := t.TempDir()
+db, _ := store.Open(store.DBPath(tmp))
+defer db.Close()
+handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+srv := httptest.NewServer(handler)
+t.Cleanup(srv.Close)
+
+// Register agent first
+regBody := `{"id":"prio-agent","tenant_id":"default","capabilities":["compute"],"status":"healthy"}`
+rr, _ := http.Post(srv.URL+"/agents/register", "application/json", bytes.NewBufferString(regBody))
+io.ReadAll(rr.Body)
+rr.Body.Close()
+
+// Submit with priority
+body := `{"agent_id":"prio-agent","capability":"compute","priority":5,"ttl_seconds":3600}`
+resp, _ := http.Post(srv.URL+"/agents/jobs", "application/json", bytes.NewBufferString(body))
+defer resp.Body.Close()
+if resp.StatusCode != http.StatusCreated {
+bodyBytes, _ := io.ReadAll(resp.Body)
+t.Fatalf("expected 201, got %d: %s", resp.StatusCode, string(bodyBytes))
+}
+var job map[string]any
+json.NewDecoder(resp.Body).Decode(&job)
+if job["id"] == nil {
+t.Fatal("expected id field in response")
+}
+if job["expires_at"] == nil {
+t.Fatal("expected expires_at field for ttl_seconds=3600")
+}
+}

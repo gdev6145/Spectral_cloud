@@ -108,3 +108,75 @@ func TestStartDispatch(t *testing.T) {
 		t.Fatal("webhook not dispatched via broker")
 	}
 }
+
+func TestFireWebhook_WithHMAC(t *testing.T) {
+sigCh := make(chan string, 1)
+ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+sigCh <- r.Header.Get("X-Spectral-Signature")
+w.WriteHeader(http.StatusOK)
+}))
+defer ts.Close()
+
+m := New()
+r := m.Add("hmac-test", ts.URL, "my-secret", []string{"test.event"})
+ev := events.Event{Type: "test.event", TenantID: "t1", Timestamp: time.Now().UTC()}
+m.fire(r, ev)
+
+select {
+case sig := <-sigCh:
+if len(sig) == 0 {
+t.Fatal("expected HMAC signature header")
+}
+if sig[:7] != "sha256=" {
+t.Fatalf("expected sha256= prefix, got %q", sig)
+}
+case <-time.After(2 * time.Second):
+t.Fatal("webhook not received")
+}
+}
+
+func TestFireWebhook_BadURL(t *testing.T) {
+m := New()
+r := m.Add("bad-url", "http://invalid-host-that-does-not-exist.xyz", "", nil)
+ev := events.Event{Type: "test", TenantID: "t", Timestamp: time.Now().UTC()}
+// Should not panic — error is silently discarded
+m.fire(r, ev)
+time.Sleep(200 * time.Millisecond)
+}
+
+func TestDispatch_InactiveRule(t *testing.T) {
+called := false
+ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+called = true
+}))
+defer ts.Close()
+
+m := New()
+r := m.Add("inactive", ts.URL, "", []string{"test.event"})
+// Deactivate rule
+m.mu.Lock()
+m.rules[r.ID].Active = false
+m.mu.Unlock()
+
+m.dispatch(events.Event{Type: "test.event"})
+time.Sleep(100 * time.Millisecond)
+if called {
+t.Fatal("inactive rule should not fire")
+}
+}
+
+func TestStart_NilBroker(t *testing.T) {
+m := New()
+// Should return immediately without panic
+m.Start(context.Background(), nil)
+}
+
+func TestStart_ContextCancel(t *testing.T) {
+broker := events.NewBroker()
+m := New()
+ctx, cancel := context.WithCancel(context.Background())
+m.Start(ctx, broker)
+time.Sleep(10 * time.Millisecond)
+cancel() // should cause goroutine to exit cleanly
+time.Sleep(50 * time.Millisecond)
+}

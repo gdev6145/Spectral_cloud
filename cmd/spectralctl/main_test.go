@@ -12,6 +12,7 @@ import (
 
 	"github.com/gdev6145/Spectral_cloud/pkg/blockchain"
 	"github.com/gdev6145/Spectral_cloud/pkg/routing"
+	"github.com/gdev6145/Spectral_cloud/pkg/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -1047,4 +1048,515 @@ err = validateSchemaFile(f.Name(), "schemas/blockchain.schema.json")
 if err == nil {
 t.Fatal("expected error for invalid JSON file")
 }
+}
+
+// ---------------------------------------------------------------------------
+// apiHealthCmd / apiRoutesCmd / apiAgentsCmd — happy paths via httptest
+// ---------------------------------------------------------------------------
+
+func TestApiHealthCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+if r.URL.Path == "/health" {
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusOK)
+w.Write([]byte(`{"status":"ok"}`))
+}
+}))
+defer srv.Close()
+
+// Capture stdout
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+apiHealthCmd([]string{"--url", srv.URL})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+out := string(buf[:n])
+if len(out) == 0 {
+t.Fatal("expected output from apiHealthCmd")
+}
+}
+
+func TestApiRoutesCmd_JSON(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+w.Write([]byte(`[{"destination":"10.0.0.1:9000","metric":{"latency":5}}]`))
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+apiRoutesCmd([]string{"--url", srv.URL, "--json"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+out := string(buf[:n])
+if len(out) == 0 {
+t.Fatal("expected JSON output")
+}
+}
+
+func TestApiRoutesCmd_Table(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+w.Write([]byte(`[{"destination":"10.0.0.1:9000","metric":{"latency":5,"throughput":100}}]`))
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+apiRoutesCmd([]string{"--url", srv.URL})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+out := string(buf[:n])
+if len(out) == 0 {
+t.Fatal("expected table output")
+}
+}
+
+func TestApiAgentsCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+w.Write([]byte(`[{"id":"agent-1","tenant_id":"default","status":"healthy","capabilities":["inference"]}]`))
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+apiAgentsCmd([]string{"--url", srv.URL})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+out := string(buf[:n])
+if len(out) == 0 {
+t.Fatal("expected output from apiAgentsCmd")
+}
+}
+
+// ---------------------------------------------------------------------------
+// validateBlockchain / validateRoutes — JSON file paths
+// ---------------------------------------------------------------------------
+
+func TestValidateBlockchain_JSONFile(t *testing.T) {
+chain := blockchain.NewBlockchain()
+chain.AddBlock([]blockchain.Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+blocks := chain.Snapshot()
+data, _ := json.MarshalIndent(blocks, "", "  ")
+f, _ := os.CreateTemp("", "blocks-*.json")
+f.Write(data)
+f.Close()
+defer os.Remove(f.Name())
+
+issues, err := validateBlockchain(f.Name(), "/nonexistent.db")
+if err != nil {
+t.Fatalf("unexpected error: %v", err)
+}
+if len(issues) != 0 {
+t.Fatalf("expected no issues, got: %v", issues)
+}
+}
+
+func TestValidateBlockchain_NonExistent(t *testing.T) {
+issues, err := validateBlockchain("/nonexistent.json", "/nonexistent.db")
+if err != nil {
+t.Fatalf("unexpected error: %v", err)
+}
+if issues != nil {
+t.Fatal("expected nil issues for nonexistent file")
+}
+}
+
+func TestValidateRoutes_JSONFile(t *testing.T) {
+router := routing.NewRoutingEngine()
+router.AddRoute("10.0.0.1:9000", routing.RouteMetric{Latency: 5, Throughput: 100})
+routes := router.ListRoutes()
+data, _ := json.MarshalIndent(routes, "", "  ")
+f, _ := os.CreateTemp("", "routes-*.json")
+f.Write(data)
+f.Close()
+defer os.Remove(f.Name())
+
+issues, err := validateRoutes(f.Name(), "/nonexistent.db")
+if err != nil {
+t.Fatalf("unexpected error: %v", err)
+}
+_ = issues // may or may not have issues depending on schema
+}
+
+func TestValidateRoutes_NonExistent(t *testing.T) {
+issues, err := validateRoutes("/nonexistent.json", "/nonexistent.db")
+if err != nil {
+t.Fatalf("unexpected error: %v", err)
+}
+if issues != nil {
+t.Fatal("expected nil issues for nonexistent file")
+}
+}
+
+// ---------------------------------------------------------------------------
+// repairBlockchain / repairRoutes
+// ---------------------------------------------------------------------------
+
+func TestRepairBlockchain_JSONFile(t *testing.T) {
+chain := blockchain.NewBlockchain()
+chain.AddBlock([]blockchain.Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+blocks := chain.Snapshot()
+data, _ := json.MarshalIndent(blocks, "", "  ")
+f, _ := os.CreateTemp("", "blocks-*.json")
+f.Write(data)
+f.Close()
+defer os.Remove(f.Name())
+
+if err := repairBlockchain(f.Name(), "/nonexistent.db"); err != nil {
+t.Fatalf("repairBlockchain: %v", err)
+}
+}
+
+func TestRepairBlockchain_NonExistent(t *testing.T) {
+if err := repairBlockchain("/nonexistent.json", "/nonexistent.db"); err != nil {
+t.Fatalf("expected nil for nonexistent: %v", err)
+}
+}
+
+func TestRepairRoutes_JSONFile(t *testing.T) {
+router := routing.NewRoutingEngine()
+router.AddRoute("10.0.0.1:9000", routing.RouteMetric{Latency: 5, Throughput: 100})
+routes := router.ListRoutes()
+data, _ := json.MarshalIndent(routes, "", "  ")
+f, _ := os.CreateTemp("", "routes-*.json")
+f.Write(data)
+f.Close()
+defer os.Remove(f.Name())
+
+if err := repairRoutes(f.Name(), "/nonexistent.db"); err != nil {
+t.Fatalf("repairRoutes: %v", err)
+}
+}
+
+func TestRepairRoutes_NonExistent(t *testing.T) {
+if err := repairRoutes("/nonexistent.json", "/nonexistent.db"); err != nil {
+t.Fatalf("expected nil for nonexistent: %v", err)
+}
+}
+
+// ---------------------------------------------------------------------------
+// readBlocksFromDB / readRoutesFromDB via actual BoltDB
+// ---------------------------------------------------------------------------
+
+func TestReadBlocksFromDB_EmptyDB(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "spectral.db")
+db, _ := store.Open(dbPath)
+db.Close()
+
+blocks, ok, err := readBlocksFromDB(dbPath)
+if err != nil {
+t.Fatalf("unexpected error: %v", err)
+}
+if ok || blocks != nil {
+t.Fatal("expected ok=false for empty db")
+}
+}
+
+func TestReadBlocksFromDB_WithData(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "spectral.db")
+db, _ := store.Open(dbPath)
+chain := blockchain.NewBlockchain()
+chain.AddBlock([]blockchain.Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+db.WriteBlocks(chain.Snapshot())
+db.Close()
+
+blocks, ok, err := readBlocksFromDB(dbPath)
+if err != nil {
+t.Fatalf("unexpected error: %v", err)
+}
+if !ok {
+t.Fatal("expected ok=true when blocks exist")
+}
+if len(blocks) != 2 {
+t.Fatalf("expected 2 blocks, got %d", len(blocks))
+}
+}
+
+func TestReadRoutesFromDB_WithData(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "spectral.db")
+db, _ := store.Open(dbPath)
+router := routing.NewRoutingEngine()
+router.AddRoute("10.0.0.1:9000", routing.RouteMetric{Latency: 5, Throughput: 100})
+db.WriteRoutes(router.ListRoutes())
+db.Close()
+
+routes, ok, err := readRoutesFromDB(dbPath)
+if err != nil {
+t.Fatalf("unexpected error: %v", err)
+}
+if !ok {
+t.Fatal("expected ok=true when routes exist")
+}
+if len(routes) != 1 {
+t.Fatalf("expected 1 route, got %d", len(routes))
+}
+}
+
+// ---------------------------------------------------------------------------
+// writeBlocksToDB / writeRoutesToDB
+// ---------------------------------------------------------------------------
+
+func TestWriteBlocksToDB(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "spectral.db")
+chain := blockchain.NewBlockchain()
+chain.AddBlock([]blockchain.Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+if err := writeBlocksToDB(dbPath, chain.Snapshot()); err != nil {
+t.Fatalf("writeBlocksToDB: %v", err)
+}
+blocks, ok, _ := readBlocksFromDB(dbPath)
+if !ok || len(blocks) != 2 {
+t.Fatalf("expected 2 blocks after write, got ok=%v len=%d", ok, len(blocks))
+}
+}
+
+func TestWriteRoutesToDB(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "spectral.db")
+router := routing.NewRoutingEngine()
+router.AddRoute("10.0.0.1:9000", routing.RouteMetric{Latency: 5, Throughput: 100})
+if err := writeRoutesToDB(dbPath, router.ListRoutes()); err != nil {
+t.Fatalf("writeRoutesToDB: %v", err)
+}
+routes, ok, _ := readRoutesFromDB(dbPath)
+if !ok || len(routes) != 1 {
+t.Fatalf("expected 1 route after write, got ok=%v len=%d", ok, len(routes))
+}
+}
+
+// ---------------------------------------------------------------------------
+// writeJSON
+// ---------------------------------------------------------------------------
+
+func TestWriteJSON(t *testing.T) {
+dir := t.TempDir()
+path := filepath.Join(dir, "test.json")
+type payload struct {
+Name string `json:"name"`
+Val  int    `json:"val"`
+}
+if err := writeJSON(path, payload{Name: "test", Val: 42}); err != nil {
+t.Fatalf("writeJSON: %v", err)
+}
+data, _ := os.ReadFile(path)
+var got payload
+json.Unmarshal(data, &got)
+if got.Name != "test" || got.Val != 42 {
+t.Fatalf("unexpected: %+v", got)
+}
+}
+
+// ---------------------------------------------------------------------------
+// pruneExpired
+// ---------------------------------------------------------------------------
+
+func TestPruneExpired(t *testing.T) {
+past := time.Now().Add(-time.Hour)
+future := time.Now().Add(time.Hour)
+routes := []routing.Route{
+{Destination: "keep", ExpiresAt: &future},
+{Destination: "drop", ExpiresAt: &past},
+{Destination: "no-expiry"},
+}
+result := pruneExpired(routes)
+if len(result) != 2 {
+t.Fatalf("expected 2 routes after pruning, got %d", len(result))
+}
+for _, r := range result {
+if r.Destination == "drop" {
+t.Fatal("expired route should have been removed")
+}
+}
+}
+
+// ---------------------------------------------------------------------------
+// validateBlocks / filterValidBlocks
+// ---------------------------------------------------------------------------
+
+func TestValidateBlocks_ValidJSON(t *testing.T) {
+chain := blockchain.NewBlockchain()
+chain.AddBlock([]blockchain.Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+issues := validateBlocks(chain.Snapshot())
+if len(issues) != 0 {
+t.Fatalf("expected no issues, got: %v", issues)
+}
+}
+
+func TestFilterValidBlocks_AllValidExtra(t *testing.T) {
+chain := blockchain.NewBlockchain()
+chain.AddBlock([]blockchain.Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+blocks := chain.Snapshot()
+valid := filterValidBlocks(blocks)
+if len(valid) != len(blocks) {
+t.Fatalf("all blocks should be valid: got %d / %d", len(valid), len(blocks))
+}
+}
+
+// ---------------------------------------------------------------------------
+// validateSchemaDoc — schema missing → error; valid JSON → no error on non-strict
+// ---------------------------------------------------------------------------
+
+func TestValidateSchemaDoc_SchemaMissing(t *testing.T) {
+err := validateSchemaDoc(map[string]any{"x": 1}, "/nonexistent/schema.json")
+if err == nil {
+t.Fatal("expected error for missing schema file")
+}
+}
+
+// ---------------------------------------------------------------------------
+// blockchainInspectCmd — happy path via HTTP
+// ---------------------------------------------------------------------------
+
+func TestBlockchainInspectCmd_Happy(t *testing.T) {
+chain := blockchain.NewBlockchain()
+chain.AddBlock([]blockchain.Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+blocks := chain.Snapshot()
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(blocks)
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+blockchainInspectCmd([]string{"--url", srv.URL, "--index", "0"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+out := string(buf[:n])
+if len(out) == 0 {
+t.Fatal("expected output from blockchainInspectCmd")
+}
+}
+
+// ---------------------------------------------------------------------------
+// chainVerifyCmd — healthy chain
+// ---------------------------------------------------------------------------
+
+func TestChainVerifyCmd_Happy(t *testing.T) {
+chain := blockchain.NewBlockchain()
+chain.AddBlock([]blockchain.Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+blocks := chain.Snapshot()
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(blocks)
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+chainVerifyCmd([]string{"--url", srv.URL})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+out := string(buf[:n])
+if len(out) == 0 {
+t.Fatal("expected output from chainVerifyCmd")
+}
+}
+
+// ---------------------------------------------------------------------------
+// tenantListCmd — happy path via HTTP
+// ---------------------------------------------------------------------------
+
+func TestTenantListCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]any{"tenants": []string{"default", "acme"}})
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+tenantListCmd([]string{"--url", srv.URL})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+out := string(buf[:n])
+if len(out) == 0 {
+t.Fatal("expected output from tenantListCmd")
+}
+}
+
+// ---------------------------------------------------------------------------
+// auditTailCmd — happy path
+// ---------------------------------------------------------------------------
+
+func TestAuditTailCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]any{
+"entries": []map[string]any{
+{"id": 1, "tenant": "default", "method": "POST", "path": "/blockchain/add", "status": 200},
+},
+})
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+auditTailCmd([]string{"--url", srv.URL})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+out := string(buf[:n])
+if len(out) == 0 {
+t.Fatal("expected output from auditTailCmd")
+}
+}
+
+// ---------------------------------------------------------------------------
+// agentStatusCmd — happy path
+// ---------------------------------------------------------------------------
+
+func TestAgentStatusCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.WriteHeader(http.StatusNoContent)
+}))
+defer srv.Close()
+
+// Only test non-exit (success) path
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+agentStatusCmd([]string{"--url", srv.URL, "--id", "agent-1", "--status", "healthy"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+_ = string(buf[:n])
 }

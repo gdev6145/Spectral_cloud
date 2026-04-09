@@ -1793,6 +1793,8 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				AgentID    string         `json:"agent_id"`
 				Capability string         `json:"capability"`
 				Payload    map[string]any `json:"payload"`
+				Priority   int            `json:"priority"`
+				TTLSeconds int            `json:"ttl_seconds"`
 			}
 			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
 				writeError(w, http.StatusBadRequest, "invalid request body")
@@ -1812,7 +1814,10 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				}
 				req.AgentID = best.ID
 			}
-			j := jobQueue.Submit(tenant, req.AgentID, req.Capability, req.Payload)
+			j := jobQueue.SubmitWithOpts(tenant, req.AgentID, req.Capability, req.Payload, jobs.SubmitOptions{
+				Priority:   req.Priority,
+				TTLSeconds: req.TTLSeconds,
+			})
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(j)
