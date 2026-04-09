@@ -143,9 +143,37 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
       Agents
     </a>
+    <a onclick="go('jobs')" id="nav-jobs">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      Jobs
+    </a>
     <a onclick="go('events')" id="nav-events">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       Events
+    </a>
+    <a onclick="go('kv')" id="nav-kv">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="4" rx="1"/><rect x="3" y="14" width="18" height="4" rx="1"/></svg>
+      KV Store
+    </a>
+    <a onclick="go('search')" id="nav-search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+      Search
+    </a>
+    <a onclick="go('schedules')" id="nav-schedules">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      Schedules
+    </a>
+    <a onclick="go('groups')" id="nav-groups">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      Agent Groups
+    </a>
+    <a onclick="go('circuit')" id="nav-circuit">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+      Circuit Breaker
+    </a>
+    <a onclick="go('audit')" id="nav-audit">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+      Audit Log
     </a>
     <a onclick="go('admin')" id="nav-admin">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
@@ -174,22 +202,32 @@ const API = '';  // same origin
 let currentPage = 'overview';
 let sseSource = null;
 let autoRefreshTimer = null;
+let currentRenderId = 0;
 
 // ── navigation ──────────────────────────────────────────────────────────────
 function go(page) {
+  currentRenderId++;
+  const rid = currentRenderId;
+  
   currentPage = page;
   document.querySelectorAll('.nav-links a').forEach(a => a.classList.remove('active'));
   const el = document.getElementById('nav-' + page);
   if (el) el.classList.add('active');
   document.getElementById('page-title').textContent =
-    {overview:'Overview',blockchain:'Blockchain',routes:'Routes',agents:'Agents',events:'Events',admin:'Admin'}[page];
+    {overview:'Overview',blockchain:'Blockchain',routes:'Routes',agents:'Agents',jobs:'Jobs',events:'Events',kv:'KV Store',search:'Search',schedules:'Schedules',groups:'Agent Groups',circuit:'Circuit Breaker',audit:'Audit Log',admin:'Admin'}[page] || page;
   stopSSE();
   clearTimeout(autoRefreshTimer);
-  render(page);
+  render(page, rid);
 }
+
+let apiKey = localStorage.getItem('spectral_api_key') || '';
 
 // ── API helpers ──────────────────────────────────────────────────────────────
 async function api(path, opts={}) {
+  if (!opts.headers) opts.headers = {};
+  if (apiKey) {
+    opts.headers['X-API-Key'] = apiKey;
+  }
   const r = await fetch(API + path, opts);
   if (!r.ok) { const e = await r.json().catch(()=>({error:r.statusText})); throw new Error(e.error||r.statusText); }
   if (r.status === 204) return null;
@@ -211,63 +249,131 @@ function toast(msg, ok=true) {
   document.body.appendChild(d);
   setTimeout(() => d.remove(), 3000);
 }
+function refresh() {
+  go(currentPage);
+}
 function esc(s) {
   if (s === null || s === undefined) return '';
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 function fmtTime(ts) {
   if (!ts) return '—';
-  return new Date(ts).toLocaleTimeString();
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleTimeString();
 }
 function fmtHash(h) { return h ? `<span class="hash" title="${esc(h)}">${esc(h)}</span>` : '—'; }
 function shortHash(h) { return h ? h.substring(0,12)+'…' : '—'; }
 
+let blockHistory = [];
+
+function sparkline(data, width=120, height=32, color='var(--accent)') {
+  if (!data || data.length < 2) return '<svg></svg>';
+  const min = Math.min(...data), max = Math.max(...data);
+  const range = max - min || 1;
+  const pts = data.map((v,i) => {
+    const x = (i/(data.length-1))*width;
+    const y = height - ((v-min)/range)*(height-4) - 2;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
+}
+
 // ── page renderers ────────────────────────────────────────────────────────────
 
-async function render(page) {
+async function render(page, rid) {
   try {
     switch(page) {
-      case 'overview':   await renderOverview(); break;
-      case 'blockchain': await renderBlockchain(); break;
-      case 'routes':     await renderRoutes(); break;
-      case 'agents':     await renderAgents(); break;
-      case 'events':     await renderEvents(); break;
-      case 'admin':      await renderAdmin(); break;
+      case 'overview':   await renderOverview(rid); break;
+      case 'blockchain': await renderBlockchain(rid); break;
+      case 'routes':     await renderRoutes(rid); break;
+      case 'agents':     await renderAgents(rid); break;
+      case 'jobs':       await renderJobs(rid); break;
+      case 'events':     await renderEvents(rid); break;
+      case 'kv':         await renderKV(rid); break;
+      case 'search':     await renderSearch(rid); break;
+      case 'schedules':  await renderSchedules(rid); break;
+      case 'groups':     await renderGroups(rid); break;
+      case 'circuit':    await renderCircuit(rid); break;
+      case 'audit':      await renderAudit(rid); break;
+      case 'admin':      await renderAdmin(rid); break;
     }
   } catch(e) {
-    document.getElementById('content').innerHTML = `<div class="alert err">Error: ${esc(e.message)}</div>`;
+    if (rid && rid !== currentRenderId) return;
+    const content = document.getElementById('content');
+    if (content) content.innerHTML = `<div class="alert err">Error: ${esc(e.message)}</div>`;
   }
 }
 
 // ── OVERVIEW ─────────────────────────────────────────────────────────────────
-async function renderOverview() {
-  const [health, status, height, routesList, agentsList, histRes] = await Promise.allSettled([
+async function renderOverview(rid) {
+  const [health, status, height, routesList, agentsList, histRes, metricsRes, bestRouteRes, meshPeersRes] = await Promise.allSettled([
     api('/health'), api('/admin/status'), api('/blockchain/height'),
-    api('/routes'), api('/agents'), api('/events/history?limit=8')
+    api('/routes'), api('/agents'), api('/events/history?limit=8'), api('/metrics/json'),
+    api('/routes/best').catch(() => null), api('/mesh/peers').catch(() => ({peers:[]}))
   ]);
+  if (rid && rid !== currentRenderId) return;
   const h = health.value||{};
   const st = status.value||{};
   const ht = height.value||{};
   const routes = routesList.value||[];
   const agents = agentsList.value||[];
   const hist = histRes.value||{events:[]};
+  const metrics = metricsRes.value||{tenants:[], jobs:0};
+  const meshPeers = ((meshPeersRes.value||{}).peers) || [];
+  const blockCount = h.blocks != null ? h.blocks : (ht.height != null ? ht.height : null);
+  if (blockCount !== null && blockCount !== undefined && !isNaN(Number(blockCount))) {
+    blockHistory.push(Number(blockCount));
+    if (blockHistory.length > 20) blockHistory.shift();
+  }
 
   // update sidebar health dot
-  document.getElementById('health-dot').className = 'status-dot ' + (h.status==='ok'?'ok':'err');
-  document.getElementById('uptime-label').textContent = st.uptime_seconds ? `up ${fmt_uptime(st.uptime_seconds)}` : '';
-  document.getElementById('server-url').textContent = window.location.host;
+  const healthDot = document.getElementById('health-dot');
+  if (healthDot) healthDot.className = 'status-dot ' + (h.status==='ok'?'ok':'err');
+  
+  const uptimeLabel = document.getElementById('uptime-label');
+  if (uptimeLabel) uptimeLabel.textContent = st.uptime_seconds !== undefined ? `up ${fmt_uptime(st.uptime_seconds)}` : '';
+  
+  const serverUrl = document.getElementById('server-url');
+  if (serverUrl) serverUrl.textContent = window.location.host;
 
   const c = `
   <div class="cards">
-    <div class="card green"><div class="card-label">Status</div><div class="card-value" style="font-size:18px">${esc(h.status||'—')}</div><div class="card-sub">${esc(h.timestamp?new Date(h.timestamp).toLocaleTimeString():'')}</div></div>
-    <div class="card accent"><div class="card-label">Chain Height</div><div class="card-value">${esc(h.blocks??ht.height??'—')}</div><div class="card-sub">blocks</div></div>
+    <div class="card ${h.status==='ok'?'green':'warn'}"><div class="card-label">Status</div><div class="card-value" style="font-size:18px">${esc(h.status||'Offline')}</div><div class="card-sub">${esc(h.timestamp?new Date(h.timestamp).toLocaleTimeString():'')}</div></div>
+    <div class="card accent"><div class="card-label">Chain Height</div><div class="card-value">${esc(h.blocks != null ? h.blocks : (ht.height != null ? ht.height : '—'))}</div><div class="card-sub" style="display:flex;align-items:center;gap:6px">blocks ${blockHistory.length>1?sparkline(blockHistory,80,24):''}</div></div>
     <div class="card"><div class="card-label">Routes</div><div class="card-value">${routes.length}</div><div class="card-sub">active</div></div>
     <div class="card"><div class="card-label">Agents</div><div class="card-value">${agents.length}</div><div class="card-sub">registered</div></div>
-    <div class="card"><div class="card-label">Uptime</div><div class="card-value" style="font-size:20px">${st.uptime_seconds?fmt_uptime(st.uptime_seconds):'—'}</div><div class="card-sub">${esc(st.now?new Date(st.now).toLocaleDateString():'')}</div></div>
+    <div class="card green"><div class="card-label">Mesh Peers</div><div class="card-value">${meshPeers.length}</div><div class="card-sub">connected</div></div>
+    <div class="card"><div class="card-label">Uptime</div><div class="card-value" style="font-size:20px">${st.uptime_seconds!==undefined?fmt_uptime(st.uptime_seconds):'—'}</div><div class="card-sub">${esc(st.now?new Date(st.now).toLocaleDateString():'')}</div></div>
   </div>
-  <div class="section">
-    <div class="section-title">Best Route</div>
-    ${await bestRouteCard()}
+  <div style="display:flex;align-items:center;gap:16px;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px;flex-wrap:wrap">
+    <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:700">System Health</span>
+    <span style="display:flex;align-items:center;gap:5px;font-size:12px"><span class="status-dot ${h.status==='ok'?'ok':'err'}"></span>API</span>
+    <span style="display:flex;align-items:center;gap:5px;font-size:12px"><span class="status-dot ${agents.length>0?'ok':'err'}"></span>Agents (${agents.length})</span>
+    <span style="display:flex;align-items:center;gap:5px;font-size:12px"><span class="status-dot ${routes.length>0?'ok':'err'}"></span>Routes (${routes.length})</span>
+    <span style="display:flex;align-items:center;gap:5px;font-size:12px"><span class="status-dot ${meshPeers.length>0?'ok':'err'}"></span>Mesh (${meshPeers.length} peer${meshPeers.length!==1?'s':''})</span>
+    <span style="display:flex;align-items:center;gap:5px;font-size:12px"><span class="status-dot ${(metrics.jobs||0)===0?'ok':'err'}"></span>Job queue: ${metrics.jobs||0}</span>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+    <div class="section" style="margin:0">
+      <div class="section-title">Best Route</div>
+      ${(()=>{ const b=bestRouteRes.value; return b ? `<div class="card" style="max-width:320px"><div class="card-label">Best Hop</div><div style="font-size:15px;font-weight:600;margin:4px 0">${esc(b.destination)}</div><div class="card-sub">latency ${b.metric?b.metric.latency:"—"}ms</div></div>` : `<div class="card-sub">No routes available</div>`; })()}
+    </div>
+    <div class="section" style="margin:0">
+      <div class="section-title">Tenant Metrics</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Tenant</th><th>Blocks</th><th>Routes</th><th>Agents</th></tr></thead>
+          <tbody>
+            ${(metrics.tenants||[]).map(t=>`<tr>
+              <td class="mono">${esc(t.tenant)}</td>
+              <td>${t.blocks}</td><td>${t.routes}</td><td>${t.agents}</td>
+            </tr>`).join('')||'<tr><td colspan="4" class="empty">—</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+      <div style="margin-top:6px;font-size:11px;color:var(--muted)">Jobs in queue: <strong style="color:var(--text)">${metrics.jobs||0}</strong></div>
+    </div>
   </div>
   <div class="section">
     <div class="section-title">Recent Events</div>
@@ -280,28 +386,33 @@ async function renderOverview() {
             <td class="mono">${fmtTime(ev.timestamp)}</td>
             <td><span class="pill ${esc(ev.type)}" style="background:rgba(108,99,255,.1);color:var(--accent)">${esc(ev.type)}</span></td>
             <td class="mono">${esc(ev.tenant_id||'—')}</td>
-            <td class="mono">${esc(ev.data ? (ev.data.destination||ev.data.id||ev.data.index??'') : '')}</td>
+            <td class="mono">${esc(ev.data ? (ev.data.destination||ev.data.id||ev.data.index||'') : '')}</td>
           </tr>`).join('')||'<tr><td colspan="4" class="empty">No events yet</td></tr>'}
         </tbody>
       </table>
     </div>
   </div>`;
-  document.getElementById('content').innerHTML = c;
-  autoRefreshTimer = setTimeout(() => { if(currentPage==='overview') renderOverview(); }, 5000);
+  if (rid && rid !== currentRenderId) return;
+  const content = document.getElementById('content');
+  if (content) content.innerHTML = c;
+  
+  autoRefreshTimer = setTimeout(() => { if(currentPage==='overview' && rid === currentRenderId) renderOverview(rid); }, 5000);
 }
 
 async function bestRouteCard() {
   try {
     const b = await api('/routes/best');
+    if (!b) return `<div class="card-sub">No routes available</div>`;
     return `<div class="card" style="max-width:320px">
       <div class="card-label">Best Hop</div>
       <div style="font-size:15px;font-weight:600;margin:4px 0">${esc(b.destination)}</div>
-      <div class="card-sub">latency ${b.metric.latency}ms · thr ${b.metric.throughput} · ${b.satellite?'🛰 satellite':'terrestrial'}</div>
+      <div class="card-sub">latency ${b.metric ? b.metric.latency : '—'}ms · thr ${b.metric ? b.metric.throughput : '—'} · ${b.satellite?'🛰 satellite':'terrestrial'}</div>
     </div>`;
   } catch { return `<div class="card-sub">No routes available</div>`; }
 }
 
 function fmt_uptime(s) {
+  if (s === undefined || s === null) return '—';
   const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
   return h ? `${h}h ${m}m` : `${m}m ${s%60}s`;
 }
@@ -310,25 +421,28 @@ function fmt_uptime(s) {
 let bcOffset = 0;
 const BC_LIMIT = 10;
 
-async function renderBlockchain() {
+async function renderBlockchain(rid) {
   const [chainRes, verifyRes] = await Promise.allSettled([
     api(`/blockchain?limit=${BC_LIMIT}&offset=${bcOffset}`), api('/blockchain/verify')
   ]);
+  if (rid && rid !== currentRenderId) return;
   const chain = chainRes.value || {blocks:[], height:0};
-  const verify = verifyRes.value || {};
+  const verify = verifyRes.value || {valid: false, unknown: true};
   const blocks = chain.blocks||[];
 
   document.getElementById('content').innerHTML = `
   <div class="section">
     <div class="flex" style="margin-bottom:12px">
       <div>
-        <span class="pill ${verify.valid?'healthy':'degraded'}">${verify.valid?'✓ Chain Valid':'✗ Chain Invalid'}</span>
+        <span class="pill ${verify.unknown?'unknown':(verify.valid?'healthy':'degraded')}">${verify.unknown?'? Chain State Unknown':(verify.valid?'✓ Chain Valid':'✗ Chain Invalid')}</span>
         <span style="margin-left:10px;color:var(--muted);font-size:12px">Height: ${chain.height}</span>
       </div>
       <div class="ml-auto flex">
-        <button class="btn btn-outline btn-sm" onclick="bcOffset=Math.max(0,bcOffset-${BC_LIMIT});renderBlockchain()">← Prev</button>
+        <button class="btn btn-outline btn-sm" onclick="exportBlockchain()">⬇ Export</button>
+        <label class="btn btn-outline btn-sm" style="cursor:pointer">⬆ Import<input type="file" accept=".json" style="display:none" onchange="importBlockchainFile(this)"></label>
+        <button class="btn btn-outline btn-sm" onclick="bcOffset=Math.max(0,bcOffset-${BC_LIMIT});renderBlockchain(currentRenderId)">← Prev</button>
         <span style="padding:4px 8px;font-size:12px;color:var(--muted)">${bcOffset}–${Math.min(bcOffset+BC_LIMIT,chain.height)} of ${chain.height}</span>
-        <button class="btn btn-outline btn-sm" onclick="bcOffset=Math.min(bcOffset+${BC_LIMIT},Math.max(0,chain.height-${BC_LIMIT}));renderBlockchain()">Next →</button>
+        <button class="btn btn-outline btn-sm" onclick="bcOffset=Math.min(bcOffset+${BC_LIMIT},Math.max(0,chain.height-${BC_LIMIT}));renderBlockchain(currentRenderId)">Next →</button>
       </div>
     </div>
     <div class="table-wrap">
@@ -373,7 +487,7 @@ async function addBlock() {
   try {
     const txns = JSON.parse(document.getElementById('bc-txns').value || '[]');
     await post('/blockchain/add', txns);
-    toast('Block added'); bcOffset = 0; renderBlockchain();
+    toast('Block added'); bcOffset = 0; renderBlockchain(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
 }
 
@@ -391,23 +505,35 @@ async function searchTxns() {
 }
 
 // ── ROUTES ───────────────────────────────────────────────────────────────────
-async function renderRoutes() {
-  const routes = await api('/routes');
+async function renderRoutes(rid) {
+  const routesRes = await Promise.allSettled([api('/routes')]);
+  if (rid && rid !== currentRenderId) return;
+  const routes = routesRes[0].value || [];
   document.getElementById('content').innerHTML = `
   <div class="section">
     <div class="flex" style="margin-bottom:12px">
       <div class="section-title" style="margin:0">${routes.length} Route(s)</div>
       <div class="ml-auto flex">
-        <button class="btn btn-outline btn-sm" onclick="renderRoutes()">↻</button>
+        <button class="btn btn-outline btn-sm" onclick="exportRoutes()">⬇ Export</button>
+        <label class="btn btn-outline btn-sm" style="cursor:pointer">⬆ Import<input type="file" accept=".json" style="display:none" onchange="importRoutesFile(this)"></label>
+        <button class="btn btn-outline btn-sm" onclick="renderRoutes(currentRenderId)">↻</button>
       </div>
     </div>
-    <div class="table-wrap">
+    <div class="form-row" style="margin-bottom:10px">
+      <div class="form-group"><label>Max Latency (ms)</label><input id="rf-lat" type="number" placeholder="100" style="width:100px"></div>
+      <div class="form-group"><label>Min Throughput</label><input id="rf-thr" type="number" placeholder="10" style="width:100px"></div>
+      <div class="form-group"><label>Satellite</label><select id="rf-sat" style="width:90px"><option value="">All</option><option value="true">Yes</option><option value="false">No</option></select></div>
+      <div class="form-group"><label>Tag (k:v)</label><input id="rf-tag" placeholder="region:us" style="width:120px"></div>
+      <div class="form-group"><label>&nbsp;</label><button class="btn btn-outline btn-sm" onclick="applyRouteFilter()">Filter</button></div>
+      <div class="form-group"><label>&nbsp;</label><button class="btn btn-outline btn-sm" onclick="renderRoutes(currentRenderId)">Clear</button></div>
+    </div>
+    <div class="table-wrap" id="routes-table-wrap">
       <table>
         <thead><tr><th>Destination</th><th>Latency</th><th>Throughput</th><th>Tags</th><th>Expires</th><th></th></tr></thead>
         <tbody>
           ${routes.map(r=>`<tr>
             <td><strong>${esc(r.destination)}</strong>${r.satellite?' <span class="pill sat">SAT</span>':''}</td>
-            <td>${r.metric.latency}ms</td><td>${r.metric.throughput}</td>
+            <td>${r.metric ? r.metric.latency : '—'}ms</td><td>${r.metric ? r.metric.throughput : '—'}</td>
             <td class="mono">${r.tags?Object.entries(r.tags).map(([k,v])=>k+':'+v).join(', '):'—'}</td>
             <td class="mono">${r.expires_at?fmtTime(r.expires_at):'∞'}</td>
             <td><button class="btn btn-danger btn-sm" onclick="deleteRoute('${esc(r.destination)}')">✕</button></td>
@@ -455,7 +581,7 @@ async function addRoute() {
   if (ttl) params.set('ttlSeconds', ttl);
   if (sat) params.set('satellite', 'true');
   Object.entries(tags).forEach(([k,v])=>params.append('tag',k+':'+v));
-  try { await api('/routes?'+params, {method:'POST'}); toast('Route added'); renderRoutes(); }
+  try { await api('/routes?'+params, {method:'POST'}); toast('Route added'); renderRoutes(currentRenderId); }
   catch(e) { toast('Error: '+e.message, false); }
 }
 
@@ -463,24 +589,57 @@ async function batchAddRoutes() {
   try {
     const entries = JSON.parse(document.getElementById('r-batch').value||'[]');
     const res = await post('/routes/batch', entries);
-    toast(`Added ${res.added}/${res.submitted} routes`); renderRoutes();
+    toast(`Added ${res.added}/${res.submitted} routes`); renderRoutes(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
 }
 
 async function deleteRoute(dest) {
   if (!confirm('Delete route ' + dest + '?')) return;
-  try { await del('/routes?destination='+encodeURIComponent(dest)); toast('Route deleted'); renderRoutes(); }
+  try { await del('/routes?destination='+encodeURIComponent(dest)); toast('Route deleted'); renderRoutes(currentRenderId); }
   catch(e) { toast('Error: '+e.message, false); }
 }
 
+async function applyRouteFilter() {
+  const lat = (document.getElementById('rf-lat') || {}).value;
+  const thr = (document.getElementById('rf-thr') || {}).value;
+  const sat = (document.getElementById('rf-sat') || {}).value;
+  const tag = (document.getElementById('rf-tag') || {}).value.trim();
+  let u = '/routes/filter?';
+  if (lat) u += 'max_latency='+encodeURIComponent(lat)+'&';
+  if (thr) u += 'min_throughput='+encodeURIComponent(thr)+'&';
+  if (sat) u += 'satellite='+encodeURIComponent(sat)+'&';
+  if (tag) u += 'tag='+encodeURIComponent(tag)+'&';
+  u = u.replace(/[&?]$/, '');
+  try {
+    const r = await api(u);
+    const routes = r.routes || [];
+    const wrap = document.getElementById('routes-table-wrap');
+    if (!wrap) return;
+    const rows = routes.map(rt => `<tr>
+      <td><strong>${esc(rt.destination)}</strong>${rt.satellite?' <span class="pill sat">SAT</span>':''}</td>
+      <td>${rt.metric ? rt.metric.latency : '—'}ms</td><td>${rt.metric ? rt.metric.throughput : '—'}</td>
+      <td class="mono">${rt.tags?Object.entries(rt.tags).map(([k,v])=>k+':'+v).join(', '):'—'}</td>
+      <td class="mono">${rt.expires_at?fmtTime(rt.expires_at):'∞'}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="deleteRoute('${esc(rt.destination)}')">✕</button></td>
+    </tr>`).join('');
+    wrap.innerHTML = `<table><thead><tr><th>Destination</th><th>Latency</th><th>Throughput</th><th>Tags</th><th>Expires</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="6" class="empty">No routes match filter</td></tr>'}</tbody></table>`;
+    toast('Showing ' + routes.length + ' route(s)');
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
 // ── AGENTS ────────────────────────────────────────────────────────────────────
-async function renderAgents() {
-  const agents = await api('/agents');
+async function renderAgents(rid) {
+  const agentsRes = await Promise.allSettled([api('/agents')]);
+  if (rid && rid !== currentRenderId) return;
+  const agents = agentsRes[0].value || [];
   document.getElementById('content').innerHTML = `
   <div class="section">
     <div class="flex" style="margin-bottom:12px">
       <div class="section-title" style="margin:0">${agents.length} Agent(s)</div>
-      <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="renderAgents()">↻</button></div>
+      <div class="ml-auto flex">
+        <button class="btn btn-outline btn-sm" onclick="checkAgentsHealth()">♥ Health Check</button>
+        <button class="btn btn-outline btn-sm" onclick="renderAgents(currentRenderId)">↻</button>
+      </div>
     </div>
     <div class="table-wrap">
       <table>
@@ -521,7 +680,82 @@ async function renderAgents() {
         <button class="btn btn-primary" style="margin-top:18px" onclick="registerAgent()">Register</button>
       </div>
     </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <div class="section">
+      <div class="section-title">Capability Routing</div>
+      <div class="card">
+        <div class="form-row">
+          <div class="form-group"><label>Capability</label><input id="cap-lookup" placeholder="inference"></div>
+          <div class="form-group"><label>Max</label><input id="cap-count" type="number" value="5" style="width:70px"></div>
+          <button class="btn btn-primary" style="margin-top:18px" onclick="lookupCapability()">Find Agents</button>
+        </div>
+        <div id="cap-result" style="margin-top:8px"></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">Submit Job</div>
+      <div class="card">
+        <div class="form-row">
+          <div class="form-group"><label>Capability</label><input id="job-cap" placeholder="inference"></div>
+          <div class="form-group"><label>Agent ID (opt)</label><input id="job-agent" placeholder="edge-01"></div>
+        </div>
+        <div class="form-group" style="margin-bottom:8px"><label>Payload (JSON)</label>
+          <textarea id="job-payload" placeholder='{"prompt":"hello"}'></textarea></div>
+        <div class="flex">
+          <button class="btn btn-primary" onclick="submitJob()">Submit Job</button>
+          <button class="btn btn-outline btn-sm" onclick="loadJobs()">View Jobs ↻</button>
+        </div>
+        <div id="job-list" style="margin-top:10px"></div>
+      </div>
+    </div>
   </div>`;
+}
+
+async function lookupCapability() {
+  const cap = document.getElementById('cap-lookup').value.trim();
+  if (!cap) { toast('Capability required', false); return; }
+  const count = document.getElementById('cap-count').value || 5;
+  try {
+    const res = await api('/agents/route?capability='+encodeURIComponent(cap)+'&count='+count);
+    const el = document.getElementById('cap-result');
+    if (!res.count) { el.innerHTML = '<div class="empty">No agents with this capability</div>'; return; }
+    el.innerHTML = `<div style="color:var(--accent2);font-size:12px;margin-bottom:6px">${res.count} agent(s)</div>` +
+      (res.agents||[]).map(a=>`<div class="mono" style="padding:4px 8px;background:var(--input);border-radius:4px;margin-bottom:4px">
+        <strong>${esc(a.id)}</strong> <span class="pill ${esc(a.status)}">${esc(a.status)}</span>
+        ${(a.capabilities||[]).join(', ')}
+      </div>`).join('');
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function submitJob() {
+  const cap = document.getElementById('job-cap').value.trim();
+  const agentId = document.getElementById('job-agent').value.trim();
+  if (!cap && !agentId) { toast('Capability or Agent ID required', false); return; }
+  let payload = {};
+  try { payload = JSON.parse(document.getElementById('job-payload').value || '{}'); } catch(e) { toast('Invalid JSON payload', false); return; }
+  try {
+    const j = await post('/agents/jobs', {capability: cap, agent_id: agentId, payload});
+    toast('Job submitted: '+j.id);
+    loadJobs();
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function loadJobs() {
+  try {
+    const res = await api('/agents/jobs');
+    const el = document.getElementById('job-list');
+    if (!el) return;
+    const jobs = res.jobs || [];
+    if (!jobs.length) { el.innerHTML = '<div class="empty">No jobs</div>'; return; }
+    el.innerHTML = `<table style="width:100%;font-size:12px;border-collapse:collapse">
+      <thead><tr style="color:var(--muted)"><th style="text-align:left">ID</th><th>Cap</th><th>Status</th><th>Created</th></tr></thead>
+      <tbody>${jobs.map(j=>`<tr style="border-top:1px solid var(--border)">
+        <td class="mono">${esc(j.id)}</td><td class="mono">${esc(j.capability||j.agent_id||'—')}</td>
+        <td><span class="pill ${esc(j.status)}">${esc(j.status)}</span></td>
+        <td class="mono">${fmtTime(j.created_at)}</td>
+      </tr>`).join('')}</tbody></table>`;
+  } catch(e) { /* ignore */ }
 }
 
 async function registerAgent() {
@@ -535,32 +769,98 @@ async function registerAgent() {
       ttl_seconds: parseInt(document.getElementById('ag-ttl').value)||300,
       capabilities: caps
     });
-    toast('Agent registered'); renderAgents();
+    toast('Agent registered'); renderAgents(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
 }
 
 async function setAgentStatus(id, status) {
   if (!status) return;
-  try { await api(`/agents/status?id=${encodeURIComponent(id)}&status=${status}`,{method:'POST'}); toast(`${id} → ${status}`); renderAgents(); }
+  try { await api(`/agents/status?id=${encodeURIComponent(id)}&status=${status}`,{method:'POST'}); toast(`${id} → ${status}`); renderAgents(currentRenderId); }
   catch(e) { toast('Error: '+e.message, false); }
 }
 
 async function heartbeat(id) {
-  try { await api(`/agents/heartbeat?id=${encodeURIComponent(id)}&ttl_seconds=300`,{method:'POST'}); toast('Heartbeat sent'); renderAgents(); }
+  try { await api(`/agents/heartbeat?id=${encodeURIComponent(id)}&ttl_seconds=300`,{method:'POST'}); toast('Heartbeat sent'); renderAgents(currentRenderId); }
   catch(e) { toast('Error: '+e.message, false); }
 }
 
 async function deregisterAgent(id) {
   if (!confirm('Deregister '+id+'?')) return;
-  try { await del(`/agents?id=${encodeURIComponent(id)}`); toast('Agent removed'); renderAgents(); }
+  try { await del('/agents?id=${encodeURIComponent(id)}'); toast('Agent removed'); renderAgents(currentRenderId); }
   catch(e) { toast('Error: '+e.message, false); }
 }
 
+// ── JOBS ──────────────────────────────────────────────────────────────────────
+async function renderJobs(rid) {
+  const jobsRes = await api('/agents/jobs');
+  if (rid && rid !== currentRenderId) return;
+  const list = jobsRes.jobs || [];
+
+  document.getElementById('content').innerHTML = `
+  <div class="section">
+    <div class="flex" style="margin-bottom:12px">
+      <div class="section-title" style="margin:0">${list.length} Job(s)</div>
+      <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="renderJobs(currentRenderId)">↻</button></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>ID</th><th>Status</th><th>Capability</th><th>Agent</th><th>Created</th><th>Updated</th></tr></thead>
+        <tbody>
+          ${list.map(j=>`<tr>
+            <td><strong>${esc(j.id)}</strong></td>
+            <td><span class="pill ${esc(j.status)}">${esc(j.status)}</span></td>
+            <td>${esc(j.capability||'—')}</td>
+            <td>${esc(j.agent_id||'—')}</td>
+            <td class="mono">${fmtTime(j.created_at)}</td>
+            <td class="mono">${fmtTime(j.updated_at)}</td>
+          </tr>`).join('')||'<tr><td colspan="6" class="empty">No jobs found</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="section">
+    <div class="section-title">Submit New Job</div>
+    <div class="card">
+      <div class="form-row">
+        <div class="form-group"><label>Capability</label><input id="job-cap" placeholder="inference"></div>
+        <div class="form-group"><label>Agent ID (optional)</label><input id="job-agent" placeholder="edge-01"></div>
+      </div>
+      <div class="form-group" style="margin-top:8px"><label>Payload (JSON)</label>
+      <textarea id="job-payload" placeholder='{"prompt":"hello"}'></textarea></div>
+      <button class="btn btn-primary" style="margin-top:12px" onclick="submitJob()">Submit Job</button>
+    </div>
+  </div>`;
+
+  autoRefreshTimer = setTimeout(() => { if(currentPage==='jobs' && rid === currentRenderId) renderJobs(rid); }, 5000);
+}
+
+async function submitJob() {
+  const cap = document.getElementById('job-cap').value.trim();
+  const agent = document.getElementById('job-agent').value.trim();
+  let payload = {};
+  try {
+    const raw = document.getElementById('job-payload').value.trim();
+    if (raw) payload = JSON.parse(raw);
+  } catch(e) { toast('Invalid JSON payload', false); return; }
+
+  try {
+    await post('/agents/jobs', {
+      capability: cap,
+      agent_id: agent,
+      payload: payload
+    });
+    toast('Job submitted');
+    renderJobs(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
 // ── EVENTS ────────────────────────────────────────────────────────────────────
+
 let sseRunning = false;
 
-async function renderEvents() {
+async function renderEvents(rid) {
   const hist = await api('/events/history?limit=50').catch(()=>({events:[]}));
+  if (rid && rid !== currentRenderId) return;
   document.getElementById('content').innerHTML = `
   <div class="section">
     <div class="flex" style="margin-bottom:12px">
@@ -573,6 +873,8 @@ async function renderEvents() {
           <option value="route_deleted">route_deleted</option>
           <option value="agent_registered">agent_registered</option>
           <option value="agent_heartbeat">agent_heartbeat</option>
+          <option value="agent_deregistered">agent_deregistered</option>
+          <option value="mesh_anomaly">mesh_anomaly</option>
         </select>
         <button class="btn btn-outline btn-sm" id="sse-btn" onclick="toggleSSE()">⏸ Pause</button>
         <button class="btn btn-outline btn-sm" onclick="clearFeed()">Clear</button>
@@ -586,6 +888,8 @@ async function renderEvents() {
     <div class="section-title">History (last 50)</div>
     <div style="color:var(--muted);font-size:12px">${(hist.events||[]).length} event(s) in history buffer</div>
   </div>`;
+  const feed = document.getElementById('event-feed');
+  if (feed) feed.scrollTop = feed.scrollHeight;
   startSSE();
 }
 
@@ -600,7 +904,8 @@ function eventLine(ev) {
 
 function startSSE() {
   if (sseSource) sseSource.close();
-  const typeFilter = document.getElementById('ev-type-filter')?.value || '';
+  const evFilter = document.getElementById('ev-type-filter');
+  const typeFilter = evFilter ? evFilter.value : '';
   const url = API + '/events' + (typeFilter ? '?type='+encodeURIComponent(typeFilter) : '');
   sseSource = new EventSource(url);
   sseRunning = true;
@@ -609,8 +914,9 @@ function startSSE() {
     if (!feed) return;
     try {
       const ev = JSON.parse(e.data);
+      const isAtBottom = feed.scrollHeight - feed.scrollTop <= feed.clientHeight + 40;
       feed.innerHTML += eventLine(ev);
-      feed.scrollTop = feed.scrollHeight;
+      if (isAtBottom) feed.scrollTop = feed.scrollHeight;
     } catch {}
   };
   sseSource.addEventListener('connected', () => {});
@@ -634,15 +940,144 @@ function stopSSE() {
 function restartSSE() { startSSE(); }
 function clearFeed() { const f = document.getElementById('event-feed'); if(f) f.innerHTML=''; }
 
+// ── KV STORE ─────────────────────────────────────────────────────────────────
+async function renderKV(rid) {
+  const r = await api('/kv');
+  if (rid && rid !== currentRenderId) return;
+  const entries = (r.entries && r.entries.length) ? r.entries : [];
+  let rows = entries.map(e => {
+    const exp = e.expires_at ? `<span class="mono">${esc(e.expires_at.substring(0,19))}</span>` : '<span class="muted">—</span>';
+    return `<tr>
+      <td class="mono">${esc(e.key)}</td>
+      <td>${esc(e.value)}</td>
+      <td>${exp}</td>
+      <td>
+        <button class="btn btn-outline btn-sm btn-danger" onclick="kvDelete(${JSON.stringify(e.key)})">Del</button>
+      </td>
+    </tr>`;
+  }).join('');
+  document.getElementById('content').innerHTML = `
+    <div class="section">
+      <div class="section-title">Set / Update Key</div>
+      <div class="form-row">
+        <div class="form-group"><label>Key</label><input id="kv-key" placeholder="config.debug" style="width:200px"></div>
+        <div class="form-group"><label>Value</label><input id="kv-val" placeholder="true" style="width:200px"></div>
+        <div class="form-group"><label>TTL (s, 0=forever)</label><input id="kv-ttl" type="number" value="0" style="width:100px"></div>
+        <div class="form-group"><label>&nbsp;</label><button class="btn btn-primary" onclick="kvSet()">Set</button></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Prefix filter</label><input id="kv-prefix" placeholder="cfg:" style="width:160px"></div>
+        <div class="form-group"><label>&nbsp;</label><button class="btn btn-outline" onclick="kvRefreshWithPrefix()">Filter</button></div>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Key</th><th>Value</th><th>Expires</th><th></th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="4" style="text-align:center;color:var(--muted)">No entries</td></tr>'}</tbody>
+      </table>
+    </div>
+    <p style="color:var(--muted);font-size:12px">Total: ${r.count}</p>
+  `;
+}
+
+async function kvSet() {
+  const key = document.getElementById('kv-key').value.trim();
+  const val = document.getElementById('kv-val').value;
+  const ttlSec = parseInt(document.getElementById('kv-ttl').value, 10) || 0;
+  if (!key) { toast('Key is required', true); return; }
+  try {
+    await api('/kv/'+encodeURIComponent(key), {method:'PUT', body: JSON.stringify({value: val, ttl: ttlSec * 1000000000})});
+    toast('Key set');
+    renderKV(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, true); }
+}
+
+async function kvDelete(key) {
+  try {
+    await api('/kv/'+encodeURIComponent(key), {method:'DELETE'});
+    toast('Key deleted');
+    renderKV(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, true); }
+}
+
+function kvRefreshWithPrefix() {
+  const prefix = document.getElementById('kv-prefix').value.trim();
+  api('/kv' + (prefix ? '?prefix='+encodeURIComponent(prefix) : '')).then(r => {
+    const entries = (r.entries && r.entries.length) ? r.entries : [];
+    const rows = entries.map(e => {
+      const exp = e.expires_at ? `<span class="mono">${esc(e.expires_at.substring(0,19))}</span>` : '<span class="muted">—</span>';
+      return `<tr>
+        <td class="mono">${esc(e.key)}</td>
+        <td>${esc(e.value)}</td>
+        <td>${exp}</td>
+        <td><button class="btn btn-outline btn-sm btn-danger" onclick="kvDelete(${JSON.stringify(e.key)})">Del</button></td>
+      </tr>`;
+    }).join('');
+    const tbody = document.querySelector('.table-wrap tbody');
+    if (tbody) tbody.innerHTML = rows || '<tr><td colspan="4" style="text-align:center;color:var(--muted)">No entries</td></tr>';
+  });
+}
+
+// ── SEARCH ────────────────────────────────────────────────────────────────────
+async function renderSearch(rid) {
+  if (rid && rid !== currentRenderId) return;
+  document.getElementById('content').innerHTML = `
+    <div class="section">
+      <div class="section-title">Unified Search</div>
+      <div class="form-row">
+        <div class="form-group"><label>Query</label><input id="search-q" placeholder="agent name, route, sender…" style="width:300px" onkeydown="if(event.key==='Enter')doSearch()"></div>
+        <div class="form-group"><label>&nbsp;</label><button class="btn btn-primary" onclick="doSearch()">Search</button></div>
+      </div>
+    </div>
+    <div id="search-results"></div>
+  `;
+}
+
+async function doSearch() {
+  const q = document.getElementById('search-q').value.trim();
+  if (!q) return;
+  const r = await api('/search?q='+encodeURIComponent(q));
+  const agents = r.agents || [];
+  const routes = r.routes || [];
+  const txns = r.transactions || [];
+  let html = '';
+  if (agents.length) {
+    html += `<div class="section-title">Agents (${agents.length})</div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Status</th><th>Capabilities</th></tr></thead><tbody>`;
+    agents.forEach(a => {
+      html += `<tr><td class="mono">${esc(a.id)}</td><td><span class="pill ${a.status}">${esc(a.status)}</span></td><td>${esc((a.capabilities||[]).join(', '))}</td></tr>`;
+    });
+    html += '</tbody></table></div>';
+  }
+  if (routes.length) {
+    html += `<div class="section-title" style="margin-top:12px">Routes (${routes.length})</div><div class="table-wrap"><table><thead><tr><th>Destination</th><th>Latency (ms)</th></tr></thead><tbody>`;
+    routes.forEach(r => {
+      html += `<tr><td class="mono">${esc(r.destination)}</td><td>${r.latency_ms}</td></tr>`;
+    });
+    html += '</tbody></table></div>';
+  }
+  if (txns.length) {
+    html += `<div class="section-title" style="margin-top:12px">Transactions (${txns.length})</div><div class="table-wrap"><table><thead><tr><th>Block</th><th>Sender</th><th>Recipient</th><th>Amount</th></tr></thead><tbody>`;
+    txns.forEach(tx => {
+      html += `<tr><td>${tx.block_index}</td><td class="mono">${esc(tx.sender)}</td><td class="mono">${esc(tx.recipient)}</td><td>${tx.amount}</td></tr>`;
+    });
+    html += '</tbody></table></div>';
+  }
+  if (!html) html = '<p style="color:var(--muted)">No results for ' + esc(q) + '</p>';
+  const el = document.getElementById('search-results');
+  if (el) el.innerHTML = html;
+}
+
 // ── ADMIN ─────────────────────────────────────────────────────────────────────
-async function renderAdmin() {
-  const [statusRes, tenantsRes, backupsRes, verifyRes] = await Promise.allSettled([
-    api('/admin/status'), api('/admin/tenants'), api('/admin/backup/list'), api('/blockchain/verify')
+async function renderAdmin(rid) {
+  const [statusRes, tenantsRes, backupsRes, verifyRes, meshRes] = await Promise.allSettled([
+    api('/admin/status'), api('/admin/tenants'), api('/admin/backup/list'), api('/blockchain/verify'), api('/admin/mesh')
   ]);
+  if (rid && rid !== currentRenderId) return;
   const st = statusRes.value||{};
   const tenants = tenantsRes.value||[];
   const backups = backupsRes.value||{backups:[]};
-  const verify = verifyRes.value||{};
+  const verify = verifyRes.value||{valid: false, unknown: true};
+  const mesh = meshRes.value||{status:'unknown'};
 
   document.getElementById('content').innerHTML = `
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
@@ -652,24 +1087,52 @@ async function renderAdmin() {
         <div class="table-wrap">
           <table>
             <tbody>
-              <tr><td style="color:var(--muted)">Uptime</td><td>${st.uptime_seconds?fmt_uptime(st.uptime_seconds):'—'}</td></tr>
+              <tr><td style="color:var(--muted)">Uptime</td><td>${st.uptime_seconds!==undefined?fmt_uptime(st.uptime_seconds):'—'}</td></tr>
               <tr><td style="color:var(--muted)">Last Backup</td><td class="mono">${st.last_backup?fmtTime(st.last_backup):'Never'}</td></tr>
               <tr><td style="color:var(--muted)">Last Compact</td><td class="mono">${st.last_compact?fmtTime(st.last_compact):'Never'}</td></tr>
-              <tr><td style="color:var(--muted)">Backup Dir</td><td class="mono">${esc(st.backup_dir||'—')}</td></tr>
-              <tr><td style="color:var(--muted)">Chain Valid</td><td><span class="pill ${verify.valid?'healthy':'degraded'}">${verify.valid?'✓ Valid':'✗ Invalid'}</span></td></tr>
+              <tr><td style="color:var(--muted)">Chain Valid</td><td><span class="pill ${verify.unknown?'unknown':(verify.valid?'healthy':'degraded')}">${verify.unknown?'? Unknown':(verify.valid?'✓ Valid':'✗ Invalid')}</span></td></tr>
+              <tr><td style="color:var(--muted)">Mesh Status</td><td><span class="pill ${mesh.status==='ok'?'healthy':'unknown'}">${esc(mesh.status)}</span></td></tr>
             </tbody>
           </table>
         </div>
       </div>
+      ${mesh.status === 'ok' ? `
+      <div class="section">
+        <div class="section-title">Mesh Config (Node #${mesh.config.node_id})</div>
+        <div class="table-wrap">
+          <table>
+            <tbody>
+              <tr><td style="color:var(--muted)">Bind Addr</td><td class="mono">${esc(mesh.config.bind_addr)}</td></tr>
+              <tr><td style="color:var(--muted)">Peers</td><td class="mono">${mesh.config.peers.join(', ') || 'None'}</td></tr>
+              <tr><td style="color:var(--muted)">Anomaly</td><td>${mesh.anomaly?.reason ? `<span class="pill degraded" title="${esc(mesh.anomaly.reason)}">⚠️ ${esc(mesh.anomaly.reason)}</span>` : '<span class="pill healthy">✓ Clear</span>'}</td></tr>
+              <tr><td style="color:var(--muted)">Reject Rate</td><td class="mono">${(mesh.anomaly?.reject_rate*100).toFixed(2)}%</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>` : ''}
       <div class="section">
         <div class="section-title">Maintenance</div>
         <div class="card">
-          <div class="flex" style="gap:10px">
+          <div class="flex" style="gap:10px; margin-bottom: 12px">
             <button class="btn btn-outline" onclick="triggerBackup()">💾 Run Backup Now</button>
             <button class="btn btn-outline" onclick="triggerCompact()">🗜 Run Compact Now</button>
             <button class="btn btn-outline" onclick="verifyChain()">✓ Verify Chain</button>
           </div>
           <div id="maint-result" style="margin-top:10px"></div>
+        </div>
+      </div>
+      <div class="section">
+        <div class="section-title">Authentication</div>
+        <div class="card">
+          <div class="form-group">
+            <label>API Key (stored locally)</label>
+            <div class="flex">
+              <input type="password" id="api-key-input" placeholder="Enter API Key..." value="${apiKey ? '********' : ''}" style="flex:1">
+              <button class="btn btn-primary" onclick="saveApiKey()">Save</button>
+              <button class="btn btn-outline" onclick="clearApiKey()">Clear</button>
+            </div>
+          </div>
+          <div class="card-sub" style="margin-top:8px">Required if Spectral Cloud was started with API_KEY or ADMIN_API_KEY.</div>
         </div>
       </div>
       <div class="section">
@@ -711,25 +1174,157 @@ async function renderAdmin() {
         </div>
       </div>
       <div class="section">
-        <div class="section-title">Exports</div>
+        <div class="section-title">Exports / Imports</div>
         <div class="card">
-          <div class="flex">
-            <a href="/blockchain/export" download class="btn btn-outline">⬇ Blockchain JSON</a>
-            <a href="/routes/export" download class="btn btn-outline">⬇ Routes JSON</a>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Export</div>
+          <div class="flex" style="margin-bottom:12px">
+            <a href="/blockchain/export" download class="btn btn-outline btn-sm">⬇ Blockchain</a>
+            <a href="/routes/export" download class="btn btn-outline btn-sm">⬇ Routes</a>
           </div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Import (paste JSON)</div>
+          <div class="form-group" style="margin-bottom:6px">
+            <textarea id="import-json" placeholder='{"version":1,"blocks":[...]} or {"version":1,"routes":[...]}' style="min-height:60px"></textarea>
+          </div>
+          <div class="flex">
+            <button class="btn btn-outline btn-sm" onclick="importData('blockchain')">Import Blockchain</button>
+            <button class="btn btn-outline btn-sm" onclick="importData('routes')">Import Routes</button>
+          </div>
+          <div id="import-result" style="margin-top:8px"></div>
         </div>
       </div>
     </div>
+  </div>
+  <div class="section" style="margin-top:16px">
+    <div class="flex" style="margin-bottom:10px">
+      <div class="section-title" style="margin:0">Audit Log</div>
+      <div class="ml-auto flex">
+        <input id="audit-tenant" placeholder="tenant filter" style="width:120px;padding:4px 8px;font-size:12px">
+        <button class="btn btn-outline btn-sm" onclick="loadAuditLog()">↻ Refresh</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table id="audit-table">
+        <thead><tr><th>#</th><th>Time</th><th>Tenant</th><th>Method</th><th>Path</th><th>Status</th></tr></thead>
+        <tbody id="audit-body"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="section" style="margin-top:16px">
+    <div class="flex" style="margin-bottom:10px">
+      <div class="section-title" style="margin:0">Notification Rules</div>
+      <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="loadNotifyRules()">↻ Refresh</button></div>
+    </div>
+    <div class="form-row" style="margin-bottom:10px">
+      <div class="form-group"><label>Name</label><input id="notif-name" placeholder="my-rule" style="width:140px"></div>
+      <div class="form-group"><label>Webhook URL</label><input id="notif-url" placeholder="https://example.com/hook" style="width:220px"></div>
+      <div class="form-group"><label>Secret (optional)</label><input id="notif-secret" placeholder="hmac-secret" style="width:120px"></div>
+      <div class="form-group"><label>Event Types (comma-sep)</label><input id="notif-events" placeholder="agent.registered,kv.set" style="width:200px"></div>
+      <div class="form-group"><label>&nbsp;</label><button class="btn btn-primary btn-sm" onclick="addNotifyRule()">+ Add Rule</button></div>
+    </div>
+    <div class="table-wrap">
+      <table id="notify-table">
+        <thead><tr><th>ID</th><th>Name</th><th>Webhook</th><th>Events</th><th>Fired</th><th></th></tr></thead>
+        <tbody id="notify-body"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
   </div>`;
+  loadAuditLog();
+  loadNotifyRules();
+}
+
+async function loadAuditLog() {
+  const tenant = (document.getElementById('audit-tenant') || {}).value || '';
+  const u = '/audit?limit=50' + (tenant ? '&tenant='+encodeURIComponent(tenant) : '');
+  try {
+    const res = await api(u);
+    const tbody = document.getElementById('audit-body');
+    if (!tbody) return;
+    const entries = res.entries || [];
+    if (!entries.length) { tbody.innerHTML = '<tr><td colspan="6" class="empty">No entries</td></tr>'; return; }
+    tbody.innerHTML = entries.map(e => `<tr>
+      <td class="mono">${e.id}</td>
+      <td class="mono">${fmtTime(e.timestamp)}</td>
+      <td class="mono">${esc(e.tenant)}</td>
+      <td><span class="pill ${e.method==='DELETE'?'degraded':e.method==='POST'?'healthy':'unknown'}">${esc(e.method)}</span></td>
+      <td class="mono">${esc(e.path)}</td>
+      <td><span style="color:${e.status<300?'var(--accent2)':e.status<400?'var(--warn)':'var(--danger)'}">${e.status}</span></td>
+    </tr>`).join('');
+  } catch(e) {
+    const tbody = document.getElementById('audit-body');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="empty">Failed to load</td></tr>';
+  }
+}
+
+async function loadNotifyRules() {
+  try {
+    const res = await api('/admin/notifications');
+    const tbody = document.getElementById('notify-body');
+    if (!tbody) return;
+    const rules = res.rules || [];
+    if (!rules.length) { tbody.innerHTML = '<tr><td colspan="6" class="empty">No rules</td></tr>'; return; }
+    tbody.innerHTML = rules.map(r => `<tr>
+      <td class="mono">${esc(r.id)}</td>
+      <td>${esc(r.name)}</td>
+      <td class="mono" style="max-width:180px;overflow:hidden;text-overflow:ellipsis" title="${esc(r.webhook_url)}">${esc(r.webhook_url)}</td>
+      <td class="mono">${esc((r.event_types || []).join(', ') || '*')}</td>
+      <td>${r.fired_total}</td>
+      <td><button class="btn btn-outline btn-sm btn-danger" onclick="deleteNotifyRule(${JSON.stringify(r.id)})">Del</button></td>
+    </tr>`).join('');
+  } catch(e) {
+    const tbody = document.getElementById('notify-body');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="empty">Failed to load</td></tr>';
+  }
+}
+
+async function addNotifyRule() {
+  const name = (document.getElementById('notif-name') || {}).value.trim();
+  const url = (document.getElementById('notif-url') || {}).value.trim();
+  const secret = (document.getElementById('notif-secret') || {}).value.trim();
+  const evStr = (document.getElementById('notif-events') || {}).value.trim();
+  if (!name || !url) { toast('Name and Webhook URL required', true); return; }
+  const eventTypes = evStr ? evStr.split(',').map(s => s.trim()).filter(Boolean) : [];
+  try {
+    await post('/admin/notifications', {name, webhook_url: url, secret, event_types: eventTypes});
+    toast('Rule created');
+    loadNotifyRules();
+  } catch(e) { toast('Error: '+e.message, true); }
+}
+
+async function deleteNotifyRule(id) {
+  try {
+    await del('/admin/notifications/'+encodeURIComponent(id));
+    toast('Rule deleted');
+    loadNotifyRules();
+  } catch(e) { toast('Error: '+e.message, true); }
+}
+
+async function importData(type) {
+  const textarea = document.getElementById('import-json');
+  const resultEl = document.getElementById('import-result');
+  const json = textarea ? textarea.value.trim() : '';
+  if (!json) { toast('Paste JSON first', false); return; }
+  const endpoint = type === 'blockchain' ? '/blockchain/import' : '/routes/import';
+  try {
+    let body;
+    try { body = JSON.parse(json); } catch(e) { toast('Invalid JSON', false); return; }
+    const res = await post(endpoint, body);
+    const msg = type === 'blockchain'
+      ? `Imported ${res.imported} block(s), skipped ${res.skipped}. Height: ${res.height}`
+      : `Imported ${res.imported} route(s), skipped ${res.skipped}. Total: ${res.total}`;
+    if (resultEl) resultEl.innerHTML = `<div class="alert ok">${msg}</div>`;
+    toast(msg);
+  } catch(e) {
+    if (resultEl) resultEl.innerHTML = `<div class="alert err">${esc(e.message)}</div>`;
+  }
 }
 
 async function triggerBackup() {
-  try { await api('/admin/backup',{method:'POST'}); toast('Backup completed'); renderAdmin(); }
+  try { await api('/admin/backup',{method:'POST'}); toast('Backup completed'); renderAdmin(currentRenderId); }
   catch(e) { document.getElementById('maint-result').innerHTML=`<div class="alert err">${esc(e.message)}</div>`; }
 }
 
 async function triggerCompact() {
-  try { await api('/admin/compact',{method:'POST'}); toast('Compaction completed'); renderAdmin(); }
+  try { await api('/admin/compact',{method:'POST'}); toast('Compaction completed'); renderAdmin(currentRenderId); }
   catch(e) { document.getElementById('maint-result').innerHTML=`<div class="alert err">${esc(e.message)}</div>`; }
 }
 
@@ -743,21 +1338,336 @@ async function verifyChain() {
 async function createTenant() {
   const name = document.getElementById('new-tenant').value.trim();
   if (!name) { toast('Name required', false); return; }
-  try { await post('/admin/tenants', {name}); toast('Tenant '+name+' created'); renderAdmin(); }
+  try { await post('/admin/tenants', {name}); toast('Tenant '+name+' created'); renderAdmin(currentRenderId); }
   catch(e) { toast('Error: '+e.message, false); }
 }
 
 async function deleteTenant(name) {
   if (!confirm('Delete tenant "'+name+'" and all its data?')) return;
-  try { await del('/admin/tenants?name='+encodeURIComponent(name)); toast('Tenant deleted'); renderAdmin(); }
+  try { await del('/admin/tenants?name='+encodeURIComponent(name)); toast('Tenant deleted'); renderAdmin(currentRenderId); }
   catch(e) { toast('Error: '+e.message, false); }
 }
 
+function saveApiKey() {
+  const input = document.getElementById('api-key-input');
+  const val = input.value.trim();
+  if (!val || val === '********') return;
+  apiKey = val;
+  localStorage.setItem('spectral_api_key', val);
+  toast('API Key saved locally');
+  refresh();
+}
+
+function clearApiKey() {
+  apiKey = '';
+  localStorage.removeItem('spectral_api_key');
+  const input = document.getElementById('api-key-input');
+  if (input) input.value = '';
+  toast('API Key cleared');
+  refresh();
+}
+
 function fmt_bytes(b) {
+  if (b === undefined || b === null || isNaN(b)) return '—';
   if (b < 1024) return b+'B';
   if (b < 1048576) return (b/1024).toFixed(1)+'KB';
   return (b/1048576).toFixed(1)+'MB';
 }
+
+// ── SCHEDULES ──────────────────────────────────────────────────────────────────
+async function renderSchedules(rid) {
+  const res = await api('/schedules').catch(() => ({schedules:[]}));
+  if (rid && rid !== currentRenderId) return;
+  const schedules = (res && res.schedules) ? res.schedules : (Array.isArray(res) ? res : []);
+  document.getElementById('content').innerHTML = `
+  <div class="section">
+    <div class="flex" style="margin-bottom:12px">
+      <div class="section-title" style="margin:0">${schedules.length} Schedule(s)</div>
+      <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="renderSchedules(currentRenderId)">↻</button></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Cron</th><th>Capability</th><th>Agent</th><th>Enabled</th><th>Last Run</th><th>Next Run</th><th></th></tr></thead>
+        <tbody>
+          ${schedules.map(s=>`<tr>
+            <td><strong>${esc(s.name)}</strong></td>
+            <td class="mono">${esc(s.cron)}</td>
+            <td>${esc(s.capability||'—')}</td>
+            <td class="mono">${esc(s.agent_id||'—')}</td>
+            <td><span class="pill ${s.enabled?'healthy':'unknown'}">${s.enabled?'enabled':'disabled'}</span></td>
+            <td class="mono">${fmtTime(s.last_run)}</td>
+            <td class="mono">${fmtTime(s.next_run)}</td>
+            <td class="flex">
+              <button class="btn btn-outline btn-sm" onclick="toggleSchedule('${esc(s.id)}',${!s.enabled})">${s.enabled?'Disable':'Enable'}</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteSchedule('${esc(s.id)}')">✕</button>
+            </td>
+          </tr>`).join('')||'<tr><td colspan="8" class="empty">No schedules</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="section">
+    <div class="section-title">New Schedule</div>
+    <div class="card">
+      <div class="form-row">
+        <div class="form-group"><label>Name</label><input id="sch-name" placeholder="daily-inference"></div>
+        <div class="form-group"><label>Cron</label><input id="sch-cron" placeholder="0 * * * *" style="width:130px"></div>
+        <div class="form-group"><label>Capability</label><input id="sch-cap" placeholder="inference"></div>
+        <div class="form-group"><label>Agent ID (opt)</label><input id="sch-agent" placeholder="edge-01"></div>
+        <div class="form-group"><label>Enabled</label><select id="sch-enabled" style="width:90px"><option value="true">Yes</option><option value="false">No</option></select></div>
+      </div>
+      <div class="form-group" style="margin-bottom:8px"><label>Payload (JSON)</label><textarea id="sch-payload" placeholder='{"prompt":"hello"}'></textarea></div>
+      <button class="btn btn-primary" onclick="createSchedule()">Create Schedule</button>
+    </div>
+  </div>`;
+}
+
+async function createSchedule() {
+  const name = document.getElementById('sch-name').value.trim();
+  const cron = document.getElementById('sch-cron').value.trim();
+  if (!name || !cron) { toast('Name and cron required', false); return; }
+  let payload = {};
+  try { payload = JSON.parse(document.getElementById('sch-payload').value || '{}'); } catch { toast('Invalid JSON payload', false); return; }
+  try {
+    await post('/schedules', {
+      name, cron,
+      capability: document.getElementById('sch-cap').value.trim(),
+      agent_id: document.getElementById('sch-agent').value.trim(),
+      payload,
+      enabled: document.getElementById('sch-enabled').value === 'true'
+    });
+    toast('Schedule created'); renderSchedules(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function toggleSchedule(id, enabled) {
+  try {
+    await api('/schedules/'+encodeURIComponent(id), {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled})});
+    toast('Schedule '+(enabled?'enabled':'disabled')); renderSchedules(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function deleteSchedule(id) {
+  if (!confirm('Delete schedule?')) return;
+  try { await del('/schedules/'+encodeURIComponent(id)); toast('Schedule deleted'); renderSchedules(currentRenderId); }
+  catch(e) { toast('Error: '+e.message, false); }
+}
+
+// ── AGENT GROUPS ──────────────────────────────────────────────────────────────
+async function renderGroups(rid) {
+  const [groupsRes, agentsRes] = await Promise.allSettled([api('/agent-groups'), api('/agents')]);
+  if (rid && rid !== currentRenderId) return;
+  const groups = ((groupsRes.value||{}).groups) || [];
+  document.getElementById('content').innerHTML = `
+  <div class="section">
+    <div class="flex" style="margin-bottom:12px">
+      <div class="section-title" style="margin:0">${groups.length} Group(s)</div>
+      <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="renderGroups(currentRenderId)">↻</button></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>ID</th><th>Name</th><th>Members</th><th>Created</th><th></th></tr></thead>
+        <tbody>
+          ${groups.map(g=>`<tr>
+            <td class="mono">${esc(g.id)}</td>
+            <td><strong>${esc(g.name)}</strong></td>
+            <td class="mono">${(g.members||[]).join(', ')||'—'}</td>
+            <td class="mono">${fmtTime(g.created_at)}</td>
+            <td class="flex">
+              <button class="btn btn-outline btn-sm" onclick="addGroupMember('${esc(g.id)}')">+ Member</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteGroup('${esc(g.id)}')">✕</button>
+            </td>
+          </tr>`).join('')||'<tr><td colspan="5" class="empty">No groups</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="section">
+    <div class="section-title">New Group</div>
+    <div class="card">
+      <div class="form-row">
+        <div class="form-group"><label>Group Name</label><input id="grp-name" placeholder="gpu-cluster"></div>
+        <div class="form-group" style="flex:1"><label>Initial Members (comma-sep agent IDs)</label><input id="grp-members" placeholder="edge-01,edge-02" style="min-width:200px"></div>
+        <button class="btn btn-primary" style="margin-top:18px" onclick="createGroup()">Create</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function createGroup() {
+  const name = document.getElementById('grp-name').value.trim();
+  if (!name) { toast('Name required', false); return; }
+  const members = document.getElementById('grp-members').value.split(',').map(s=>s.trim()).filter(Boolean);
+  try {
+    await post('/agent-groups', {name, members});
+    toast('Group created'); renderGroups(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function deleteGroup(id) {
+  if (!confirm('Delete group?')) return;
+  try { await del('/agent-groups/'+encodeURIComponent(id)); toast('Group deleted'); renderGroups(currentRenderId); }
+  catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function addGroupMember(id) {
+  const agentId = prompt('Agent ID to add:');
+  if (!agentId || !agentId.trim()) return;
+  try {
+    await post('/agent-groups/'+encodeURIComponent(id)+'/members', {agent_id: agentId.trim()});
+    toast('Member added'); renderGroups(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+// ── CIRCUIT BREAKER ───────────────────────────────────────────────────────────
+async function renderCircuit(rid) {
+  const res = await api('/circuit').catch(() => ({breakers:[]}));
+  if (rid && rid !== currentRenderId) return;
+  const breakers = res.breakers || [];
+  document.getElementById('content').innerHTML = `
+  <div class="section">
+    <div class="flex" style="margin-bottom:12px">
+      <div class="section-title" style="margin:0">Circuit Breakers (${breakers.length})</div>
+      <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="renderCircuit(currentRenderId)">↻</button></div>
+    </div>
+    ${breakers.length===0?'<div class="empty">No circuit breakers registered</div>':''}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>State</th><th>Failures</th><th>Last Failure</th><th>Reset At</th><th></th></tr></thead>
+        <tbody>
+          ${breakers.map(b=>`<tr>
+            <td><strong>${esc(b.name)}</strong></td>
+            <td><span class="pill ${b.state==='closed'?'healthy':b.state==='half-open'?'degraded':'degraded'}">${esc(b.state||'unknown')}</span></td>
+            <td>${b.failures||0}</td>
+            <td class="mono">${fmtTime(b.last_failure)}</td>
+            <td class="mono">${fmtTime(b.reset_at)}</td>
+            <td><button class="btn btn-outline btn-sm" onclick="resetBreaker('${esc(b.name)}')">↺ Reset</button></td>
+          </tr>`).join('')||'<tr><td colspan="6" class="empty">No circuit breakers</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+async function resetBreaker(name) {
+  try {
+    await post('/circuit/reset', {name});
+    toast('Circuit breaker "'+name+'" reset'); renderCircuit(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+// ── AUDIT LOG PAGE ────────────────────────────────────────────────────────────
+async function renderAudit(rid) {
+  if (rid && rid !== currentRenderId) return;
+  document.getElementById('content').innerHTML = `
+  <div class="section">
+    <div class="flex" style="margin-bottom:12px">
+      <div class="section-title" style="margin:0">Audit Log</div>
+      <div class="ml-auto flex" style="flex-wrap:wrap;gap:6px">
+        <div class="form-group"><label style="font-size:11px">Actor</label><input id="audit-actor" placeholder="actor…" style="width:150px;padding:4px 8px;font-size:12px"></div>
+        <div class="form-group"><label style="font-size:11px">Action</label><input id="audit-action" placeholder="action…" style="width:110px;padding:4px 8px;font-size:12px"></div>
+        <div class="form-group"><label style="font-size:11px">Limit</label><input id="audit-limit" type="number" value="50" style="width:70px;padding:4px 8px;font-size:12px"></div>
+        <button class="btn btn-outline btn-sm" onclick="loadAuditPage()" style="margin-top:18px">↻ Refresh</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Resource</th><th>Result</th><th>IP</th></tr></thead>
+        <tbody id="audit-page-body"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>`;
+  loadAuditPage();
+}
+
+async function loadAuditPage() {
+  const actor = (document.getElementById('audit-actor')||{}).value||'';
+  const action = (document.getElementById('audit-action')||{}).value||'';
+  const limit = (document.getElementById('audit-limit')||{}).value||50;
+  let u = `/audit?limit=${limit}&offset=0`;
+  if (actor) u += '&actor='+encodeURIComponent(actor);
+  if (action) u += '&action='+encodeURIComponent(action);
+  try {
+    const res = await api(u);
+    const tbody = document.getElementById('audit-page-body');
+    if (!tbody) return;
+    const entries = res.entries || [];
+    if (!entries.length) { tbody.innerHTML = '<tr><td colspan="6" class="empty">No audit entries</td></tr>'; return; }
+    tbody.innerHTML = entries.map(e=>`<tr>
+      <td class="mono">${fmtTime(e.timestamp)}</td>
+      <td class="mono">${esc(e.actor||'—')}</td>
+      <td><span class="pill ${e.result==='success'?'healthy':'degraded'}">${esc(e.action||'—')}</span></td>
+      <td class="mono">${esc(e.resource||'—')}</td>
+      <td><span style="color:${e.result==='success'?'var(--accent2)':'var(--danger)'}">${esc(e.result||'—')}</span></td>
+      <td class="mono">${esc(e.ip||'—')}</td>
+    </tr>`).join('');
+  } catch(e) {
+    const tbody = document.getElementById('audit-page-body');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="empty">Failed to load</td></tr>';
+  }
+}
+
+// ── BLOCKCHAIN HELPERS ────────────────────────────────────────────────────────
+async function exportBlockchain() {
+  try {
+    const res = await api('/blockchain/export');
+    const blob = new Blob([JSON.stringify(res, null, 2)], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'blockchain-export.json';
+    a.click();
+    toast('Blockchain exported');
+  } catch(e) { toast('Export failed: '+e.message, false); }
+}
+
+async function importBlockchainFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const body = JSON.parse(text);
+    const res = await post('/blockchain/import', body);
+    toast('Imported '+res.imported+' block(s), skipped '+res.skipped);
+    renderBlockchain(currentRenderId);
+  } catch(e) { toast('Import failed: '+e.message, false); }
+}
+
+// ── ROUTES HELPERS ────────────────────────────────────────────────────────────
+async function exportRoutes() {
+  try {
+    const res = await api('/routes/export');
+    const blob = new Blob([JSON.stringify(res, null, 2)], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'routes-export.json';
+    a.click();
+    toast('Routes exported');
+  } catch(e) { toast('Export failed: '+e.message, false); }
+}
+
+async function importRoutesFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const body = JSON.parse(text);
+    const res = await post('/routes/import', body);
+    toast('Imported '+res.imported+' route(s), skipped '+res.skipped);
+    renderRoutes(currentRenderId);
+  } catch(e) { toast('Import failed: '+e.message, false); }
+}
+
+// ── AGENTS HELPERS ────────────────────────────────────────────────────────────
+async function checkAgentsHealth() {
+  try {
+    const res = await api('/agents/health');
+    const agents = res.agents || [];
+    const healthy = agents.filter(a=>a.status==='healthy').length;
+    toast('Health: '+healthy+'/'+agents.length+' agents healthy');
+  } catch(e) { toast('Health check failed: '+e.message, false); }
+}
+
+function fmtBytes(b) { return fmt_bytes(b); }
 
 // ── BOOT ────────────────────────────────────────────────────────────────────
 go('overview');
