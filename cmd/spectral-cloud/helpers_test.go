@@ -853,3 +853,159 @@ func TestWithTenantRateLimit_BlocksWhenExceeded(t *testing.T) {
 		t.Fatalf("expected 429, got %d", w.Code)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// parseCORSConfig
+// ---------------------------------------------------------------------------
+
+func TestParseCORSConfig_Empty(t *testing.T) {
+cfg := parseCORSConfig("", "", "", "")
+if cfg.allowAll || len(cfg.allowedOrigins) != 0 {
+t.Fatal("expected empty config when origins empty")
+}
+}
+
+func TestParseCORSConfig_Wildcard(t *testing.T) {
+cfg := parseCORSConfig("*", "", "", "")
+if !cfg.allowAll {
+t.Fatal("expected allowAll=true for wildcard origin")
+}
+}
+
+func TestParseCORSConfig_SpecificOrigins(t *testing.T) {
+cfg := parseCORSConfig("https://example.com, https://app.example.com", "", "", "")
+if cfg.allowAll {
+t.Fatal("expected allowAll=false for specific origins")
+}
+if len(cfg.allowedOrigins) != 2 {
+t.Fatalf("expected 2 origins, got %d", len(cfg.allowedOrigins))
+}
+}
+
+func TestParseCORSConfig_Defaults(t *testing.T) {
+cfg := parseCORSConfig("https://example.com", "", "", "")
+if cfg.allowedMethods == "" {
+t.Fatal("expected default allowed methods")
+}
+if cfg.maxAge == "" {
+t.Fatal("expected default max age")
+}
+}
+
+func TestParseCORSConfig_Overrides(t *testing.T) {
+cfg := parseCORSConfig("https://example.com", "GET,POST", "X-Custom", "3600")
+if cfg.allowedMethods != "GET,POST" {
+t.Fatalf("expected overridden methods, got %s", cfg.allowedMethods)
+}
+if cfg.allowedHeaders != "X-Custom" {
+t.Fatalf("expected overridden headers, got %s", cfg.allowedHeaders)
+}
+if cfg.maxAge != "3600" {
+t.Fatalf("expected overridden maxAge, got %s", cfg.maxAge)
+}
+}
+
+// ---------------------------------------------------------------------------
+// withLogger
+// ---------------------------------------------------------------------------
+
+func TestWithLogger_PassesThrough(t *testing.T) {
+called := false
+inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+called = true
+w.WriteHeader(http.StatusOK)
+})
+h := withLogger(inner)
+r := httptest.NewRequest(http.MethodGet, "/health", nil)
+r.Header.Set("X-Request-ID", "test-req-123")
+w := httptest.NewRecorder()
+h.ServeHTTP(w, r)
+if !called {
+t.Fatal("expected inner handler to be called")
+}
+if w.Code != http.StatusOK {
+t.Fatalf("expected 200, got %d", w.Code)
+}
+}
+
+func TestWithLogger_CapturesNon200(t *testing.T) {
+inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.WriteHeader(http.StatusNotFound)
+})
+h := withLogger(inner)
+w := httptest.NewRecorder()
+h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/missing", nil))
+if w.Code != http.StatusNotFound {
+t.Fatalf("expected 404, got %d", w.Code)
+}
+}
+
+// ---------------------------------------------------------------------------
+// withCORS
+// ---------------------------------------------------------------------------
+
+func TestWithCORS_NoOriginConfig_PassesThrough(t *testing.T) {
+called := false
+inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
+h := withCORS(inner, corsConfig{})
+h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+if !called {
+t.Fatal("expected passthrough with no CORS config")
+}
+}
+
+func TestWithCORS_Wildcard_SetsHeader(t *testing.T) {
+inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+cfg := parseCORSConfig("*", "", "", "")
+h := withCORS(inner, cfg)
+r := httptest.NewRequest(http.MethodGet, "/", nil)
+r.Header.Set("Origin", "https://example.com")
+w := httptest.NewRecorder()
+h.ServeHTTP(w, r)
+if w.Header().Get("Access-Control-Allow-Origin") != "*" {
+t.Fatalf("expected wildcard ACAO header, got %q", w.Header().Get("Access-Control-Allow-Origin"))
+}
+}
+
+func TestWithCORS_SpecificOrigin_Match(t *testing.T) {
+inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+cfg := parseCORSConfig("https://example.com", "", "", "")
+h := withCORS(inner, cfg)
+r := httptest.NewRequest(http.MethodGet, "/", nil)
+r.Header.Set("Origin", "https://example.com")
+w := httptest.NewRecorder()
+h.ServeHTTP(w, r)
+if w.Header().Get("Access-Control-Allow-Origin") != "https://example.com" {
+t.Fatalf("expected origin reflected, got %q", w.Header().Get("Access-Control-Allow-Origin"))
+}
+}
+
+func TestWithCORS_SpecificOrigin_NoMatch(t *testing.T) {
+inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+cfg := parseCORSConfig("https://example.com", "", "", "")
+h := withCORS(inner, cfg)
+r := httptest.NewRequest(http.MethodGet, "/", nil)
+r.Header.Set("Origin", "https://evil.com")
+w := httptest.NewRecorder()
+h.ServeHTTP(w, r)
+if w.Header().Get("Access-Control-Allow-Origin") != "" {
+t.Fatal("expected no ACAO header for unmatched origin")
+}
+}
+
+func TestWithCORS_Preflight_ShortCircuits(t *testing.T) {
+called := false
+inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
+cfg := parseCORSConfig("*", "", "", "")
+h := withCORS(inner, cfg)
+r := httptest.NewRequest(http.MethodOptions, "/api/resource", nil)
+r.Header.Set("Origin", "https://example.com")
+w := httptest.NewRecorder()
+h.ServeHTTP(w, r)
+if called {
+t.Fatal("expected preflight to short-circuit before inner handler")
+}
+if w.Code != http.StatusNoContent {
+t.Fatalf("expected 204 for preflight, got %d", w.Code)
+}
+}

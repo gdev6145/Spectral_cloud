@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sort"
 	"testing"
 	"time"
@@ -514,4 +517,273 @@ func TestAPIGET_InvalidURL(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid URL")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// windowStats
+// ---------------------------------------------------------------------------
+
+func TestWindowStats_DisabledByZeroDuration(t *testing.T) {
+w := newWindowStats(0, false, false)
+if w.enabled {
+t.Fatal("expected disabled for zero window")
+}
+w.record(true, 10*time.Millisecond, "")
+w.finish()
+if w.summaries() != nil {
+t.Fatal("expected nil summaries when disabled")
+}
+}
+
+func TestWindowStats_RecordAndFlush(t *testing.T) {
+w := newWindowStats(100*time.Millisecond, false, false)
+w.record(true, 10*time.Millisecond, "")
+w.record(true, 20*time.Millisecond, "")
+w.record(false, 5*time.Millisecond, "timeout")
+w.flush(time.Now().UTC())
+sums := w.summaries()
+if len(sums) != 1 {
+t.Fatalf("expected 1 window summary, got %d", len(sums))
+}
+s := sums[0]
+if s.Successes != 2 || s.Failures != 1 {
+t.Fatalf("unexpected counts: ok=%d fail=%d", s.Successes, s.Failures)
+}
+}
+
+func TestWindowStats_FlushEmptyNoSummary(t *testing.T) {
+w := newWindowStats(100*time.Millisecond, false, false)
+w.flush(time.Now().UTC()) // no data → no summary appended
+if len(w.summaries()) != 0 {
+t.Fatal("expected no summaries for empty flush")
+}
+}
+
+func TestWindowStats_StopIdempotent(t *testing.T) {
+w := newWindowStats(50*time.Millisecond, false, false)
+w.start()
+w.stop()
+w.stop() // double-stop should not panic
+}
+
+func TestWindowStats_ErrorCounts(t *testing.T) {
+w := newWindowStats(100*time.Millisecond, false, false)
+w.record(false, 1*time.Millisecond, "connection refused")
+w.record(false, 1*time.Millisecond, "connection refused")
+w.record(false, 1*time.Millisecond, "timeout")
+w.flush(time.Now().UTC())
+sums := w.summaries()
+if len(sums) != 1 {
+t.Fatalf("expected 1 summary, got %d", len(sums))
+}
+if len(sums[0].ErrorTop) == 0 {
+t.Fatal("expected top errors in summary")
+}
+if sums[0].ErrorTop[0].Error != "connection refused" || sums[0].ErrorTop[0].Count != 2 {
+t.Fatalf("unexpected top error: %+v", sums[0].ErrorTop[0])
+}
+}
+
+// ---------------------------------------------------------------------------
+// writeJSON / readBlocksFromDB / writeBlocksToDB / readRoutesFromDB / writeRoutesToDB
+// ---------------------------------------------------------------------------
+
+func TestWriteJSON_RoundTrip(t *testing.T) {
+dir := t.TempDir()
+path := filepath.Join(dir, "data.json")
+in := map[string]int{"a": 1, "b": 2}
+if err := writeJSON(path, in); err != nil {
+t.Fatalf("writeJSON: %v", err)
+}
+raw, err := os.ReadFile(path)
+if err != nil {
+t.Fatal(err)
+}
+var out map[string]int
+if err := json.Unmarshal(raw, &out); err != nil {
+t.Fatal(err)
+}
+if out["a"] != 1 || out["b"] != 2 {
+t.Fatalf("unexpected round-trip: %v", out)
+}
+}
+
+func TestReadWriteBlocksFromDB(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "test.db")
+
+// Non-existent DB → returns false, no error.
+if _, ok, err := readBlocksFromDB(dbPath); err != nil || ok {
+t.Fatalf("expected false,nil for missing DB; got ok=%v err=%v", ok, err)
+}
+
+// Write blocks.
+bc := blockchain.NewBlockchain()
+bc.AddBlock([]blockchain.Transaction{{Sender: "x", Recipient: "y", Amount: 5}})
+if err := writeBlocksToDB(dbPath, bc.Snapshot()); err != nil {
+t.Fatalf("writeBlocksToDB: %v", err)
+}
+
+// Read back.
+blocks, ok, err := readBlocksFromDB(dbPath)
+if err != nil || !ok || len(blocks) != 2 {
+t.Fatalf("expected 2 blocks; got ok=%v err=%v len=%d", ok, err, len(blocks))
+}
+}
+
+func TestReadWriteRoutesFromDB(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "test.db")
+
+// Non-existent → false, no error.
+if _, ok, err := readRoutesFromDB(dbPath); err != nil || ok {
+t.Fatalf("expected false,nil; got ok=%v err=%v", ok, err)
+}
+
+routes := []routing.Route{{Destination: "node-a", Metric: routing.RouteMetric{Latency: 10}}}
+if err := writeRoutesToDB(dbPath, routes); err != nil {
+t.Fatalf("writeRoutesToDB: %v", err)
+}
+
+got, ok, err := readRoutesFromDB(dbPath)
+if err != nil || !ok || len(got) != 1 {
+t.Fatalf("expected 1 route; got ok=%v err=%v len=%d", ok, err, len(got))
+}
+if got[0].Destination != "node-a" {
+t.Fatalf("unexpected destination: %s", got[0].Destination)
+}
+}
+
+// ---------------------------------------------------------------------------
+// repairBlockchain / repairRoutes
+// ---------------------------------------------------------------------------
+
+func TestRepairBlockchain_AllValid(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "test.db")
+
+bc := blockchain.NewBlockchain()
+bc.AddBlock([]blockchain.Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+_ = writeBlocksToDB(dbPath, bc.Snapshot())
+
+if err := repairBlockchain("", dbPath); err != nil {
+t.Fatalf("repairBlockchain: %v", err)
+}
+
+// All blocks were valid → all preserved.
+blocks, _, _ := readBlocksFromDB(dbPath)
+if len(blocks) != 2 {
+t.Fatalf("expected 2 blocks, got %d", len(blocks))
+}
+}
+
+func TestRepairBlockchain_TamperedBlock(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "test.db")
+
+bc := blockchain.NewBlockchain()
+bc.AddBlock([]blockchain.Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+bc.AddBlock([]blockchain.Transaction{{Sender: "b", Recipient: "c", Amount: 2}})
+snap := bc.Snapshot()
+// Tamper block index 2.
+snap[2].Hash = "badhash"
+_ = writeBlocksToDB(dbPath, snap)
+
+if err := repairBlockchain("", dbPath); err != nil {
+t.Fatalf("repairBlockchain: %v", err)
+}
+
+blocks, _, _ := readBlocksFromDB(dbPath)
+if len(blocks) != 2 {
+t.Fatalf("expected 2 valid blocks after repair, got %d", len(blocks))
+}
+}
+
+func TestRepairBlockchain_NonExistentFiles(t *testing.T) {
+// Both DB and JSON missing → should return nil (no error).
+if err := repairBlockchain("/tmp/no-such-file.json", "/tmp/no-such-db.db"); err != nil {
+t.Fatalf("expected nil for missing files, got %v", err)
+}
+}
+
+func TestRepairRoutes_PrunesExpired(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "test.db")
+
+past := time.Now().UTC().Add(-time.Hour)
+future := time.Now().UTC().Add(time.Hour)
+routes := []routing.Route{
+{Destination: "dead", Metric: routing.RouteMetric{Latency: 1}, ExpiresAt: &past},
+{Destination: "live", Metric: routing.RouteMetric{Latency: 2}, ExpiresAt: &future},
+}
+_ = writeRoutesToDB(dbPath, routes)
+
+if err := repairRoutes("", dbPath); err != nil {
+t.Fatalf("repairRoutes: %v", err)
+}
+
+got, _, _ := readRoutesFromDB(dbPath)
+if len(got) != 1 || got[0].Destination != "live" {
+t.Fatalf("expected only 'live' route after repair, got %v", got)
+}
+}
+
+func TestRepairRoutes_NonExistentFiles(t *testing.T) {
+if err := repairRoutes("/tmp/no-routes.json", "/tmp/no-db.db"); err != nil {
+t.Fatalf("expected nil for missing files, got %v", err)
+}
+}
+
+// ---------------------------------------------------------------------------
+// validateBlockchain / validateRoutes (via DB)
+// ---------------------------------------------------------------------------
+
+func TestValidateBlockchainDB_Valid(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "test.db")
+
+bc := blockchain.NewBlockchain()
+bc.AddBlock([]blockchain.Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+_ = writeBlocksToDB(dbPath, bc.Snapshot())
+
+issues, err := validateBlockchain("", dbPath)
+if err != nil {
+t.Fatalf("validateBlockchain: %v", err)
+}
+// May have schema issues if schema file absent; check no crash.
+_ = issues
+}
+
+func TestValidateBlockchainDB_MissingFile(t *testing.T) {
+issues, err := validateBlockchain("/tmp/nofile.json", "/tmp/nodb.db")
+if err != nil {
+t.Fatalf("expected nil error for missing, got %v", err)
+}
+if issues != nil {
+t.Fatalf("expected nil issues for missing, got %v", issues)
+}
+}
+
+func TestValidateRoutesDB_Valid(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "test.db")
+
+routes := []routing.Route{{Destination: "node-a", Metric: routing.RouteMetric{Latency: 5}}}
+_ = writeRoutesToDB(dbPath, routes)
+
+_, err := validateRoutes("", dbPath)
+if err != nil {
+t.Fatalf("validateRoutes: %v", err)
+}
+// Schema issues may appear when no schema file is provided; just verify no crash.
+}
+
+func TestValidateRoutesDB_MissingFile(t *testing.T) {
+issues, err := validateRoutes("/tmp/nofile.json", "/tmp/nodb.db")
+if err != nil {
+t.Fatalf("expected nil for missing files, got %v", err)
+}
+if issues != nil {
+t.Fatalf("expected nil issues, got %v", issues)
+}
 }
