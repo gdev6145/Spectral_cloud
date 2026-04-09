@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"strings"
+
 	"github.com/gdev6145/Spectral_cloud/pkg/blockchain"
 	"github.com/gdev6145/Spectral_cloud/pkg/routing"
 	"github.com/gdev6145/Spectral_cloud/pkg/store"
@@ -1559,4 +1561,715 @@ os.Stdout = old
 buf := make([]byte, 4096)
 n, _ := r.Read(buf)
 _ = string(buf[:n])
+}
+
+// ---------------------------------------------------------------------------
+// routeBestCmd — DB path
+// ---------------------------------------------------------------------------
+
+func TestRouteBestCmd_Happy(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "spectral.db")
+db, _ := store.Open(dbPath)
+router := routing.NewRoutingEngine()
+router.AddRoute("10.0.0.1:9000", routing.RouteMetric{Latency: 5, Throughput: 100})
+db.WriteRoutesTenant("default", router.ListRoutes())
+db.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+routeBestCmd([]string{"--db-path", dbPath, "--tenant", "default"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if len(buf[:n]) == 0 {
+t.Fatal("expected output from routeBestCmd")
+}
+}
+
+// ---------------------------------------------------------------------------
+// agentRegisterCmd
+// ---------------------------------------------------------------------------
+
+func TestAgentRegisterCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusCreated)
+json.NewEncoder(w).Encode(map[string]any{"id": "agent-1", "status": "healthy"})
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+agentRegisterCmd([]string{"--url", srv.URL, "--id", "agent-1", "--capability", "inference"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if len(buf[:n]) == 0 {
+t.Fatal("expected output")
+}
+}
+
+// ---------------------------------------------------------------------------
+// blockchainExportCmd — to stdout and to file
+// ---------------------------------------------------------------------------
+
+func TestBlockchainExportCmd_Stdout(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.WriteHeader(http.StatusOK)
+w.Write([]byte(`[{"index":0}]`))
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+blockchainExportCmd([]string{"--url", srv.URL})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if len(buf[:n]) == 0 {
+t.Fatal("expected output")
+}
+}
+
+func TestBlockchainExportCmd_File(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.WriteHeader(http.StatusOK)
+w.Write([]byte(`[{"index":0}]`))
+}))
+defer srv.Close()
+
+dir := t.TempDir()
+out := filepath.Join(dir, "chain.json")
+
+blockchainExportCmd([]string{"--url", srv.URL, "--out", out})
+
+data, _ := os.ReadFile(out)
+if len(data) == 0 {
+t.Fatal("expected file to be written")
+}
+}
+
+// ---------------------------------------------------------------------------
+// routesExportCmd — to stdout and to file
+// ---------------------------------------------------------------------------
+
+func TestRoutesExportCmd_Stdout(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.WriteHeader(http.StatusOK)
+w.Write([]byte(`[{"destination":"10.0.0.1:9000"}]`))
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+routesExportCmd([]string{"--url", srv.URL})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if len(buf[:n]) == 0 {
+t.Fatal("expected output")
+}
+}
+
+func TestRoutesExportCmd_File(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.WriteHeader(http.StatusOK)
+w.Write([]byte(`[{"destination":"10.0.0.1:9000"}]`))
+}))
+defer srv.Close()
+
+dir := t.TempDir()
+out := filepath.Join(dir, "routes.json")
+
+routesExportCmd([]string{"--url", srv.URL, "--out", out})
+
+data, _ := os.ReadFile(out)
+if len(data) == 0 {
+t.Fatal("expected file to be written")
+}
+}
+
+// ---------------------------------------------------------------------------
+// tenantCreateCmd / tenantDeleteCmd
+// ---------------------------------------------------------------------------
+
+func TestTenantCreateCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusCreated)
+json.NewEncoder(w).Encode(map[string]any{"name": "acme"})
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+tenantCreateCmd([]string{"--url", srv.URL, "--name", "acme"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if !strings.Contains(string(buf[:n]), "acme") {
+t.Fatalf("expected 'acme' in output, got: %s", string(buf[:n]))
+}
+}
+
+func TestTenantDeleteCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.WriteHeader(http.StatusNoContent)
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+tenantDeleteCmd([]string{"--url", srv.URL, "--name", "acme"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if !strings.Contains(string(buf[:n]), "acme") {
+t.Fatalf("expected 'acme' in output, got: %s", string(buf[:n]))
+}
+}
+
+// ---------------------------------------------------------------------------
+// chainSearchCmd
+// ---------------------------------------------------------------------------
+
+func TestChainSearchCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]any{
+"count": 1,
+"results": []map[string]any{
+{"block_index": 1, "sender": "alice", "recipient": "bob", "amount": 10},
+},
+})
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+chainSearchCmd([]string{"--url", srv.URL, "--sender", "alice"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if len(buf[:n]) == 0 {
+t.Fatal("expected output from chainSearchCmd")
+}
+}
+
+// ---------------------------------------------------------------------------
+// agentRouteCmd
+// ---------------------------------------------------------------------------
+
+func TestAgentRouteCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]any{
+"agents": []map[string]any{
+{"id": "agent-1", "status": "healthy"},
+},
+})
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+agentRouteCmd([]string{"--url", srv.URL, "--capability", "inference"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if len(buf[:n]) == 0 {
+t.Fatal("expected output from agentRouteCmd")
+}
+}
+
+// ---------------------------------------------------------------------------
+// jobsListCmd / jobsSubmitCmd
+// ---------------------------------------------------------------------------
+
+func TestJobsListCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]any{
+"count": 1,
+"jobs": []map[string]any{
+{"id": "job-1", "agent_id": "agent-1", "capability": "inference", "status": "pending"},
+},
+})
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+jobsListCmd([]string{"--url", srv.URL})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if len(buf[:n]) == 0 {
+t.Fatal("expected output from jobsListCmd")
+}
+}
+
+func TestJobsSubmitCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusCreated)
+json.NewEncoder(w).Encode(map[string]any{"id": "job-1", "status": "pending"})
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+jobsSubmitCmd([]string{"--url", srv.URL, "--capability", "inference"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if len(buf[:n]) == 0 {
+t.Fatal("expected output from jobsSubmitCmd")
+}
+}
+
+// ---------------------------------------------------------------------------
+// importBlockchainCmd / importRoutesCmd
+// ---------------------------------------------------------------------------
+
+func TestImportBlockchainCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]any{"imported": 2})
+}))
+defer srv.Close()
+
+// Write a JSON file
+chain := blockchain.NewBlockchain()
+chain.AddBlock([]blockchain.Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+data, _ := json.Marshal(chain.Snapshot())
+f, _ := os.CreateTemp("", "chain-*.json")
+f.Write(data)
+f.Close()
+defer os.Remove(f.Name())
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+importBlockchainCmd([]string{"--url", srv.URL, "--in", f.Name()})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if len(buf[:n]) == 0 {
+t.Fatal("expected output from importBlockchainCmd")
+}
+}
+
+func TestImportRoutesCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]any{"imported": 1})
+}))
+defer srv.Close()
+
+router := routing.NewRoutingEngine()
+router.AddRoute("10.0.0.1:9000", routing.RouteMetric{Latency: 5, Throughput: 100})
+data, _ := json.Marshal(router.ListRoutes())
+f, _ := os.CreateTemp("", "routes-*.json")
+f.Write(data)
+f.Close()
+defer os.Remove(f.Name())
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+importRoutesCmd([]string{"--url", srv.URL, "--in", f.Name()})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if len(buf[:n]) == 0 {
+t.Fatal("expected output from importRoutesCmd")
+}
+}
+
+// ---------------------------------------------------------------------------
+// metricsCmd
+// ---------------------------------------------------------------------------
+
+func TestMetricsCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]any{
+"timestamp":      "2026-04-09T00:00:00Z",
+"uptime_seconds": 3700,
+"jobs":           5,
+"tenants": []map[string]any{
+{"tenant": "default", "blocks": 10, "routes": 3, "agents": 2},
+},
+})
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+metricsCmd([]string{"--url", srv.URL})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if !strings.Contains(string(buf[:n]), "Uptime") {
+t.Fatalf("expected uptime info, got: %s", string(buf[:n]))
+}
+}
+
+// ---------------------------------------------------------------------------
+// kvGetCmd / kvSetCmd / kvDeleteCmd / kvListCmd
+// ---------------------------------------------------------------------------
+
+func TestKvGetCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]any{
+"key": "mykey", "value": "myval", "tenant": "default", "updated_at": "2026-04-09T00:00:00Z",
+})
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+kvGetCmd([]string{"--url", srv.URL, "--key", "mykey"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if !strings.Contains(string(buf[:n]), "myval") {
+t.Fatalf("expected 'myval' in output, got: %s", string(buf[:n]))
+}
+}
+
+func TestKvSetCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.WriteHeader(http.StatusOK)
+w.Write([]byte(`{}`))
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+kvSetCmd([]string{"--url", srv.URL, "--key", "mykey", "--value", "myval"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if !strings.Contains(string(buf[:n]), "mykey") {
+t.Fatalf("expected 'mykey' in output, got: %s", string(buf[:n]))
+}
+}
+
+func TestKvSetCmd_WithTTL(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.WriteHeader(http.StatusOK)
+w.Write([]byte(`{}`))
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+kvSetCmd([]string{"--url", srv.URL, "--key", "mykey", "--value", "myval", "--ttl", "10m"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if !strings.Contains(string(buf[:n]), "mykey") {
+t.Fatalf("expected 'mykey' in output, got: %s", string(buf[:n]))
+}
+}
+
+func TestKvDeleteCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.WriteHeader(http.StatusNoContent)
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+kvDeleteCmd([]string{"--url", srv.URL, "--key", "mykey"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if !strings.Contains(string(buf[:n]), "mykey") {
+t.Fatalf("expected 'mykey' in output, got: %s", string(buf[:n]))
+}
+}
+
+func TestKvListCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]any{
+"count": 1,
+"entries": []map[string]any{
+{"key": "k1", "value": "v1"},
+},
+})
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+kvListCmd([]string{"--url", srv.URL})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if !strings.Contains(string(buf[:n]), "k1") {
+t.Fatalf("expected 'k1' in output, got: %s", string(buf[:n]))
+}
+}
+
+func TestKvListCmd_WithPrefix(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]any{"count": 0, "entries": []map[string]any{}})
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+kvListCmd([]string{"--url", srv.URL, "--prefix", "app:"})
+w.Close()
+os.Stdout = old
+buf := make([]byte, 4096)
+r.Read(buf)
+}
+
+// ---------------------------------------------------------------------------
+// searchCmd
+// ---------------------------------------------------------------------------
+
+func TestSearchCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]any{
+"query":  "alice",
+"agents": []map[string]any{{"id": "a1", "status": "healthy"}},
+"routes": []map[string]any{},
+"transactions": []map[string]any{
+{"block_index": 1, "sender": "alice", "recipient": "bob"},
+},
+})
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+searchCmd([]string{"--url", srv.URL, "--q", "alice"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if !strings.Contains(string(buf[:n]), "alice") {
+t.Fatalf("expected 'alice' in output, got: %s", string(buf[:n]))
+}
+}
+
+func TestSearchCmd_NoResults(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]any{
+"query": "nope", "agents": []any{}, "routes": []any{}, "transactions": []any{},
+})
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+searchCmd([]string{"--url", srv.URL, "--q", "nope"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if !strings.Contains(string(buf[:n]), "No results") {
+t.Fatalf("expected 'No results' in output, got: %s", string(buf[:n]))
+}
+}
+
+// ---------------------------------------------------------------------------
+// routesFilterCmd
+// ---------------------------------------------------------------------------
+
+func TestRoutesFilterCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]any{
+"count": 1,
+"routes": []map[string]any{
+{
+"destination": "10.0.0.1:9000",
+"metric":      map[string]any{"latency": 3, "throughput": 200},
+"satellite":   false,
+},
+},
+})
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+routesFilterCmd([]string{"--url", srv.URL, "--max-latency", "10"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if !strings.Contains(string(buf[:n]), "10.0.0.1") {
+t.Fatalf("expected route in output, got: %s", string(buf[:n]))
+}
+}
+
+// ---------------------------------------------------------------------------
+// notifyListCmd / notifyAddCmd / notifyDeleteCmd
+// ---------------------------------------------------------------------------
+
+func TestNotifyListCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]any{
+"count": 1,
+"rules": []map[string]any{
+{"id": "r1", "name": "test-rule", "webhook_url": "http://example.com", "active": true, "fired_total": 5},
+},
+})
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+notifyListCmd([]string{"--url", srv.URL})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if !strings.Contains(string(buf[:n]), "test-rule") {
+t.Fatalf("expected 'test-rule' in output, got: %s", string(buf[:n]))
+}
+}
+
+func TestNotifyAddCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusCreated)
+json.NewEncoder(w).Encode(map[string]any{"id": "r1", "name": "my-rule"})
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+notifyAddCmd([]string{"--url", srv.URL, "--name", "my-rule", "--webhook-url", "http://example.com/hook"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if !strings.Contains(string(buf[:n]), "my-rule") {
+t.Fatalf("expected 'my-rule' in output, got: %s", string(buf[:n]))
+}
+}
+
+func TestNotifyAddCmd_WithEventTypes(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusCreated)
+json.NewEncoder(w).Encode(map[string]any{"id": "r2", "name": "block-rule"})
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+notifyAddCmd([]string{
+"--url", srv.URL,
+"--name", "block-rule",
+"--webhook-url", "http://example.com/hook",
+"--event-types", "block_added,agent_registered",
+})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if !strings.Contains(string(buf[:n]), "block-rule") {
+t.Fatalf("expected 'block-rule' in output, got: %s", string(buf[:n]))
+}
+}
+
+func TestNotifyDeleteCmd_Happy(t *testing.T) {
+srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.WriteHeader(http.StatusNoContent)
+}))
+defer srv.Close()
+
+r, w, _ := os.Pipe()
+old := os.Stdout
+os.Stdout = w
+notifyDeleteCmd([]string{"--url", srv.URL, "--id", "r1"})
+w.Close()
+os.Stdout = old
+
+buf := make([]byte, 4096)
+n, _ := r.Read(buf)
+if !strings.Contains(string(buf[:n]), "r1") {
+t.Fatalf("expected 'r1' in output, got: %s", string(buf[:n]))
+}
 }

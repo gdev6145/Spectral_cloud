@@ -12,6 +12,8 @@ import (
 
 	"github.com/gdev6145/Spectral_cloud/pkg/agent"
 	"github.com/gdev6145/Spectral_cloud/pkg/agentgroup"
+	"github.com/gdev6145/Spectral_cloud/pkg/blockchain"
+	"github.com/gdev6145/Spectral_cloud/pkg/routing"
 	"github.com/gdev6145/Spectral_cloud/pkg/circuit"
 	"github.com/gdev6145/Spectral_cloud/pkg/events"
 	"github.com/gdev6145/Spectral_cloud/pkg/jobs"
@@ -2197,5 +2199,439 @@ t.Fatal("expected id field in response")
 }
 if job["expires_at"] == nil {
 t.Fatal("expected expires_at field for ttl_seconds=3600")
+}
+}
+
+// ---------------------------------------------------------------------------
+// Utility function tests: parseKeyList, parseTags, validateTransactions,
+// getEnvInt, getEnvFloat, getEnvBool, getEnvUint32, stringInSlice,
+// isHTTPMethod, isWriteMethod, secureEquals, pruneExpiredRoutes,
+// parseIntQuery, parseIntQueryMulti, hasValidAPIKey, matchPathRules
+// ---------------------------------------------------------------------------
+
+func TestParseKeyList_EmptyMain(t *testing.T) {
+if got := parseKeyList(""); got != nil {
+t.Fatalf("expected nil, got %v", got)
+}
+}
+
+func TestParseKeyList_Single(t *testing.T) {
+got := parseKeyList("abc")
+if len(got) != 1 || got[0] != "abc" {
+t.Fatalf("unexpected: %v", got)
+}
+}
+
+func TestParseKeyList_Multiple(t *testing.T) {
+got := parseKeyList("a, b, c")
+if len(got) != 3 {
+t.Fatalf("expected 3 keys, got: %v", got)
+}
+}
+
+func TestParseKeyList_SpacesOnly(t *testing.T) {
+if got := parseKeyList("  ,  ,  "); got != nil && len(got) != 0 {
+t.Fatalf("expected empty, got: %v", got)
+}
+}
+
+func TestParseTags_EmptyMain(t *testing.T) {
+if got := parseTags(nil); got != nil {
+t.Fatal("expected nil for empty input")
+}
+}
+
+func TestParseTags_ValidMain(t *testing.T) {
+got := parseTags([]string{"region:us-east", "tier:premium"})
+if got["region"] != "us-east" || got["tier"] != "premium" {
+t.Fatalf("unexpected tags: %v", got)
+}
+}
+
+func TestParseTags_InvalidSkipped(t *testing.T) {
+got := parseTags([]string{"invalid", "key:value"})
+if _, ok := got["invalid"]; ok {
+t.Fatal("invalid entry should be skipped")
+}
+if got["key"] != "value" {
+t.Fatalf("expected 'key' -> 'value', got: %v", got)
+}
+}
+
+func TestParseTags_AllInvalidMain(t *testing.T) {
+got := parseTags([]string{"nocolon", "alsonocolon"})
+if got != nil {
+t.Fatalf("expected nil when all invalid, got: %v", got)
+}
+}
+
+func TestValidateTransactions_ValidMain(t *testing.T) {
+txs := []blockchain.Transaction{
+{Sender: "alice", Recipient: "bob", Amount: 10},
+}
+if err := validateTransactions(txs); err != nil {
+t.Fatalf("unexpected error: %v", err)
+}
+}
+
+func TestValidateTransactions_EmptySenderMain(t *testing.T) {
+txs := []blockchain.Transaction{{Sender: "", Recipient: "bob", Amount: 5}}
+if err := validateTransactions(txs); err == nil {
+t.Fatal("expected error for empty sender")
+}
+}
+
+func TestValidateTransactions_NegativeAmountMain(t *testing.T) {
+txs := []blockchain.Transaction{{Sender: "alice", Recipient: "bob", Amount: -1}}
+if err := validateTransactions(txs); err == nil {
+t.Fatal("expected error for negative amount")
+}
+}
+
+func TestValidateTransactions_TooManyMain(t *testing.T) {
+txs := make([]blockchain.Transaction, 1001)
+for i := range txs {
+txs[i] = blockchain.Transaction{Sender: "a", Recipient: "b", Amount: 1}
+}
+if err := validateTransactions(txs); err == nil {
+t.Fatal("expected error for too many transactions")
+}
+}
+
+func TestGetEnvInt_Default(t *testing.T) {
+os.Unsetenv("TEST_ENV_INT")
+if got := getEnvInt("TEST_ENV_INT", 42); got != 42 {
+t.Fatalf("expected 42, got %d", got)
+}
+}
+
+func TestGetEnvInt_Set(t *testing.T) {
+os.Setenv("TEST_ENV_INT", "99")
+defer os.Unsetenv("TEST_ENV_INT")
+if got := getEnvInt("TEST_ENV_INT", 0); got != 99 {
+t.Fatalf("expected 99, got %d", got)
+}
+}
+
+func TestGetEnvInt_Invalid(t *testing.T) {
+os.Setenv("TEST_ENV_INT", "notanint")
+defer os.Unsetenv("TEST_ENV_INT")
+if got := getEnvInt("TEST_ENV_INT", 7); got != 7 {
+t.Fatalf("expected default 7, got %d", got)
+}
+}
+
+func TestGetEnvFloat_Default(t *testing.T) {
+os.Unsetenv("TEST_ENV_F")
+if got := getEnvFloat("TEST_ENV_F", 3.14); got != 3.14 {
+t.Fatalf("expected 3.14, got %f", got)
+}
+}
+
+func TestGetEnvFloat_Set(t *testing.T) {
+os.Setenv("TEST_ENV_F", "2.71")
+defer os.Unsetenv("TEST_ENV_F")
+if got := getEnvFloat("TEST_ENV_F", 0); got != 2.71 {
+t.Fatalf("expected 2.71, got %f", got)
+}
+}
+
+func TestGetEnvFloat_Invalid(t *testing.T) {
+os.Setenv("TEST_ENV_F", "bad")
+defer os.Unsetenv("TEST_ENV_F")
+if got := getEnvFloat("TEST_ENV_F", 1.5); got != 1.5 {
+t.Fatalf("expected 1.5, got %f", got)
+}
+}
+
+func TestGetEnvBool_Default(t *testing.T) {
+os.Unsetenv("TEST_ENV_B")
+if got := getEnvBool("TEST_ENV_B", true); !got {
+t.Fatal("expected true default")
+}
+}
+
+func TestGetEnvBool_True(t *testing.T) {
+for _, val := range []string{"1", "true", "yes", "y"} {
+os.Setenv("TEST_ENV_B", val)
+if got := getEnvBool("TEST_ENV_B", false); !got {
+t.Fatalf("expected true for value %q", val)
+}
+}
+os.Unsetenv("TEST_ENV_B")
+}
+
+func TestGetEnvBool_False(t *testing.T) {
+for _, val := range []string{"0", "false", "no", "n"} {
+os.Setenv("TEST_ENV_B", val)
+if got := getEnvBool("TEST_ENV_B", true); got {
+t.Fatalf("expected false for value %q", val)
+}
+}
+os.Unsetenv("TEST_ENV_B")
+}
+
+func TestGetEnvBool_Invalid(t *testing.T) {
+os.Setenv("TEST_ENV_B", "maybe")
+defer os.Unsetenv("TEST_ENV_B")
+if got := getEnvBool("TEST_ENV_B", true); !got {
+t.Fatal("expected default true for invalid value")
+}
+}
+
+func TestGetEnvUint32_Default(t *testing.T) {
+os.Unsetenv("TEST_ENV_U32")
+if got := getEnvUint32("TEST_ENV_U32", 100); got != 100 {
+t.Fatalf("expected 100, got %d", got)
+}
+}
+
+func TestGetEnvUint32_Set(t *testing.T) {
+os.Setenv("TEST_ENV_U32", "42")
+defer os.Unsetenv("TEST_ENV_U32")
+if got := getEnvUint32("TEST_ENV_U32", 0); got != 42 {
+t.Fatalf("expected 42, got %d", got)
+}
+}
+
+func TestStringInSlice_Found(t *testing.T) {
+if !stringInSlice("b", []string{"a", "b", "c"}) {
+t.Fatal("expected true")
+}
+}
+
+func TestStringInSlice_NotFound(t *testing.T) {
+if stringInSlice("x", []string{"a", "b", "c"}) {
+t.Fatal("expected false")
+}
+}
+
+func TestIsHTTPMethodMain(t *testing.T) {
+for _, m := range []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"} {
+if !isHTTPMethod(m) {
+t.Fatalf("expected true for %s", m)
+}
+}
+if isHTTPMethod("FETCH") {
+t.Fatal("expected false for FETCH")
+}
+}
+
+func TestIsWriteMethodMain(t *testing.T) {
+for _, m := range []string{"POST", "PUT", "PATCH", "DELETE"} {
+if !isWriteMethod(m) {
+t.Fatalf("expected true for %s", m)
+}
+}
+if isWriteMethod("GET") {
+t.Fatal("expected false for GET")
+}
+}
+
+func TestSecureEquals(t *testing.T) {
+if !secureEquals("hello", "hello") {
+t.Fatal("expected true for equal strings")
+}
+if secureEquals("hello", "world") {
+t.Fatal("expected false for different strings")
+}
+if secureEquals("abc", "abcd") {
+t.Fatal("expected false for different lengths")
+}
+}
+
+func TestPruneExpiredRoutes(t *testing.T) {
+past := time.Now().Add(-time.Hour)
+future := time.Now().Add(time.Hour)
+routes := []routing.Route{
+{Destination: "keep-future", ExpiresAt: &future},
+{Destination: "drop-past", ExpiresAt: &past},
+{Destination: "keep-noexpiry"},
+}
+result := pruneExpiredRoutes(routes)
+if len(result) != 2 {
+t.Fatalf("expected 2 routes, got %d", len(result))
+}
+for _, r := range result {
+if r.Destination == "drop-past" {
+t.Fatal("expired route should have been pruned")
+}
+}
+}
+
+func TestParseIntQuery_Missing(t *testing.T) {
+req := httptest.NewRequest("GET", "/?foo=bar", nil)
+v, ok, err := parseIntQuery(req, "missing")
+if v != 0 || ok || err != nil {
+t.Fatalf("expected 0, false, nil; got %d, %v, %v", v, ok, err)
+}
+}
+
+func TestParseIntQuery_Valid(t *testing.T) {
+req := httptest.NewRequest("GET", "/?limit=5", nil)
+v, ok, err := parseIntQuery(req, "limit")
+if v != 5 || !ok || err != nil {
+t.Fatalf("expected 5, true, nil; got %d, %v, %v", v, ok, err)
+}
+}
+
+func TestParseIntQuery_Invalid(t *testing.T) {
+req := httptest.NewRequest("GET", "/?limit=abc", nil)
+_, ok, err := parseIntQuery(req, "limit")
+if !ok || err == nil {
+t.Fatal("expected ok=true, err!=nil for invalid int")
+}
+}
+
+func TestParseIntQueryMulti_FirstFound(t *testing.T) {
+req := httptest.NewRequest("GET", "/?n=10", nil)
+v, ok, err := parseIntQueryMulti(req, "count", "n", "limit")
+if v != 10 || !ok || err != nil {
+t.Fatalf("expected 10, true, nil; got %d, %v, %v", v, ok, err)
+}
+}
+
+func TestParseIntQueryMulti_NoneFound(t *testing.T) {
+req := httptest.NewRequest("GET", "/", nil)
+v, ok, err := parseIntQueryMulti(req, "a", "b")
+if v != 0 || ok || err != nil {
+t.Fatalf("expected 0, false, nil; got %d, %v, %v", v, ok, err)
+}
+}
+
+func TestHasValidAPIKey_BearerMain(t *testing.T) {
+req := httptest.NewRequest("GET", "/", nil)
+req.Header.Set("Authorization", "Bearer mysecret")
+if !hasValidAPIKey(req, "mysecret") {
+t.Fatal("expected valid for Bearer token")
+}
+}
+
+func TestHasValidAPIKey_XAPIKeyMain(t *testing.T) {
+req := httptest.NewRequest("GET", "/", nil)
+req.Header.Set("X-API-Key", "mysecret")
+if !hasValidAPIKey(req, "mysecret") {
+t.Fatal("expected valid for X-API-Key header")
+}
+}
+
+func TestHasValidAPIKey_WrongMain(t *testing.T) {
+req := httptest.NewRequest("GET", "/", nil)
+req.Header.Set("Authorization", "Bearer wrong")
+if hasValidAPIKey(req, "mysecret") {
+t.Fatal("expected false for wrong token")
+}
+}
+
+func TestHasValidAPIKey_MissingMain(t *testing.T) {
+req := httptest.NewRequest("GET", "/", nil)
+if hasValidAPIKey(req, "mysecret") {
+t.Fatal("expected false for missing token")
+}
+}
+
+func TestMatchPathRules_ExactMain(t *testing.T) {
+rules := []pathRule{{value: "/health", prefix: false}}
+if !matchPathRules("/health", "GET", rules) {
+t.Fatal("expected match for exact path")
+}
+if matchPathRules("/healthz", "GET", rules) {
+t.Fatal("expected no match for different path")
+}
+}
+
+func TestMatchPathRules_PrefixMain(t *testing.T) {
+rules := []pathRule{{value: "/admin/", prefix: true}}
+if !matchPathRules("/admin/backup", "POST", rules) {
+t.Fatal("expected prefix match")
+}
+if matchPathRules("/public/data", "GET", rules) {
+t.Fatal("expected no prefix match")
+}
+}
+
+func TestMatchPathRules_WithMethod(t *testing.T) {
+rules := []pathRule{{value: "/blockchain/add", prefix: false, method: "POST"}}
+if !matchPathRules("/blockchain/add", "POST", rules) {
+t.Fatal("expected match for POST")
+}
+if matchPathRules("/blockchain/add", "GET", rules) {
+t.Fatal("expected no match for GET")
+}
+}
+
+func TestMatchPathRules_Empty(t *testing.T) {
+if matchPathRules("/anything", "GET", nil) {
+t.Fatal("expected no match for empty rules")
+}
+}
+
+func TestParsePeerKeys_EmptyMain(t *testing.T) {
+got, err := parsePeerKeys("")
+if err != nil || len(got) != 0 {
+t.Fatalf("expected empty map, got %v %v", got, err)
+}
+}
+
+func TestParsePeerKeys_ValidMain(t *testing.T) {
+got, err := parsePeerKeys("node1=key1,node2=key2")
+if err != nil || got["node1"] != "key1" || got["node2"] != "key2" {
+t.Fatalf("unexpected: %v %v", got, err)
+}
+}
+
+func TestParsePeerKeys_Invalid(t *testing.T) {
+_, err := parsePeerKeys("badentry")
+if err == nil {
+t.Fatal("expected error for invalid peer key entry")
+}
+}
+
+func TestParseCIDRList_EmptyMain(t *testing.T) {
+got, err := parseCIDRList("")
+if err != nil || got != nil {
+t.Fatalf("expected nil, nil; got %v %v", got, err)
+}
+}
+
+func TestParseCIDRList_ValidMain(t *testing.T) {
+got, err := parseCIDRList("192.168.0.0/24,10.0.0.0/8")
+if err != nil || len(got) != 2 {
+t.Fatalf("expected 2 CIDRs, got %v %v", got, err)
+}
+}
+
+func TestParseCIDRList_InvalidMain(t *testing.T) {
+_, err := parseCIDRList("notacidr")
+if err == nil {
+t.Fatal("expected error for invalid CIDR")
+}
+}
+
+func TestParsePathRule_ExactMatch(t *testing.T) {
+rule, ok := parsePathRule("/health")
+if !ok || rule.value != "/health" || rule.prefix {
+t.Fatalf("unexpected: %+v %v", rule, ok)
+}
+}
+
+func TestParsePathRule_Prefix(t *testing.T) {
+rule, ok := parsePathRule("/admin/*")
+if !ok || rule.value != "/admin/" || !rule.prefix {
+t.Fatalf("unexpected: %+v %v", rule, ok)
+}
+}
+
+func TestParsePathRule_WithMethod(t *testing.T) {
+rule, ok := parsePathRule("POST:/blockchain/add")
+if !ok || rule.method != "POST" || rule.value != "/blockchain/add" {
+t.Fatalf("unexpected: %+v %v", rule, ok)
+}
+}
+
+func TestParsePathRule_EmptyMain(t *testing.T) {
+_, ok := parsePathRule("")
+if ok {
+t.Fatal("expected false for empty rule")
 }
 }
