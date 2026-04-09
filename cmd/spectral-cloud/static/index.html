@@ -144,11 +144,70 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
 
 /* QUICK ACTIONS */
 .quick-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+
+/* ── LIGHT THEME ─────────────────────────────────────────────────────────── */
+[data-theme="light"] {
+  --bg: #f8fafc; --surface: #ffffff; --border: #e2e8f0;
+  --text: #1e293b; --muted: #64748b; --card: #f1f5f9; --input: #ffffff;
+}
+
+/* ── RESPONSIVE SIDEBAR ─────────────────────────────────────────────────── */
+.hamburger { display: none; background: none; border: none; cursor: pointer; padding: 8px; color: var(--text); }
+@media (max-width: 768px) {
+  .hamburger { display: flex; align-items: center; justify-content: center; }
+  nav { position: fixed; left: -220px; top: 0; bottom: 0; transition: left .2s; z-index: 100; }
+  nav.open { left: 0; }
+  .nav-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 99; }
+  .nav-overlay.visible { display: block; }
+}
+
+/* ── STACKING TOASTS ─────────────────────────────────────────────────────── */
+#toast-container { position: fixed; top: 16px; right: 16px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; max-width: 360px; }
+.toast { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 14px; border-radius: var(--radius); font-size: 13px; animation: toastIn .15s ease; }
+.toast.ok { background: rgba(0,212,170,.15); border: 1px solid rgba(0,212,170,.3); color: var(--accent2); }
+.toast.err { background: rgba(224,82,82,.15); border: 1px solid rgba(224,82,82,.3); color: var(--danger); }
+.toast-close { background: none; border: none; cursor: pointer; color: inherit; font-size: 16px; padding: 0 2px; opacity: .7; flex-shrink: 0; }
+.toast-close:hover { opacity: 1; }
+@keyframes toastIn { from{opacity:0;transform:translateX(20px)} to{opacity:1;transform:none} }
+
+/* ── EMPTY STATES ─────────────────────────────────────────────────────────── */
+.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 48px 32px; color: var(--muted); text-align: center; }
+.empty-state svg { width: 48px; height: 48px; margin-bottom: 16px; opacity: .4; }
+.empty-state h3 { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.empty-state p { font-size: 13px; margin-bottom: 16px; }
+
+/* ── SVG CHARTS ──────────────────────────────────────────────────────────── */
+.chart-wrap { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 16px; overflow: hidden; }
+.chart-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin-bottom: 12px; }
+.chart-legend { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+.legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
+.legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+/* ── DETAIL ROWS ─────────────────────────────────────────────────────────── */
+.detail-row td { background: var(--surface); padding: 12px 14px; }
+.detail-row pre { font-family: monospace; font-size: 11px; color: var(--muted); white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow: auto; }
+
+/* ── HEATMAP ─────────────────────────────────────────────────────────────── */
+.heatmap { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.heatmap-cell { padding: 6px 10px; border-radius: 4px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+
+/* ── TOPOLOGY ────────────────────────────────────────────────────────────── */
+.topo-wrap { display: flex; gap: 16px; }
+.topo-svg-wrap { flex: 1; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; min-height: 400px; }
+.topo-detail { width: 240px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; flex-shrink: 0; }
+.topo-detail h4 { font-size: 13px; font-weight: 700; margin-bottom: 10px; }
+.topo-detail p { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.topo-detail strong { color: var(--text); }
+
+/* ── LATENCY BAR ─────────────────────────────────────────────────────────── */
+.lat-bar-wrap { display: flex; align-items: center; gap: 8px; }
+.lat-bar { height: 6px; border-radius: 3px; background: var(--accent2); min-width: 2px; }
+
 </style>
 </head>
 <body>
 
-<nav>
+<nav id="sidebar">
   <div class="logo">
     <h1>⬡ Spectral Cloud</h1>
     <span>Edge AI Infrastructure</span>
@@ -215,15 +274,31 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M12 7v3M12 10L6.5 17.5M12 10l5.5 7.5"/></svg>
       Mesh Peers
     </a>
+    <a onclick="go('stats')" id="nav-stats">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+      Analytics
+    </a>
+    <a onclick="go('topology')" id="nav-topology">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+      Topology
+    </a>
   </div>
   <div class="nav-footer">
     <strong id="server-url">localhost</strong>
     <span id="uptime-label">—</span>
+    <div style="margin-top:8px;display:flex;gap:6px;align-items:center">
+      <button id="theme-toggle" class="btn btn-outline btn-sm" onclick="toggleTheme()" title="Toggle light/dark theme" style="padding:4px 8px;font-size:14px">🌙</button>
+      <button class="btn btn-outline btn-sm" onclick="showShortcutsModal()" title="Keyboard shortcuts" style="padding:4px 8px;font-size:14px">⌨</button>
+    </div>
   </div>
 </nav>
+<div class="nav-overlay" id="nav-overlay" onclick="closeSidebar()"></div>
 
 <main>
   <div class="topbar">
+    <button class="hamburger" onclick="toggleSidebar()" aria-label="Toggle menu">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
     <h2 id="page-title">Overview</h2>
     <div class="topbar-right">
       <span class="badge" id="tenant-badge">default</span>
@@ -232,6 +307,8 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
   </div>
   <div class="content" id="content">Loading…</div>
 </main>
+
+<div id="toast-container"></div>
 
 <!-- API Key Setup Modal -->
 <div id="api-key-modal" class="modal-overlay" style="display:none">
@@ -285,17 +362,67 @@ let sseSource = null;
 let autoRefreshTimer = null;
 let currentRenderId = 0;
 
+// ── theme ────────────────────────────────────────────────────────────────────
+(function() {
+  const t = localStorage.getItem('spectral_theme');
+  if (t === 'light') {
+    document.documentElement.setAttribute('data-theme', 'light');
+  }
+})();
+function toggleTheme() {
+  const html = document.documentElement;
+  const isLight = html.getAttribute('data-theme') === 'light';
+  if (isLight) {
+    html.removeAttribute('data-theme');
+    localStorage.setItem('spectral_theme', 'dark');
+    const btn = document.getElementById('theme-toggle');
+    if (btn) btn.textContent = '🌙';
+  } else {
+    html.setAttribute('data-theme', 'light');
+    localStorage.setItem('spectral_theme', 'light');
+    const btn = document.getElementById('theme-toggle');
+    if (btn) btn.textContent = '☀️';
+  }
+}
+(function() {
+  const t = localStorage.getItem('spectral_theme');
+  const btn = document.getElementById('theme-toggle');
+  if (btn) btn.textContent = t === 'light' ? '☀️' : '🌙';
+})();
+
+// ── sidebar ──────────────────────────────────────────────────────────────────
+function toggleSidebar() {
+  const nav = document.getElementById('sidebar');
+  const overlay = document.getElementById('nav-overlay');
+  if (nav) nav.classList.toggle('open');
+  if (overlay) overlay.classList.toggle('visible');
+}
+function closeSidebar() {
+  const nav = document.getElementById('sidebar');
+  const overlay = document.getElementById('nav-overlay');
+  if (nav) nav.classList.remove('open');
+  if (overlay) overlay.classList.remove('visible');
+}
+
 // ── navigation ──────────────────────────────────────────────────────────────
+const PAGE_NAMES = {
+  overview:'Overview', blockchain:'Blockchain', routes:'Routes', agents:'Agents',
+  jobs:'Jobs', events:'Events', kv:'KV Store', search:'Search',
+  schedules:'Schedules', groups:'Agent Groups', circuit:'Circuit Breaker',
+  audit:'Audit Log', admin:'Admin', notifs:'Notifications', mesh:'Mesh Peers',
+  stats:'Analytics', topology:'Topology'
+};
 function go(page) {
   currentRenderId++;
   const rid = currentRenderId;
-  
   currentPage = page;
+  closeSidebar();
   document.querySelectorAll('.nav-links a').forEach(a => a.classList.remove('active'));
   const el = document.getElementById('nav-' + page);
   if (el) el.classList.add('active');
-  document.getElementById('page-title').textContent =
-    {overview:'Overview',blockchain:'Blockchain',routes:'Routes',agents:'Agents',jobs:'Jobs',events:'Events',kv:'KV Store',search:'Search',schedules:'Schedules',groups:'Agent Groups',circuit:'Circuit Breaker',audit:'Audit Log',admin:'Admin',notifs:'Notifications',mesh:'Mesh Peers'}[page] || page;
+  const name = PAGE_NAMES[page] || page;
+  document.getElementById('page-title').textContent = name;
+  document.title = 'Spectral Cloud — ' + name;
   stopSSE();
   clearTimeout(autoRefreshTimer);
   render(page, rid);
@@ -322,13 +449,22 @@ function del(path, body) {
   if (body !== undefined) { opts.headers={'Content-Type':'application/json'}; opts.body=JSON.stringify(body); }
   return api(path, opts);
 }
+
+let _toastCount = 0;
 function toast(msg, ok=true) {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+  const id = 'toast-' + (++_toastCount);
   const d = document.createElement('div');
-  d.className = 'alert ' + (ok?'ok':'err');
-  d.style.cssText = 'position:fixed;top:16px;right:16px;z-index:999;max-width:360px;';
-  d.textContent = msg;
-  document.body.appendChild(d);
-  setTimeout(() => d.remove(), 3000);
+  d.id = id;
+  d.className = 'toast ' + (ok ? 'ok' : 'err');
+  d.innerHTML = `<span>${esc(msg)}</span><button class="toast-close" onclick="document.getElementById('${id}')?.remove()">×</button>`;
+  container.appendChild(d);
+  if (ok) {
+    setTimeout(() => { const t = document.getElementById(id); if (t) t.remove(); }, 3000);
+  }
+  // limit stack to 5
+  while (container.children.length > 5) container.removeChild(container.firstChild);
 }
 function refresh() {
   go(currentPage);
@@ -360,6 +496,92 @@ function sparkline(data, width=120, height=32, color='var(--accent)') {
   return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
 }
 
+// ── SVG Chart helpers ────────────────────────────────────────────────────────
+function lineChart(data, keys, colors, width, height, labels) {
+  if (!data || data.length === 0) return `<svg width="${width}" height="${height}"></svg>`;
+  const pad = {top:16, right:16, bottom:32, left:40};
+  const W = width - pad.left - pad.right;
+  const H = height - pad.top - pad.bottom;
+  const n = data.length;
+  // find global min/max across all keys
+  let gmin = Infinity, gmax = -Infinity;
+  keys.forEach(k => data.forEach(d => {
+    const v = Number(d[k]||0);
+    if (v < gmin) gmin = v;
+    if (v > gmax) gmax = v;
+  }));
+  if (gmax === gmin) { gmax = gmin + 1; }
+  const xScale = i => pad.left + (i / Math.max(n-1,1)) * W;
+  const yScale = v => pad.top + H - ((v - gmin) / (gmax - gmin)) * H;
+  let svg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="overflow:visible">`;
+  // grid
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.top + (H / 4) * i;
+    svg += `<line x1="${pad.left}" y1="${y.toFixed(1)}" x2="${pad.left+W}" y2="${y.toFixed(1)}" stroke="var(--border)" stroke-dasharray="3 3"/>`;
+    const val = gmax - ((gmax - gmin) / 4) * i;
+    svg += `<text x="${pad.left-4}" y="${(y+4).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--muted)">${val.toFixed(0)}</text>`;
+  }
+  // axes
+  svg += `<line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${pad.top+H}" stroke="var(--border)"/>`;
+  svg += `<line x1="${pad.left}" y1="${pad.top+H}" x2="${pad.left+W}" y2="${pad.top+H}" stroke="var(--border)"/>`;
+  // x labels (every ~10 points)
+  const xStep = Math.max(1, Math.floor(n / 6));
+  data.forEach((d, i) => {
+    if (i % xStep === 0 || i === n-1) {
+      const x = xScale(i);
+      const lbl = labels ? labels[i] : (d.ts ? new Date(d.ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : i);
+      svg += `<text x="${x.toFixed(1)}" y="${pad.top+H+16}" text-anchor="middle" font-size="9" fill="var(--muted)">${esc(String(lbl))}</text>`;
+    }
+  });
+  // lines
+  keys.forEach((k, ki) => {
+    const pts = data.map((d,i) => `${xScale(i).toFixed(1)},${yScale(Number(d[k]||0)).toFixed(1)}`).join(' ');
+    svg += `<polyline points="${pts}" fill="none" stroke="${colors[ki]}" stroke-width="1.5" stroke-linejoin="round"/>`;
+    // circles for hover
+    data.forEach((d, i) => {
+      const cx = xScale(i).toFixed(1), cy = yScale(Number(d[k]||0)).toFixed(1);
+      const lbl = d.ts ? new Date(d.ts).toLocaleTimeString() : '';
+      svg += `<circle cx="${cx}" cy="${cy}" r="3" fill="${colors[ki]}" opacity="0.8"><title>${k}: ${d[k]||0} @ ${lbl}</title></circle>`;
+    });
+  });
+  svg += '</svg>';
+  return svg;
+}
+
+function barChart(labels, values, color, width, height) {
+  if (!labels || !labels.length) return `<svg width="${width}" height="${height}"></svg>`;
+  const pad = {top:8, right:8, bottom:32, left:36};
+  const W = width - pad.left - pad.right;
+  const H = height - pad.top - pad.bottom;
+  const n = labels.length;
+  const maxV = Math.max(...values.map(Number), 1);
+  const barW = Math.max(4, W / n - 4);
+  let svg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`;
+  // y labels
+  for (let i = 0; i <= 3; i++) {
+    const y = pad.top + (H / 3) * i;
+    const val = maxV - (maxV / 3) * i;
+    svg += `<line x1="${pad.left}" y1="${y.toFixed(1)}" x2="${pad.left+W}" y2="${y.toFixed(1)}" stroke="var(--border)" stroke-dasharray="3 3"/>`;
+    svg += `<text x="${pad.left-4}" y="${(y+4).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--muted)">${val.toFixed(0)}</text>`;
+  }
+  svg += `<line x1="${pad.left}" y1="${pad.top+H}" x2="${pad.left+W}" y2="${pad.top+H}" stroke="var(--border)"/>`;
+  labels.forEach((lbl, i) => {
+    const x = pad.left + (i / n) * W + (W/n - barW) / 2;
+    const v = Number(values[i]) || 0;
+    const bH = (v / maxV) * H;
+    const y = pad.top + H - bH;
+    svg += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${bH.toFixed(1)}" fill="${color}" rx="2"><title>${lbl}: ${v}</title></rect>`;
+    const cx = (x + barW/2).toFixed(1);
+    svg += `<text x="${cx}" y="${pad.top+H+14}" text-anchor="middle" font-size="9" fill="var(--muted)">${esc(String(lbl)).substring(0,8)}</text>`;
+  });
+  svg += '</svg>';
+  return svg;
+}
+
+function emptyState(icon, title, msg, btnLabel, btnAction) {
+  return `<div class="empty-state">${icon}<h3>${esc(title)}</h3><p>${esc(msg)}</p>${btnAction?`<button class="btn btn-primary" onclick="${btnAction}">${esc(btnLabel)}</button>`:''}</div>`;
+}
+
 // ── page renderers ────────────────────────────────────────────────────────────
 
 async function render(page, rid) {
@@ -380,6 +602,8 @@ async function render(page, rid) {
       case 'admin':      await renderAdmin(rid); break;
       case 'notifs':     await renderNotifs(rid); break;
       case 'mesh':       await renderMesh(rid); break;
+      case 'stats':      await renderStats(rid); break;
+      case 'topology':   await renderTopology(rid); break;
     }
   } catch(e) {
     if (rid && rid !== currentRenderId) return;
@@ -390,10 +614,11 @@ async function render(page, rid) {
 
 // ── OVERVIEW ─────────────────────────────────────────────────────────────────
 async function renderOverview(rid) {
-  const [health, status, height, routesList, agentsList, histRes, metricsRes, bestRouteRes, meshPeersRes] = await Promise.allSettled([
+  const [health, status, height, routesList, agentsList, histRes, metricsRes, bestRouteRes, meshPeersRes, tsRes] = await Promise.allSettled([
     api('/health'), api('/admin/status'), api('/blockchain/height'),
     api('/routes'), api('/agents'), api('/events/history?limit=8'), api('/metrics/json'),
-    api('/routes/best').catch(() => null), api('/mesh/peers').catch(() => ({peers:[]}))
+    api('/routes/best').catch(() => null), api('/mesh/peers').catch(() => ({peers:[]})),
+    api('/metrics/timeseries?n=30').catch(() => [])
   ]);
   if (rid && rid !== currentRenderId) return;
   const h = health.value||{};
@@ -404,6 +629,7 @@ async function renderOverview(rid) {
   const hist = histRes.value||{events:[]};
   const metrics = metricsRes.value||{tenants:[], jobs:0};
   const meshPeers = ((meshPeersRes.value||{}).peers) || [];
+  const tsData = Array.isArray(tsRes.value) ? tsRes.value : [];
   const blockCount = h.blocks != null ? h.blocks : (ht.height != null ? ht.height : null);
   if (blockCount !== null && blockCount !== undefined && !isNaN(Number(blockCount))) {
     blockHistory.push(Number(blockCount));
@@ -420,6 +646,10 @@ async function renderOverview(rid) {
   const serverUrl = document.getElementById('server-url');
   if (serverUrl) serverUrl.textContent = window.location.host;
 
+  const chartHtml = tsData.length >= 2
+    ? `<div class="chart-wrap"><div class="chart-title">System Metrics Over Time</div>${lineChart(tsData, ['blocks','routes','agents','peers'], ['var(--accent)','var(--accent2)','#a78bfa','#fb923c'], 560, 160)}<div class="chart-legend"><span class="legend-item"><span class="legend-dot" style="background:var(--accent)"></span>Blocks</span><span class="legend-item"><span class="legend-dot" style="background:var(--accent2)"></span>Routes</span><span class="legend-item"><span class="legend-dot" style="background:#a78bfa"></span>Agents</span><span class="legend-item"><span class="legend-dot" style="background:#fb923c"></span>Peers</span></div></div>`
+    : '';
+
   const c = `
   <div class="cards">
     <div class="card ${h.status==='ok'?'green':'warn'}"><div class="card-label">Status</div><div class="card-value" style="font-size:18px">${esc(h.status||'Offline')}</div><div class="card-sub">${esc(h.timestamp?new Date(h.timestamp).toLocaleTimeString():'')}</div></div>
@@ -429,6 +659,7 @@ async function renderOverview(rid) {
     <div class="card green"><div class="card-label">Mesh Peers</div><div class="card-value">${meshPeers.length}</div><div class="card-sub">connected</div></div>
     <div class="card"><div class="card-label">Uptime</div><div class="card-value" style="font-size:20px">${st.uptime_seconds!==undefined?fmt_uptime(st.uptime_seconds):'—'}</div><div class="card-sub">${esc(st.now?new Date(st.now).toLocaleDateString():'')}</div></div>
   </div>
+  ${chartHtml}
   <div class="section" style="margin-bottom:16px">
     <div class="section-title">Quick Actions</div>
     <div class="quick-actions">
@@ -517,15 +748,29 @@ const BC_LIMIT = 10;
 
 async function renderBlockchain(rid) {
   document.getElementById('content').innerHTML = `<div class="section"><div class="table-wrap"><table><thead><tr><th>#</th><th>Time</th><th>Txns</th><th>Hash</th><th>Prev Hash</th></tr></thead><tbody>${skeletonRows(5)}</tbody></table></div></div>`;
-  const [chainRes, verifyRes] = await Promise.allSettled([
-    api(`/blockchain?limit=${BC_LIMIT}&offset=${bcOffset}`), api('/blockchain/verify')
+  const [chainRes, verifyRes, statsRes] = await Promise.allSettled([
+    api(`/blockchain?limit=${BC_LIMIT}&offset=${bcOffset}`), api('/blockchain/verify'),
+    api('/blockchain/stats').catch(() => null)
   ]);
   if (rid && rid !== currentRenderId) return;
   const chain = chainRes.value || {blocks:[], height:0};
   const verify = verifyRes.value || {valid: false, unknown: true};
+  const bcStats = statsRes.value || null;
   const blocks = chain.blocks||[];
 
+  const txPerBlock = blocks.map(b => (b.transactions||[]).length);
+  const txBarChart = blocks.length > 0
+    ? `<div class="chart-wrap" style="margin-bottom:16px"><div class="chart-title">Transactions per Block</div>${barChart(blocks.map(b=>b.index), txPerBlock, 'var(--accent2)', 480, 100)}</div>`
+    : '';
+
+  const statsCards = bcStats ? `<div class="cards" style="margin-bottom:16px">
+    <div class="card"><div class="card-label">Total Transactions</div><div class="card-value">${bcStats.total_transactions}</div></div>
+    <div class="card"><div class="card-label">Unique Senders</div><div class="card-value">${bcStats.unique_senders}</div></div>
+    <div class="card"><div class="card-label">Avg Tx/Block</div><div class="card-value">${Number(bcStats.avg_tx_per_block).toFixed(1)}</div></div>
+  </div>` : '';
+
   document.getElementById('content').innerHTML = `
+  ${statsCards}
   <div class="section">
     <div class="flex" style="margin-bottom:12px">
       <div>
@@ -540,30 +785,52 @@ async function renderBlockchain(rid) {
         <button class="btn btn-outline btn-sm" onclick="bcOffset=Math.min(bcOffset+${BC_LIMIT},Math.max(0,chain.height-${BC_LIMIT}));renderBlockchain(currentRenderId)">Next →</button>
       </div>
     </div>
+    ${txBarChart}
     <div class="table-wrap">
       <table>
         <thead><tr><th>#</th><th>Time</th><th>Txns</th><th>Hash</th><th>Prev Hash</th></tr></thead>
         <tbody>
-          ${blocks.map(b=>`<tr>
+          ${blocks.length === 0 ? `<tr><td colspan="5">${emptyState('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>', 'No blocks yet', 'The blockchain is empty. Add the first block below.', '', '')}</td></tr>` :
+          blocks.map((b,i)=>`<tr onclick="toggleBlockDetail(${i})" style="cursor:pointer">
             <td><strong>${b.index}</strong></td>
             <td class="mono">${fmtTime(b.timestamp)}</td>
-            <td>${(b.transactions||[]).length ? `<span title="${esc(JSON.stringify(b.transactions))}">${(b.transactions||[]).length} tx</span>` : '<span style="color:var(--muted)">—</span>'}</td>
+            <td>${(b.transactions||[]).length ? `<span>${(b.transactions||[]).length} tx</span>` : '<span style="color:var(--muted)">—</span>'}</td>
             <td>${fmtHash(b.hash)}</td>
             <td>${fmtHash(b.previous_hash)}</td>
-          </tr>`).join('')||'<tr><td colspan="5" class="empty">No blocks</td></tr>'}
+          </tr>
+          <tr id="bc-detail-${i}" class="detail-row" style="display:none">
+            <td colspan="5"><pre>${esc(JSON.stringify(b.transactions||[], null, 2))}</pre></td>
+          </tr>`).join('')}
         </tbody>
       </table>
     </div>
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
     <div class="section">
-      <div class="section-title">Add Block</div>
+      <div class="section-title">Transaction Builder</div>
+      <div class="card">
+        <div class="form-row">
+          <div class="form-group"><label>Sender</label><input id="bc-tx-sender" placeholder="alice"></div>
+          <div class="form-group"><label>Recipient</label><input id="bc-tx-recipient" placeholder="bob"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Amount</label><input id="bc-tx-amount" type="number" value="1" style="width:90px"></div>
+          <div class="form-group" style="flex:1"><label>Memo</label><input id="bc-tx-memo" placeholder="payment…"></div>
+        </div>
+        <button class="btn btn-primary" onclick="addBuilderBlock()">Add to Block</button>
+        <div id="bc-builder-result" style="margin-top:8px"></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">Add Block (JSON)</div>
       <div class="card">
         <div class="form-group" style="margin-bottom:8px"><label>Transactions (JSON array)</label>
         <textarea id="bc-txns" placeholder='[{"sender":"alice","recipient":"bob","amount":10}]'></textarea></div>
         <button class="btn btn-primary" onclick="addBlock()">Add Block</button>
       </div>
     </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
     <div class="section">
       <div class="section-title">Search Transactions</div>
       <div class="card">
@@ -576,6 +843,29 @@ async function renderBlockchain(rid) {
       </div>
     </div>
   </div>`;
+}
+
+function toggleBlockDetail(i) {
+  const row = document.getElementById('bc-detail-' + i);
+  if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}
+
+async function addBuilderBlock() {
+  const sender = document.getElementById('bc-tx-sender').value.trim();
+  const recipient = document.getElementById('bc-tx-recipient').value.trim();
+  const amount = parseFloat(document.getElementById('bc-tx-amount').value) || 0;
+  const memo = document.getElementById('bc-tx-memo').value.trim();
+  if (!sender || !recipient) { toast('Sender and recipient required', false); return; }
+  const tx = {sender, recipient, amount};
+  if (memo) tx.memo = memo;
+  try {
+    await post('/blockchain/add', [tx]);
+    const resultEl = document.getElementById('bc-builder-result');
+    const chain = await api('/blockchain/height');
+    if (resultEl) resultEl.innerHTML = `<div class="alert ok">✓ Block added at height ${chain.height}</div>`;
+    bcOffset = 0;
+    renderBlockchain(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
 }
 
 async function addBlock() {
@@ -602,10 +892,30 @@ async function searchTxns() {
 // ── ROUTES ───────────────────────────────────────────────────────────────────
 async function renderRoutes(rid) {
   document.getElementById('content').innerHTML = `<div class="section"><div class="table-wrap"><table><thead><tr><th>Destination</th><th>Latency</th><th>Throughput</th><th>Tags</th><th>Expires</th><th></th></tr></thead><tbody>${skeletonRows(6)}</tbody></table></div></div>`;
-  const routesRes = await Promise.allSettled([api('/routes')]);
+  const [routesRes, statsRes] = await Promise.allSettled([api('/routes'), api('/routes/stats').catch(()=>null)]);
   if (rid && rid !== currentRenderId) return;
   const routes = routesRes[0].value || [];
+  const routeStats = statsRes[1]?.value || null;
+
+  const statsCards = routeStats ? `<div class="cards" style="margin-bottom:16px">
+    <div class="card accent"><div class="card-label">Total Routes</div><div class="card-value">${routeStats.total}</div></div>
+    <div class="card"><div class="card-label">Satellite</div><div class="card-value">${routeStats.satellite}</div></div>
+    <div class="card"><div class="card-label">Avg Latency</div><div class="card-value">${Number(routeStats.avg_latency_ms||0).toFixed(1)}<span style="font-size:13px">ms</span></div></div>
+    <div class="card"><div class="card-label">Min / Max</div><div class="card-value" style="font-size:16px">${routeStats.min_latency_ms}ms / ${routeStats.max_latency_ms}ms</div></div>
+  </div>` : '';
+
+  // Latency heatmap
+  const heatmapHtml = routes.length > 0 ? `<div class="section" style="margin-bottom:16px">
+    <div class="section-title">Latency Heatmap</div>
+    <div class="heatmap">${routes.map(r => {
+      const lat = r.metric ? r.metric.latency : 0;
+      const [bg, fg] = lat <= 10 ? ['#166534','#4ade80'] : lat <= 50 ? ['#713f12','#fbbf24'] : lat <= 200 ? ['#7c2d12','#fb923c'] : ['#7f1d1d','#f87171'];
+      return `<div class="heatmap-cell" style="background:${bg}20;color:${fg};border:1px solid ${bg}40">${esc(r.destination)}<br><small>${lat}ms</small></div>`;
+    }).join('')}</div></div>` : '';
+
   document.getElementById('content').innerHTML = `
+  ${statsCards}
+  ${heatmapHtml}
   <div class="section">
     <div class="flex" style="margin-bottom:12px">
       <div class="section-title" style="margin:0">${routes.length} Route(s)</div>
@@ -627,13 +937,14 @@ async function renderRoutes(rid) {
       <table>
         <thead><tr><th>Destination</th><th>Latency</th><th>Throughput</th><th>Tags</th><th>Expires</th><th></th></tr></thead>
         <tbody>
-          ${routes.map(r=>`<tr>
+          ${routes.length === 0 ? `<tr><td colspan="6">${emptyState('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M6 9v3a6 6 0 006 6h3"/></svg>', 'No routes configured', 'Add your first route to get started.', 'Add Route', "document.getElementById('r-dest')?.focus()")}</td></tr>` :
+          routes.map(r=>`<tr>
             <td><strong>${esc(r.destination)}</strong>${r.satellite?' <span class="pill sat">SAT</span>':''}</td>
             <td>${r.metric ? r.metric.latency : '—'}ms</td><td>${r.metric ? r.metric.throughput : '—'}</td>
             <td class="mono">${r.tags?Object.entries(r.tags).map(([k,v])=>k+':'+v).join(', '):'—'}</td>
             <td class="mono">${r.expires_at?fmtTime(r.expires_at):'∞'}</td>
             <td><button class="btn btn-danger btn-sm" onclick="deleteRoute('${esc(r.destination)}')">✕</button></td>
-          </tr>`).join('')||'<tr><td colspan="6" class="empty">No routes</td></tr>'}
+          </tr>`).join('')}
         </tbody>
       </table>
     </div>
@@ -724,16 +1035,31 @@ async function applyRouteFilter() {
 }
 
 // ── AGENTS ────────────────────────────────────────────────────────────────────
+let agentCapFilter = '';
 async function renderAgents(rid) {
   document.getElementById('content').innerHTML = `<div class="section"><div class="table-wrap"><table><thead><tr><th>ID</th><th>Status</th><th>Address</th><th>Capabilities</th><th>Expires</th><th>Actions</th></tr></thead><tbody>${skeletonRows(6)}</tbody></table></div></div>`;
-  const agentsRes = await Promise.allSettled([api('/agents')]);
+  const [agentsRes, statsRes] = await Promise.allSettled([api('/agents'), api('/agents/stats').catch(()=>null)]);
   if (rid && rid !== currentRenderId) return;
-  const agents = agentsRes[0].value || [];
+  const agentsAll = agentsRes[0].value || [];
+  const agentStats = statsRes[1] && statsRes[1].value ? statsRes[1].value : null;
+  const agents = agentCapFilter ? agentsAll.filter(a => (a.capabilities||[]).includes(agentCapFilter)) : agentsAll;
+  const allCaps = [...new Set(agentsAll.flatMap(a => a.capabilities||[]))].sort();
+
+  const statsCards = agentStats ? `<div class="cards" style="margin-bottom:16px">
+    <div class="card accent"><div class="card-label">Total Agents</div><div class="card-value">${agentStats.total}</div></div>
+    ${Object.entries(agentStats.by_status||{}).map(([s,c])=>`<div class="card"><div class="card-label">${esc(s)}</div><div class="card-value">${c}</div><div class="card-sub">by status</div></div>`).join('')}
+  </div>` : '';
+
   document.getElementById('content').innerHTML = `
+  ${statsCards}
   <div class="section">
     <div class="flex" style="margin-bottom:12px">
       <div class="section-title" style="margin:0">${agents.length} Agent(s)</div>
-      <div class="ml-auto flex">
+      <div class="ml-auto flex" style="gap:8px;align-items:center">
+        <select style="padding:4px 8px;font-size:12px;width:160px" onchange="agentCapFilter=this.value;renderAgents(currentRenderId)">
+          <option value="">All capabilities</option>
+          ${allCaps.map(c=>`<option value="${esc(c)}" ${agentCapFilter===c?'selected':''}>${esc(c)}</option>`).join('')}
+        </select>
         <button class="btn btn-outline btn-sm" onclick="checkAgentsHealth()">♥ Health Check</button>
         <button class="btn btn-outline btn-sm" onclick="renderAgents(currentRenderId)">↻</button>
       </div>
@@ -742,13 +1068,14 @@ async function renderAgents(rid) {
       <table>
         <thead><tr><th>ID</th><th>Status</th><th>Address</th><th>Capabilities</th><th>Expires</th><th>Actions</th></tr></thead>
         <tbody>
-          ${agents.map(a=>`<tr>
+          ${agents.length === 0 ? `<tr><td colspan="6">${emptyState('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>', 'No agents registered', 'Register your first agent to start dispatching jobs.', 'Register Agent', "document.getElementById('ag-id')?.focus()")}</td></tr>` :
+          agents.map(a=>`<tr>
             <td><strong>${esc(a.id)}</strong></td>
             <td><span class="pill ${esc(a.status)}">${esc(a.status)}</span></td>
             <td class="mono">${esc(a.addr||'—')}</td>
             <td class="mono">${(a.capabilities||[]).join(', ')||'—'}</td>
             <td class="mono">${a.expires_at?fmtTime(a.expires_at):'∞'}</td>
-            <td class="flex">
+            <td class="flex" style="gap:4px;flex-wrap:wrap">
               <select onchange="setAgentStatus('${esc(a.id)}',this.value)" style="width:100px;padding:3px 6px;font-size:11px">
                 <option value="">set status</option>
                 <option value="healthy">healthy</option>
@@ -756,9 +1083,20 @@ async function renderAgents(rid) {
                 <option value="unknown">unknown</option>
               </select>
               <button class="btn btn-outline btn-sm" onclick="heartbeat('${esc(a.id)}')">♥</button>
+              <button class="btn btn-outline btn-sm" onclick="showDispatchForm('${esc(a.id)}','${esc((a.capabilities||[])[0]||'')}')">▶ Job</button>
               <button class="btn btn-danger btn-sm" onclick="deregisterAgent('${esc(a.id)}')">✕</button>
             </td>
-          </tr>`).join('')||'<tr><td colspan="6" class="empty">No agents</td></tr>'}
+          </tr>
+          <tr id="dispatch-row-${esc(a.id)}" style="display:none;background:var(--surface)">
+            <td colspan="6" style="padding:12px">
+              <div class="form-row" style="margin:0">
+                <div class="form-group"><label>Capability</label><input id="disp-cap-${esc(a.id)}" value="${esc((a.capabilities||[])[0]||'')}" style="width:120px"></div>
+                <div class="form-group" style="flex:1"><label>Payload (JSON)</label><input id="disp-pay-${esc(a.id)}" placeholder='{"key":"val"}' style="width:100%"></div>
+                <div class="form-group"><label>&nbsp;</label><button class="btn btn-primary btn-sm" onclick="dispatchJob('${esc(a.id)}')">Dispatch</button></div>
+                <div class="form-group"><label>&nbsp;</label><button class="btn btn-outline btn-sm" onclick="hideDispatchForm('${esc(a.id)}')">Cancel</button></div>
+              </div>
+            </td>
+          </tr>`).join('')}
         </tbody>
       </table>
     </div>
@@ -808,6 +1146,27 @@ async function renderAgents(rid) {
     </div>
   </div>`;
 }
+
+function showDispatchForm(agentId, cap) {
+  const row = document.getElementById('dispatch-row-' + agentId);
+  if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}
+function hideDispatchForm(agentId) {
+  const row = document.getElementById('dispatch-row-' + agentId);
+  if (row) row.style.display = 'none';
+}
+async function dispatchJob(agentId) {
+  const cap = (document.getElementById('disp-cap-'+agentId)||{}).value||'';
+  const payStr = (document.getElementById('disp-pay-'+agentId)||{}).value||'{}';
+  let payload = {};
+  try { payload = JSON.parse(payStr); } catch(e) { toast('Invalid JSON payload', false); return; }
+  try {
+    const j = await post('/agents/jobs', {agent_id: agentId, capability: cap, payload});
+    toast('Job '+j.id+' dispatched');
+    hideDispatchForm(agentId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
 
 async function lookupCapability() {
   const cap = document.getElementById('cap-lookup').value.trim();
@@ -888,29 +1247,48 @@ async function deregisterAgent(id) {
 }
 
 // ── JOBS ──────────────────────────────────────────────────────────────────────
+let jobStatusFilter = 'all';
+let jobAutoRefresh = true;
+
 async function renderJobs(rid) {
   const jobsRes = await api('/agents/jobs');
   if (rid && rid !== currentRenderId) return;
-  const list = jobsRes.jobs || [];
+  const allJobs = jobsRes.jobs || [];
+  const list = jobStatusFilter === 'all' ? allJobs : allJobs.filter(j => j.status === jobStatusFilter);
+  const tabs = ['all','pending','running','done','failed'];
 
   document.getElementById('content').innerHTML = `
   <div class="section">
-    <div class="flex" style="margin-bottom:12px">
-      <div class="section-title" style="margin:0">${list.length} Job(s)</div>
-      <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="renderJobs(currentRenderId)">↻</button></div>
+    <div class="flex" style="margin-bottom:10px">
+      <div style="display:flex;gap:4px;flex-wrap:wrap">
+        ${tabs.map(t=>`<button class="btn btn-sm ${jobStatusFilter===t?'btn-primary':'btn-outline'}" onclick="jobStatusFilter='${t}';renderJobs(currentRenderId)">${t.charAt(0).toUpperCase()+t.slice(1)} (${t==='all'?allJobs.length:allJobs.filter(j=>j.status===t).length})</button>`).join('')}
+      </div>
+      <div class="ml-auto flex">
+        <label style="font-size:12px;display:flex;align-items:center;gap:4px;color:var(--muted)">
+          <input type="checkbox" ${jobAutoRefresh?'checked':''} onchange="jobAutoRefresh=this.checked"> Auto-refresh
+        </label>
+        <button class="btn btn-outline btn-sm" onclick="renderJobs(currentRenderId)">refresh</button>
+      </div>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>ID</th><th>Status</th><th>Capability</th><th>Agent</th><th>Created</th><th>Updated</th></tr></thead>
+        <thead><tr><th>ID</th><th>Status</th><th>Capability</th><th>Agent</th><th>Created</th><th>Duration</th><th></th></tr></thead>
         <tbody>
-          ${list.map(j=>`<tr>
-            <td><strong>${esc(j.id)}</strong></td>
-            <td><span class="pill ${esc(j.status)}">${esc(j.status)}</span></td>
-            <td>${esc(j.capability||'—')}</td>
-            <td>${esc(j.agent_id||'—')}</td>
-            <td class="mono">${fmtTime(j.created_at)}</td>
-            <td class="mono">${fmtTime(j.updated_at)}</td>
-          </tr>`).join('')||'<tr><td colspan="6" class="empty">No jobs found</td></tr>'}
+          ${list.length === 0 ? `<tr><td colspan="7" class="empty">No jobs found</td></tr>` :
+          list.map(j=>{
+            const dur = (j.created_at && j.updated_at && j.status !== 'pending') ?
+              Math.round((new Date(j.updated_at) - new Date(j.created_at))/1000)+'s' : '---';
+            const canCancel = j.status === 'pending' || j.status === 'running';
+            return `<tr>
+              <td class="mono"><strong>${esc(j.id)}</strong></td>
+              <td><span class="pill ${esc(j.status)}">${esc(j.status)}</span></td>
+              <td>${esc(j.capability||'---')}</td>
+              <td class="mono">${esc(j.agent_id||'---')}</td>
+              <td class="mono">${fmtTime(j.created_at)}</td>
+              <td class="mono">${dur}</td>
+              <td>${canCancel?`<button class="btn btn-danger btn-sm" onclick="cancelJob('${esc(j.id)}')">Cancel</button>`:''}</td>
+            </tr>`;
+          }).join('')}
         </tbody>
       </table>
     </div>
@@ -928,28 +1306,34 @@ async function renderJobs(rid) {
     </div>
   </div>`;
 
-  autoRefreshTimer = setTimeout(() => { if(currentPage==='jobs' && rid === currentRenderId) renderJobs(rid); }, 5000);
+  if (jobAutoRefresh) {
+    autoRefreshTimer = setTimeout(() => { if(currentPage==='jobs' && rid === currentRenderId) renderJobs(rid); }, 5000);
+  }
+}
+
+async function cancelJob(id) {
+  try {
+    await del('/agents/jobs/'+encodeURIComponent(id));
+    toast('Job cancelled');
+    renderJobs(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
 }
 
 async function submitJob() {
-  const cap = document.getElementById('job-cap').value.trim();
-  const agent = document.getElementById('job-agent').value.trim();
+  const cap = (document.getElementById('job-cap')||{}).value.trim();
+  const agent = (document.getElementById('job-agent')||{}).value.trim();
   let payload = {};
   try {
-    const raw = document.getElementById('job-payload').value.trim();
+    const raw = (document.getElementById('job-payload')||{}).value.trim();
     if (raw) payload = JSON.parse(raw);
   } catch(e) { toast('Invalid JSON payload', false); return; }
-
   try {
-    await post('/agents/jobs', {
-      capability: cap,
-      agent_id: agent,
-      payload: payload
-    });
+    await post('/agents/jobs', {capability: cap, agent_id: agent, payload});
     toast('Job submitted');
     renderJobs(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
 }
+
 
 // ── EVENTS ────────────────────────────────────────────────────────────────────
 
@@ -1161,41 +1545,59 @@ async function renderSearch(rid) {
         <div class="form-group"><label>Query</label><input id="search-q" placeholder="agent name, route, sender…" style="width:300px" onkeydown="if(event.key==='Enter')doSearch()"></div>
         <div class="form-group"><label>&nbsp;</label><button class="btn btn-primary" onclick="doSearch()">Search</button></div>
       </div>
+      <div style="font-size:11px;color:var(--muted)">Tip: Press <kbd style="background:var(--card);border:1px solid var(--border);border-radius:3px;padding:1px 5px">/</kbd> from anywhere to focus search.</div>
     </div>
     <div id="search-results"></div>
   `;
+  const searchInput = document.getElementById('search-q');
+  if (searchInput) searchInput.focus();
 }
 
 async function doSearch() {
-  const q = document.getElementById('search-q').value.trim();
+  const q = (document.getElementById('search-q')||{}).value.trim();
   if (!q) return;
   const r = await api('/search?q='+encodeURIComponent(q));
   const agents = r.agents || [];
   const routes = r.routes || [];
   const txns = r.transactions || [];
+  const kvItems = r.kv_keys || [];
   let html = '';
   if (agents.length) {
-    html += `<div class="section-title">Agents (${agents.length})</div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Status</th><th>Capabilities</th></tr></thead><tbody>`;
+    html += `<div class="section"><div class="section-title">Agents (${agents.length})</div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Status</th><th>Capabilities</th></tr></thead><tbody>`;
     agents.forEach(a => {
-      html += `<tr><td class="mono">${esc(a.id)}</td><td><span class="pill ${a.status}">${esc(a.status)}</span></td><td>${esc((a.capabilities||[]).join(', '))}</td></tr>`;
+      html += `<tr style="cursor:pointer" onclick="go('agents')" title="Navigate to Agents">
+        <td class="mono">${esc(a.id)}</td>
+        <td><span class="pill ${a.status}">${esc(a.status)}</span></td>
+        <td>${esc((a.capabilities||[]).join(', '))}</td></tr>`;
     });
-    html += '</tbody></table></div>';
+    html += '</tbody></table></div></div>';
   }
   if (routes.length) {
-    html += `<div class="section-title" style="margin-top:12px">Routes (${routes.length})</div><div class="table-wrap"><table><thead><tr><th>Destination</th><th>Latency (ms)</th></tr></thead><tbody>`;
-    routes.forEach(r => {
-      html += `<tr><td class="mono">${esc(r.destination)}</td><td>${r.latency_ms}</td></tr>`;
+    html += `<div class="section"><div class="section-title">Routes (${routes.length})</div><div class="table-wrap"><table><thead><tr><th>Destination</th><th>Latency (ms)</th></tr></thead><tbody>`;
+    routes.forEach(rt => {
+      html += `<tr style="cursor:pointer" onclick="go('routes')" title="Navigate to Routes">
+        <td class="mono">${esc(rt.destination)}</td><td>${rt.latency_ms}</td></tr>`;
     });
-    html += '</tbody></table></div>';
+    html += '</tbody></table></div></div>';
   }
   if (txns.length) {
-    html += `<div class="section-title" style="margin-top:12px">Transactions (${txns.length})</div><div class="table-wrap"><table><thead><tr><th>Block</th><th>Sender</th><th>Recipient</th><th>Amount</th></tr></thead><tbody>`;
+    html += `<div class="section"><div class="section-title">Transactions (${txns.length})</div><div class="table-wrap"><table><thead><tr><th>Block</th><th>Sender</th><th>Recipient</th><th>Amount</th></tr></thead><tbody>`;
     txns.forEach(tx => {
-      html += `<tr><td>${tx.block_index}</td><td class="mono">${esc(tx.sender)}</td><td class="mono">${esc(tx.recipient)}</td><td>${tx.amount}</td></tr>`;
+      html += `<tr style="cursor:pointer" onclick="go('blockchain')" title="Navigate to Blockchain">
+        <td>${tx.block_index}</td><td class="mono">${esc(tx.sender)}</td>
+        <td class="mono">${esc(tx.recipient)}</td><td>${tx.amount}</td></tr>`;
     });
-    html += '</tbody></table></div>';
+    html += '</tbody></table></div></div>';
   }
-  if (!html) html = '<p style="color:var(--muted)">No results for ' + esc(q) + '</p>';
+  if (kvItems.length) {
+    html += `<div class="section"><div class="section-title">KV Keys (${kvItems.length})</div><div class="table-wrap"><table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>`;
+    kvItems.forEach(kv => {
+      html += `<tr style="cursor:pointer" onclick="go('kv')" title="Navigate to KV Store">
+        <td class="mono">${esc(kv.key||kv)}</td><td>${esc(kv.value||'')}</td></tr>`;
+    });
+    html += '</tbody></table></div></div>';
+  }
+  if (!html) html = `<div class="section"><div class="empty-state" style="padding:32px"><h3>No results for "${esc(q)}"</h3><p style="color:var(--muted)">Try a different search term.</p></div></div>`;
   const el = document.getElementById('search-results');
   if (el) el.innerHTML = html;
 }
@@ -1204,8 +1606,9 @@ async function doSearch() {
 async function renderAdmin(rid) {
   const content = document.getElementById('content');
   if (content) content.innerHTML = skeletonCards(4) + `<div class="table-wrap"><table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>${skeletonRows(2,5)}</tbody></table></div>`;
-  const [statusRes, tenantsRes, backupsRes, verifyRes, meshRes] = await Promise.allSettled([
-    api('/admin/status'), api('/admin/tenants'), api('/admin/backup/list'), api('/blockchain/verify'), api('/admin/mesh')
+  const [statusRes, tenantsRes, backupsRes, verifyRes, meshRes, sysInfoRes] = await Promise.allSettled([
+    api('/admin/status'), api('/admin/tenants'), api('/admin/backup/list'), api('/blockchain/verify'), api('/admin/mesh'),
+    api('/system/info').catch(()=>null)
   ]);
   if (rid && rid !== currentRenderId) return;
   const st = statusRes.value||{};
@@ -1213,8 +1616,21 @@ async function renderAdmin(rid) {
   const backups = backupsRes.value||{backups:[]};
   const verify = verifyRes.value||{valid: false, unknown: true};
   const mesh = meshRes.value||{status:'unknown'};
+  const sysInfo = sysInfoRes.value || null;
+
+  const sysInfoHtml = sysInfo ? `<div class="section" style="margin-bottom:16px">
+    <div class="section-title">System Info</div>
+    <div class="cards">
+      <div class="card"><div class="card-label">Version</div><div class="card-value" style="font-size:15px">${esc(sysInfo.version||'—')}</div><div class="card-sub">${esc(sysInfo.go_version||'')}</div></div>
+      <div class="card"><div class="card-label">Process</div><div class="card-value" style="font-size:15px">PID ${sysInfo.pid}</div><div class="card-sub">${sysInfo.goroutines} goroutines</div></div>
+      <div class="card"><div class="card-label">Memory</div><div class="card-value" style="font-size:15px">${Number(sysInfo.heap_mb||0).toFixed(1)} MB</div><div class="card-sub">heap allocated</div></div>
+      <div class="card"><div class="card-label">CPUs</div><div class="card-value" style="font-size:15px">${sysInfo.num_cpu}</div><div class="card-sub">${esc(sysInfo.os+'/'+sysInfo.arch)}</div></div>
+      <div class="card"><div class="card-label">Data Dir</div><div class="card-value" style="font-size:11px;word-break:break-all">${esc(sysInfo.data_dir||'—')}</div></div>
+    </div>
+  </div>` : '';
 
   document.getElementById('content').innerHTML = `
+  ${sysInfoHtml}
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
     <div>
       <div class="section">
@@ -2035,10 +2451,18 @@ function closeShortcutsModal() {
   const _kbNavMap = {o:'overview', b:'blockchain', r:'routes', a:'agents', e:'events', k:'kv', s:'schedules', n:'notifs', m:'mesh'};
   document.addEventListener('keydown', function(ev) {
     const tag = (ev.target.tagName||'').toLowerCase();
-    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
     const key = ev.key;
     const now = Date.now();
+    if (key === '/') {
+      if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') {
+        ev.preventDefault();
+        go('search');
+        setTimeout(() => { const el = document.getElementById('search-q'); if (el) el.focus(); }, 80);
+        return;
+      }
+    }
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
     if (key === '?') { showShortcutsModal(); return; }
     if (key === 'Escape') { closeShortcutsModal(); closeApiKeyModal(); return; }
     if (_kbLastKey === 'g' && (now - _kbLastTime) < 1000) {
@@ -2050,6 +2474,162 @@ function closeShortcutsModal() {
     _kbLastTime = now;
   });
 })();
+
+
+// ── ANALYTICS PAGE ───────────────────────────────────────────────────────────
+async function renderStats(rid) {
+  document.getElementById('content').innerHTML = skeletonCards(4);
+  const [bcStatsRes, routeStatsRes, agentStatsRes, tsRes, sysRes] = await Promise.allSettled([
+    api('/blockchain/stats').catch(()=>null),
+    api('/routes/stats').catch(()=>null),
+    api('/agents/stats').catch(()=>null),
+    api('/metrics/timeseries?n=60').catch(()=>[]),
+    api('/system/info').catch(()=>null)
+  ]);
+  if (rid && rid !== currentRenderId) return;
+  const bcs = bcStatsRes.value || null;
+  const rts = routeStatsRes.value || null;
+  const ags = agentStatsRes.value || null;
+  const tsData = Array.isArray(tsRes.value) ? tsRes.value : [];
+  const sys = sysRes.value || null;
+
+  const statCards = '<div class="cards" style="margin-bottom:20px">'
+    + '<div class="card accent"><div class="card-label">Total Blocks</div><div class="card-value">' + (bcs?bcs.height:'--') + '</div></div>'
+    + '<div class="card"><div class="card-label">Total Transactions</div><div class="card-value">' + (bcs?bcs.total_transactions:'--') + '</div></div>'
+    + '<div class="card"><div class="card-label">Active Routes</div><div class="card-value">' + (rts?rts.total:'--') + '</div></div>'
+    + '<div class="card green"><div class="card-label">Registered Agents</div><div class="card-value">' + (ags?ags.total:'--') + '</div></div>'
+    + '</div>';
+
+  const timelineChart = tsData.length >= 2
+    ? '<div class="chart-wrap"><div class="chart-title">System Metrics Timeline</div>'
+      + lineChart(tsData, ['blocks','routes','agents'], ['var(--accent)','var(--accent2)','#a78bfa'], 560, 180)
+      + '<div class="chart-legend"><span class="legend-item"><span class="legend-dot" style="background:var(--accent)"></span>Blocks</span>'
+      + '<span class="legend-item"><span class="legend-dot" style="background:var(--accent2)"></span>Routes</span>'
+      + '<span class="legend-item"><span class="legend-dot" style="background:#a78bfa"></span>Agents</span></div></div>'
+    : '<div class="chart-wrap"><div class="chart-title">System Metrics Timeline</div><p style="color:var(--muted);font-size:12px">Waiting for timeseries data (samples every 5s)...</p></div>';
+
+  const agentCapEntries = ags ? Object.entries(ags.by_capability||{}) : [];
+  let agentCapChart = '';
+  if (agentCapEntries.length > 0) {
+    const capLabels = agentCapEntries.map(e=>e[0]);
+    const capVals = agentCapEntries.map(e=>e[1]);
+    agentCapChart = '<div class="chart-wrap"><div class="chart-title">Agents by Capability</div>'
+      + barChart(capLabels, capVals, '#a78bfa', 480, 120) + '</div>';
+  }
+
+  let destTableHtml = '';
+  if (rts && rts.destinations && rts.destinations.length > 0) {
+    const maxLat = rts.max_latency_ms || 1;
+    const rows = rts.destinations.map(function(d) {
+      const pct = Math.round((rts.avg_latency_ms / maxLat) * 100);
+      return '<tr><td class="mono">' + esc(d) + '</td><td>' + rts.avg_latency_ms.toFixed(1) + 'ms</td>'
+        + '<td><div class="lat-bar-wrap"><div class="lat-bar" style="width:' + pct + 'px"></div><span style="font-size:11px;color:var(--muted)">' + pct + '%</span></div></td></tr>';
+    }).join('');
+    destTableHtml = '<div class="section"><div class="section-title">Route Destinations</div>'
+      + '<div class="table-wrap"><table><thead><tr><th>Destination</th><th>Avg Latency</th><th>Bar</th></tr></thead><tbody>'
+      + rows + '</tbody></table></div></div>';
+  }
+
+  let sysInfoCard = '';
+  if (sys) {
+    sysInfoCard = '<div class="section"><div class="section-title">System Info</div><div class="cards">'
+      + '<div class="card"><div class="card-label">Version</div><div class="card-value" style="font-size:15px">' + esc(sys.version||'--') + '</div><div class="card-sub">' + esc(sys.go_version||'') + '</div></div>'
+      + '<div class="card"><div class="card-label">PID / Goroutines</div><div class="card-value" style="font-size:15px">' + sys.pid + '</div><div class="card-sub">' + sys.goroutines + ' goroutines</div></div>'
+      + '<div class="card"><div class="card-label">Heap Memory</div><div class="card-value" style="font-size:15px">' + Number(sys.heap_mb||0).toFixed(1) + ' MB</div></div>'
+      + '<div class="card"><div class="card-label">CPUs / OS</div><div class="card-value" style="font-size:15px">' + sys.num_cpu + '</div><div class="card-sub">' + esc(sys.os+'/'+sys.arch) + '</div></div>'
+      + '</div></div>';
+  }
+
+  const el = document.getElementById('content');
+  if (el) el.innerHTML = statCards + timelineChart + agentCapChart + destTableHtml + sysInfoCard;
+}
+
+// ── TOPOLOGY PAGE ─────────────────────────────────────────────────────────────
+async function renderTopology(rid) {
+  document.getElementById('content').innerHTML = '<div class="section"><p style="color:var(--muted)">Loading topology...</p></div>';
+  const [peersRes, agentsRes] = await Promise.allSettled([
+    api('/mesh/peers').catch(()=>({peers:[]})),
+    api('/agents').catch(()=>[])
+  ]);
+  if (rid && rid !== currentRenderId) return;
+  const peersData = peersRes.value || {};
+  const peers = peersData.peers || [];
+  const agents = agentsRes.value || [];
+
+  const svgW = 560, svgH = 400;
+  const cx = svgW / 2, cy = svgH / 2;
+  const peerR = 120, agentR = 200;
+  let svgContent = '';
+
+  // center node
+  svgContent += '<circle cx="' + cx + '" cy="' + cy + '" r="22" fill="var(--accent)" opacity="0.85"/>';
+  svgContent += '<text x="' + cx + '" y="' + (cy + 35) + '" text-anchor="middle" font-size="11" fill="var(--text)">This Node</text>';
+
+  const topoDetails = [];
+
+  // peer nodes
+  peers.forEach(function(p, i) {
+    const angle = (2 * Math.PI * i / Math.max(peers.length, 1)) - Math.PI/2;
+    const px = cx + peerR * Math.cos(angle);
+    const py = cy + peerR * Math.sin(angle);
+    const color = p.status === 'online' ? '#4ade80' : p.status === 'offline' ? '#f87171' : '#fbbf24';
+    // line to center
+    svgContent += '<line x1="' + cx + '" y1="' + cy + '" x2="' + px.toFixed(1) + '" y2="' + py.toFixed(1) + '" stroke="' + color + '" stroke-width="1.5" opacity="0.5"/>';
+    svgContent += '<circle cx="' + px.toFixed(1) + '" cy="' + py.toFixed(1) + '" r="14" fill="' + color + '" opacity="0.8" style="cursor:pointer" onclick="topoSelectNode(' + JSON.stringify(p.id||'peer-'+i) + ',' + JSON.stringify({id:p.id||'peer-'+i, type:'peer', addr:p.address||'', status:p.status||'unknown', latency_ms:p.latency_ms}) + ')"><title>' + esc(p.id||'peer-'+i) + '</title></circle>';
+    svgContent += '<text x="' + px.toFixed(1) + '" y="' + (py + 26).toFixed(1) + '" text-anchor="middle" font-size="10" fill="var(--muted)">' + esc((p.id||'peer-'+i).substring(0,10)) + '</text>';
+    topoDetails.push(p);
+  });
+
+  // agent nodes
+  agents.forEach(function(a, i) {
+    const angle = (2 * Math.PI * i / Math.max(agents.length, 1)) + Math.PI/4;
+    const ax = cx + agentR * Math.cos(angle);
+    const ay = cy + agentR * Math.sin(angle);
+    const inSvg = ax > 16 && ax < svgW-16 && ay > 16 && ay < svgH-16;
+    const clampX = Math.max(20, Math.min(ax, svgW-20));
+    const clampY = Math.max(20, Math.min(ay, svgH-20));
+    const color = a.status === 'healthy' ? '#4ade80' : a.status === 'degraded' ? '#fbbf24' : '#94a3b8';
+    svgContent += '<line x1="' + cx + '" y1="' + cy + '" x2="' + clampX.toFixed(1) + '" y2="' + clampY.toFixed(1) + '" stroke="' + color + '" stroke-width="1" stroke-dasharray="4 3" opacity="0.35"/>';
+    svgContent += '<circle cx="' + clampX.toFixed(1) + '" cy="' + clampY.toFixed(1) + '" r="9" fill="' + color + '" opacity="0.75" style="cursor:pointer" onclick="topoSelectNode(' + JSON.stringify(a.id) + ',' + JSON.stringify({id:a.id, type:'agent', status:a.status, capabilities:a.capabilities}) + ')"><title>' + esc(a.id) + '</title></circle>';
+    svgContent += '<text x="' + clampX.toFixed(1) + '" y="' + (clampY + 20).toFixed(1) + '" text-anchor="middle" font-size="9" fill="var(--muted)">' + esc(a.id.substring(0,8)) + '</text>';
+  });
+
+  const connTable = peers.length > 0
+    ? '<div class="section" style="margin-top:16px"><div class="section-title">Connections</div><div class="table-wrap"><table><thead><tr><th>Peer</th><th>Status</th><th>Latency</th><th>Latency Bar</th></tr></thead><tbody>'
+      + peers.map(function(p) {
+          const maxLat = 500;
+          const pct = Math.min(100, Math.round(((p.latency_ms||0)/maxLat)*100));
+          const color = p.status==='online'?'var(--accent2)':p.status==='offline'?'var(--danger)':'var(--warn)';
+          return '<tr><td class="mono">' + esc(p.id||'?') + '</td>'
+            + '<td><span class="pill ' + esc(p.status||'unknown') + '">' + esc(p.status||'unknown') + '</span></td>'
+            + '<td>' + (p.latency_ms!=null?p.latency_ms+'ms':'--') + '</td>'
+            + '<td><div class="lat-bar-wrap"><div class="lat-bar" style="width:' + pct + 'px;background:' + color + '"></div></div></td></tr>';
+        }).join('')
+      + '</tbody></table></div></div>'
+    : '';
+
+  const html = '<div class="topo-wrap">'
+    + '<div class="topo-svg-wrap"><svg id="topo-svg" width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '">' + svgContent + '</svg></div>'
+    + '<div class="topo-detail" id="topo-detail"><h4>Node Details</h4><p>Click a node on the map to see details.</p></div>'
+    + '</div>'
+    + connTable;
+  const el = document.getElementById('content');
+  if (el) el.innerHTML = html;
+}
+
+function topoSelectNode(id, data) {
+  const panel = document.getElementById('topo-detail');
+  if (!panel) return;
+  let html = '<h4>' + esc(id) + '</h4>';
+  if (data) {
+    Object.entries(data).forEach(function(kv) {
+      if (kv[1] === undefined || kv[1] === null) return;
+      const val = Array.isArray(kv[1]) ? kv[1].join(', ') : kv[1];
+      html += '<p><strong>' + esc(kv[0]) + '</strong>: ' + esc(String(val)) + '</p>';
+    });
+  }
+  panel.innerHTML = html;
+}
 
 // ── BOOT ────────────────────────────────────────────────────────────────────
 if (!apiKey) { setTimeout(showApiKeyModal, 600); }

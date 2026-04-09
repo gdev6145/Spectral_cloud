@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -72,6 +73,7 @@ type statusSnapshot struct {
 type statusTracker struct {
 	startedAt           time.Time
 	dbPath              string
+	dataDir             string
 	backupInterval      string
 	compactInterval     string
 	backupDir           string
@@ -118,6 +120,51 @@ type pathRule struct {
 	prefix bool
 	method string
 }
+
+// ── in-memory timeseries metrics buffer ────────────────────────────────────
+
+type metricsPoint struct {
+	TS         string `json:"ts"`
+	Blocks     int    `json:"blocks"`
+	Routes     int    `json:"routes"`
+	Agents     int    `json:"agents"`
+	JobsQueued int    `json:"jobs_queued"`
+	Peers      int    `json:"peers"`
+}
+
+type metricsBuffer struct {
+	mu     sync.Mutex
+	buf    []metricsPoint
+	maxLen int
+}
+
+func newMetricsBuf(size int) *metricsBuffer {
+	return &metricsBuffer{maxLen: size, buf: make([]metricsPoint, 0, size)}
+}
+
+func (b *metricsBuffer) push(p metricsPoint) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf = append(b.buf, p)
+	if len(b.buf) > b.maxLen {
+		b.buf = b.buf[len(b.buf)-b.maxLen:]
+	}
+}
+
+func (b *metricsBuffer) last(n int) []metricsPoint {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	l := len(b.buf)
+	if n <= 0 || n > l {
+		n = l
+	}
+	result := make([]metricsPoint, n)
+	copy(result, b.buf[l-n:])
+	return result
+}
+
+// globalMetricsBuf is populated by a background goroutine started in main().
+var globalMetricsBuf = newMetricsBuf(720)
 
 func (s *statusTracker) snapshot() statusSnapshot {
 	s.mu.Lock()
@@ -369,6 +416,7 @@ func main() {
 	status := &statusTracker{
 		startedAt:           startedAt,
 		dbPath:              dbPath,
+		dataDir:             dataDir,
 		backupInterval:      backupInterval,
 		compactInterval:     compactInterval,
 		backupDir:           backupDir,
@@ -573,6 +621,39 @@ func main() {
 					tenantRouteCount.WithLabelValues(name).Set(float64(state.router.RouteCount()))
 					tenantAgentCount.WithLabelValues(name).Set(float64(agentReg.CountByTenant(name)))
 				}
+			}
+		}
+	}()
+
+	// Sample system metrics every 5s into the global ring buffer.
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				state, err := tenantMgr.getTenant(defaultTenant)
+				if err != nil {
+					continue
+				}
+				var jobsQueued int
+				if jobQueue != nil {
+					jobsQueued = jobQueue.Count()
+				}
+				var peers int
+				if meshNode != nil {
+					peers = len(meshNode.PeerHealth())
+				}
+				globalMetricsBuf.push(metricsPoint{
+					TS:         time.Now().UTC().Format(time.RFC3339),
+					Blocks:     state.chain.Height(),
+					Routes:     state.router.RouteCount(),
+					Agents:     agentReg.CountByTenant(defaultTenant),
+					JobsQueued: jobsQueued,
+					Peers:      peers,
+				})
 			}
 		}
 	}()
@@ -1898,6 +1979,188 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(snap)
+	})
+
+	// GET /metrics/timeseries?n=60 — last N sampled metrics points.
+	mux.HandleFunc("/metrics/timeseries", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		n := 60
+		if ns := r.URL.Query().Get("n"); ns != "" {
+			if parsed, err := strconv.Atoi(ns); err == nil && parsed > 0 {
+				n = parsed
+			}
+		}
+		points := globalMetricsBuf.last(n)
+		if points == nil {
+			points = []metricsPoint{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(points)
+	})
+
+	// GET /routes/stats — aggregate stats for all routes.
+	mux.HandleFunc("/routes/stats", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		state, _, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		routes := state.router.ListRoutes()
+		total := len(routes)
+		online := 0
+		satellite := 0
+		var minLat, maxLat int
+		var sumLat float64
+		dests := make([]string, 0, total)
+		first := true
+		for _, rt := range routes {
+			online++
+			if rt.Satellite {
+				satellite++
+			}
+			lat := rt.Metric.Latency
+			if first || lat < minLat {
+				minLat = lat
+			}
+			if lat > maxLat {
+				maxLat = lat
+			}
+			sumLat += float64(lat)
+			dests = append(dests, rt.Destination)
+			first = false
+		}
+		avgLat := 0.0
+		if total > 0 {
+			avgLat = sumLat / float64(total)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total":           total,
+			"online":          online,
+			"satellite":       satellite,
+			"avg_latency_ms":  avgLat,
+			"min_latency_ms":  minLat,
+			"max_latency_ms":  maxLat,
+			"destinations":    dests,
+		})
+	})
+
+	// GET /agents/stats — aggregate stats for all agents.
+	mux.HandleFunc("/agents/stats", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		agents := agentReg.List(tenant)
+		byCap := map[string]int{}
+		byStatus := map[string]int{}
+		byTenant := map[string]int{}
+		for _, a := range agents {
+			for _, c := range a.Capabilities {
+				byCap[c]++
+			}
+			byStatus[string(a.Status)]++
+			byTenant[a.TenantID]++
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total":          len(agents),
+			"by_capability":  byCap,
+			"by_status":      byStatus,
+			"by_tenant":      byTenant,
+		})
+	})
+
+	// GET /blockchain/stats — aggregate blockchain statistics.
+	mux.HandleFunc("/blockchain/stats", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		state, _, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		blocks := state.chain.Snapshot()
+		height := len(blocks)
+		totalTxns := 0
+		senders := map[string]bool{}
+		recipients := map[string]bool{}
+		genesisTime := ""
+		latestTime := ""
+		for _, b := range blocks {
+			totalTxns += len(b.Transactions)
+			for _, tx := range b.Transactions {
+				if tx.Sender != "" {
+					senders[tx.Sender] = true
+				}
+				if tx.Recipient != "" {
+					recipients[tx.Recipient] = true
+				}
+			}
+			if genesisTime == "" && b.Timestamp != "" {
+				genesisTime = b.Timestamp
+			}
+			if b.Timestamp != "" {
+				latestTime = b.Timestamp
+			}
+		}
+		avgTxPerBlock := 0.0
+		if height > 0 {
+			avgTxPerBlock = float64(totalTxns) / float64(height)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"height":             height,
+			"total_transactions": totalTxns,
+			"unique_senders":     len(senders),
+			"unique_recipients":  len(recipients),
+			"avg_tx_per_block":   avgTxPerBlock,
+			"genesis_time":       genesisTime,
+			"latest_time":        latestTime,
+		})
+	})
+
+	// GET /system/info — runtime and process info.
+	mux.HandleFunc("/system/info", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		uptimeSecs := int64(0)
+		dataDirVal := ""
+		if status != nil {
+			uptimeSecs = int64(time.Since(status.startedAt).Seconds())
+			dataDirVal = status.dataDir
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"version":        "1.0.0",
+			"go_version":     runtime.Version(),
+			"os":             runtime.GOOS,
+			"arch":           runtime.GOARCH,
+			"pid":            os.Getpid(),
+			"goroutines":     runtime.NumGoroutine(),
+			"heap_mb":        float64(ms.HeapAlloc) / (1 << 20),
+			"num_cpu":        runtime.NumCPU(),
+			"data_dir":       dataDirVal,
+			"uptime_seconds": uptimeSecs,
+		})
 	})
 
 	// GET /agents/health — per-agent health check results from the background checker.
