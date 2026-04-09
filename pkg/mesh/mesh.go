@@ -34,6 +34,14 @@ type Config struct {
 	GossipMaxRoutes int
 }
 
+// PeerStat holds health information for a single mesh peer.
+type PeerStat struct {
+	Addr      string    `json:"addr"`
+	LastSeen  time.Time `json:"last_seen"`
+	LatencyMs int       `json:"latency_ms"`
+	Packets   uint64    `json:"packets"`
+}
+
 type Node struct {
 	cfg    Config
 	router *routing.RoutingEngine
@@ -42,6 +50,9 @@ type Node struct {
 	stats  *Stats
 	mu     sync.Mutex
 	closed bool
+
+	peerMu sync.RWMutex
+	peers  map[string]*PeerStat
 }
 
 type Stats struct {
@@ -82,6 +93,7 @@ func Start(ctx context.Context, cfg Config, router *routing.RoutingEngine) (*Nod
 		router: router,
 		conn:   conn,
 		stats:  &Stats{},
+		peers:  make(map[string]*PeerStat),
 	}
 
 	go node.readLoop(ctx)
@@ -108,6 +120,17 @@ func (n *Node) Snapshot() (Stats, Config) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return *n.stats, n.cfg
+}
+
+// PeerHealth returns a snapshot of per-peer health data keyed by peer address.
+func (n *Node) PeerHealth() map[string]PeerStat {
+	n.peerMu.RLock()
+	defer n.peerMu.RUnlock()
+	out := make(map[string]PeerStat, len(n.peers))
+	for k, v := range n.peers {
+		out[k] = *v
+	}
+	return out
 }
 
 // gossipLoop periodically broadcasts the node's known routes to all peers
@@ -322,6 +345,18 @@ func (n *Node) handlePacket(data []byte, addr *net.UDPAddr) {
 			Throughput: gr.Thr,
 		}, n.cfg.RouteTTL)
 	}
+
+	// Update per-peer health tracking.
+	n.peerMu.Lock()
+	ps, ok := n.peers[routeAddr]
+	if !ok {
+		ps = &PeerStat{Addr: routeAddr}
+		n.peers[routeAddr] = ps
+	}
+	ps.LastSeen = time.Now().UTC()
+	ps.LatencyMs = latency
+	ps.Packets++
+	n.peerMu.Unlock()
 
 	n.mu.Lock()
 	n.stats.Accepted++

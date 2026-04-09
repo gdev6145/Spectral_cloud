@@ -88,6 +88,14 @@ func (tm *tenantManager) getTenant(tenant string) (*tenantState, error) {
 	return state, nil
 }
 
+// evict removes a tenant from the in-memory cache. It is called after the
+// tenant's store bucket is deleted so stale state is not re-served.
+func (tm *tenantManager) evict(tenant string) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	delete(tm.tenants, tenant)
+}
+
 type tenantContextKey struct{}
 
 func withTenant(ctx context.Context, tenant string) context.Context {

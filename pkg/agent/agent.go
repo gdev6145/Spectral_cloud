@@ -8,6 +8,7 @@ package agent
 import (
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -241,6 +242,24 @@ func (r *Registry) Prune() int {
 			delete(r.agents, key)
 			count++
 		}
+	}
+	return count
+}
+
+// CountByTenant returns the number of live agents for the given tenant.
+func (r *Registry) CountByTenant(tenantID string) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	now := time.Now().UTC()
+	count := 0
+	for key, a := range r.agents {
+		if !strings.HasPrefix(key, tenantID+"/") {
+			continue
+		}
+		if a.ExpiresAt != nil && now.After(*a.ExpiresAt) {
+			continue
+		}
+		count++
 	}
 	return count
 }

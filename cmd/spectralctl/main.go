@@ -86,6 +86,22 @@ func main() {
 		blockchainInspectCmd(os.Args[2:])
 	case "agent-register":
 		agentRegisterCmd(os.Args[2:])
+	case "chain-verify":
+		chainVerifyCmd(os.Args[2:])
+	case "blockchain-export":
+		blockchainExportCmd(os.Args[2:])
+	case "routes-export":
+		routesExportCmd(os.Args[2:])
+	case "tenant-list":
+		tenantListCmd(os.Args[2:])
+	case "tenant-create":
+		tenantCreateCmd(os.Args[2:])
+	case "tenant-delete":
+		tenantDeleteCmd(os.Args[2:])
+	case "chain-search":
+		chainSearchCmd(os.Args[2:])
+	case "agent-status":
+		agentStatusCmd(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -111,6 +127,14 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  spectralctl api-agents --url <http://host:port> [--api-key <key>] [--tenant <tenant>]")
 	fmt.Fprintln(os.Stderr, "  spectralctl blockchain-inspect --url <http://host:port> --index <N> [--api-key <key>]")
 	fmt.Fprintln(os.Stderr, "  spectralctl agent-register --url <http://host:port> --id <id> [--addr <addr>] [--capability <c1,c2>] [--ttl 300] [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl chain-verify --url <http://host:port> [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl blockchain-export --url <http://host:port> --out <path> [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl routes-export --url <http://host:port> --out <path> [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl tenant-list --url <http://host:port> [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl tenant-create --url <http://host:port> --name <name> [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl tenant-delete --url <http://host:port> --name <name> [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl chain-search --url <http://host:port> [--sender <s>] [--recipient <r>] [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl agent-status --url <http://host:port> --id <id> --status <healthy|degraded|unknown> [--api-key <key>]")
 }
 
 func validateCmd(args []string) {
@@ -1652,6 +1676,302 @@ func agentRegisterCmd(args []string) {
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(agent)
 	fmt.Printf("agent %q registered successfully\n", *id)
+}
+
+// ---------------------------------------------------------------------------
+// chain-verify: verify chain integrity via the HTTP API
+// ---------------------------------------------------------------------------
+
+func chainVerifyCmd(args []string) {
+	fs := flag.NewFlagSet("chain-verify", flag.ExitOnError)
+	serverURL := fs.String("url", "", "base URL of the spectral-cloud server")
+	apiKey := fs.String("api-key", "", "API key")
+	timeout := fs.Duration("timeout", 10*time.Second, "request timeout")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	url := strings.TrimRight(*serverURL, "/") + "/blockchain/verify"
+	body, status, err := apiGET(url, *apiKey, *timeout)
+	if err != nil {
+		exitErr(fmt.Errorf("chain-verify: %w", err))
+	}
+	if status != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", status, string(body)))
+	}
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		fmt.Println(string(body))
+		return
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(result)
+	if valid, _ := result["valid"].(bool); !valid {
+		fmt.Fprintf(os.Stderr, "chain integrity check FAILED (first bad block at index %v)\n", result["bad_index"])
+		os.Exit(2)
+	}
+	fmt.Println("chain integrity OK")
+}
+
+// ---------------------------------------------------------------------------
+// blockchain-export: download chain JSON from the HTTP API
+// ---------------------------------------------------------------------------
+
+func blockchainExportCmd(args []string) {
+	fs := flag.NewFlagSet("blockchain-export", flag.ExitOnError)
+	serverURL := fs.String("url", "", "base URL of the spectral-cloud server")
+	apiKey := fs.String("api-key", "", "API key")
+	outPath := fs.String("out", "", "output file path (stdout if empty)")
+	timeout := fs.Duration("timeout", 30*time.Second, "request timeout")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	url := strings.TrimRight(*serverURL, "/") + "/blockchain/export"
+	body, status, err := apiGET(url, *apiKey, *timeout)
+	if err != nil {
+		exitErr(fmt.Errorf("blockchain-export: %w", err))
+	}
+	if status != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", status, string(body)))
+	}
+	if *outPath == "" {
+		fmt.Println(string(body))
+		return
+	}
+	if err := os.WriteFile(*outPath, body, 0o600); err != nil {
+		exitErr(fmt.Errorf("write %s: %w", *outPath, err))
+	}
+	fmt.Printf("blockchain exported to %s\n", *outPath)
+}
+
+// ---------------------------------------------------------------------------
+// routes-export: download routes JSON from the HTTP API
+// ---------------------------------------------------------------------------
+
+func routesExportCmd(args []string) {
+	fs := flag.NewFlagSet("routes-export", flag.ExitOnError)
+	serverURL := fs.String("url", "", "base URL of the spectral-cloud server")
+	apiKey := fs.String("api-key", "", "API key")
+	outPath := fs.String("out", "", "output file path (stdout if empty)")
+	timeout := fs.Duration("timeout", 30*time.Second, "request timeout")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	url := strings.TrimRight(*serverURL, "/") + "/routes/export"
+	body, status, err := apiGET(url, *apiKey, *timeout)
+	if err != nil {
+		exitErr(fmt.Errorf("routes-export: %w", err))
+	}
+	if status != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", status, string(body)))
+	}
+	if *outPath == "" {
+		fmt.Println(string(body))
+		return
+	}
+	if err := os.WriteFile(*outPath, body, 0o600); err != nil {
+		exitErr(fmt.Errorf("write %s: %w", *outPath, err))
+	}
+	fmt.Printf("routes exported to %s\n", *outPath)
+}
+
+// ---------------------------------------------------------------------------
+// tenant-list: list tenants via the HTTP API
+// ---------------------------------------------------------------------------
+
+func tenantListCmd(args []string) {
+	fs := flag.NewFlagSet("tenant-list", flag.ExitOnError)
+	serverURL := fs.String("url", "", "base URL of the spectral-cloud server")
+	apiKey := fs.String("api-key", "", "API key")
+	timeout := fs.Duration("timeout", 5*time.Second, "request timeout")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	body, status, err := apiGET(strings.TrimRight(*serverURL, "/")+"/admin/tenants", *apiKey, *timeout)
+	if err != nil {
+		exitErr(fmt.Errorf("tenant-list: %w", err))
+	}
+	if status != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", status, string(body)))
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	var out any
+	_ = json.Unmarshal(body, &out)
+	_ = enc.Encode(out)
+}
+
+// ---------------------------------------------------------------------------
+// tenant-create: create a new tenant via the HTTP API
+// ---------------------------------------------------------------------------
+
+func tenantCreateCmd(args []string) {
+	fs := flag.NewFlagSet("tenant-create", flag.ExitOnError)
+	serverURL := fs.String("url", "", "base URL of the spectral-cloud server")
+	apiKey := fs.String("api-key", "", "API key")
+	name := fs.String("name", "", "tenant name (required)")
+	timeout := fs.Duration("timeout", 5*time.Second, "request timeout")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	if *name == "" {
+		exitErr(errors.New("--name is required"))
+	}
+	payload, _ := json.Marshal(map[string]string{"name": *name})
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(*serverURL, "/")+"/admin/tenants", bytes.NewReader(payload))
+	if err != nil {
+		exitErr(fmt.Errorf("build request: %w", err))
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(*apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+*apiKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		exitErr(fmt.Errorf("tenant-create: %w", err))
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", resp.StatusCode, string(respBody)))
+	}
+	var out any
+	_ = json.Unmarshal(respBody, &out)
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(out)
+	fmt.Printf("tenant %q created\n", *name)
+}
+
+// ---------------------------------------------------------------------------
+// tenant-delete: delete a tenant via the HTTP API
+// ---------------------------------------------------------------------------
+
+func tenantDeleteCmd(args []string) {
+	fs := flag.NewFlagSet("tenant-delete", flag.ExitOnError)
+	serverURL := fs.String("url", "", "base URL of the spectral-cloud server")
+	apiKey := fs.String("api-key", "", "API key")
+	name := fs.String("name", "", "tenant name (required)")
+	timeout := fs.Duration("timeout", 5*time.Second, "request timeout")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	if *name == "" {
+		exitErr(errors.New("--name is required"))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	u := strings.TrimRight(*serverURL, "/") + "/admin/tenants?name=" + *name
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u, nil)
+	if err != nil {
+		exitErr(fmt.Errorf("build request: %w", err))
+	}
+	if strings.TrimSpace(*apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+*apiKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		exitErr(fmt.Errorf("tenant-delete: %w", err))
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 204 && resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", resp.StatusCode, string(body)))
+	}
+	fmt.Printf("tenant %q deleted\n", *name)
+}
+
+// ---------------------------------------------------------------------------
+// chain-search: search blockchain transactions via the HTTP API
+// ---------------------------------------------------------------------------
+
+func chainSearchCmd(args []string) {
+	fs := flag.NewFlagSet("chain-search", flag.ExitOnError)
+	serverURL := fs.String("url", "", "base URL of the spectral-cloud server")
+	apiKey := fs.String("api-key", "", "API key")
+	sender := fs.String("sender", "", "sender address filter")
+	recipient := fs.String("recipient", "", "recipient address filter")
+	timeout := fs.Duration("timeout", 10*time.Second, "request timeout")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	if *sender == "" && *recipient == "" {
+		exitErr(errors.New("--sender or --recipient is required"))
+	}
+	u := strings.TrimRight(*serverURL, "/") + "/blockchain/search?"
+	params := []string{}
+	if *sender != "" {
+		params = append(params, "sender="+*sender)
+	}
+	if *recipient != "" {
+		params = append(params, "recipient="+*recipient)
+	}
+	u += strings.Join(params, "&")
+	body, status, err := apiGET(u, *apiKey, *timeout)
+	if err != nil {
+		exitErr(fmt.Errorf("chain-search: %w", err))
+	}
+	if status != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", status, string(body)))
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	var out any
+	_ = json.Unmarshal(body, &out)
+	_ = enc.Encode(out)
+}
+
+// ---------------------------------------------------------------------------
+// agent-status: update an agent's status via the HTTP API
+// ---------------------------------------------------------------------------
+
+func agentStatusCmd(args []string) {
+	fs := flag.NewFlagSet("agent-status", flag.ExitOnError)
+	serverURL := fs.String("url", "", "base URL of the spectral-cloud server")
+	apiKey := fs.String("api-key", "", "API key")
+	id := fs.String("id", "", "agent ID (required)")
+	statusStr := fs.String("status", "", "new status: healthy|degraded|unknown (required)")
+	timeout := fs.Duration("timeout", 5*time.Second, "request timeout")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	if *id == "" {
+		exitErr(errors.New("--id is required"))
+	}
+	if *statusStr == "" {
+		exitErr(errors.New("--status is required"))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	u := strings.TrimRight(*serverURL, "/") + "/agents/status?id=" + *id + "&status=" + *statusStr
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
+	if err != nil {
+		exitErr(fmt.Errorf("build request: %w", err))
+	}
+	if strings.TrimSpace(*apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+*apiKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		exitErr(fmt.Errorf("agent-status: %w", err))
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 204 {
+		body, _ := io.ReadAll(resp.Body)
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", resp.StatusCode, string(body)))
+	}
+	fmt.Printf("agent %q status updated to %q\n", *id, *statusStr)
 }
 
 // ---------------------------------------------------------------------------

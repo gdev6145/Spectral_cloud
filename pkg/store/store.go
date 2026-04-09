@@ -169,6 +169,27 @@ func (s *Store) EnsureTenant(tenant string) error {
 	})
 }
 
+// DeleteTenant removes the tenant's sub-bucket and all its data. The built-in
+// "default" tenant cannot be deleted.
+func (s *Store) DeleteTenant(tenant string) error {
+	if strings.TrimSpace(tenant) == "" {
+		return errors.New("tenant is empty")
+	}
+	if tenant == defaultTenant {
+		return errors.New("cannot delete the default tenant")
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		tenants := tx.Bucket([]byte(bucketTenants))
+		if tenants == nil {
+			return errors.New("tenants bucket missing")
+		}
+		if tenants.Bucket([]byte(tenant)) == nil {
+			return errors.New("tenant not found")
+		}
+		return tenants.DeleteBucket([]byte(tenant))
+	})
+}
+
 func (s *Store) TenantNames() ([]string, error) {
 	var out []string
 	err := s.db.View(func(tx *bolt.Tx) error {

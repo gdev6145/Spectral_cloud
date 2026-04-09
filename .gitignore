@@ -1,0 +1,23 @@
+# Binaries
+/spectral-cloud
+/spectral-desktop
+/spectralctl
+
+# Data files (runtime state, not source)
+data/
+*.db
+*.db.bak
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Build artifacts
+dist/

@@ -219,6 +219,43 @@ func (bc *Blockchain) BlockRange(start, end int) []Block {
 	return out
 }
 
+// VerifyChain walks every block and checks that each block's hash is correct
+// and that its PreviousHash matches the preceding block's Hash. It returns
+// (firstBadIndex, false) on the first violation, or (-1, true) when intact.
+func (bc *Blockchain) VerifyChain() (int, bool) {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	for i, b := range bc.blocks {
+		if !Verify(b) {
+			return i, false
+		}
+		if i > 0 && b.PreviousHash != bc.blocks[i-1].Hash {
+			return i, false
+		}
+	}
+	return -1, true
+}
+
+// SearchTransactions returns all blocks that contain at least one transaction
+// whose Sender and Recipient match the supplied filters. An empty filter string
+// acts as a wildcard and matches any value.
+func (bc *Blockchain) SearchTransactions(sender, recipient string) []Block {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	var out []Block
+	for _, b := range bc.blocks {
+		for _, tx := range b.Transactions {
+			senderMatch := sender == "" || tx.Sender == sender
+			recipientMatch := recipient == "" || tx.Recipient == recipient
+			if senderMatch && recipientMatch {
+				out = append(out, *b)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // Load replaces the chain with the provided blocks.
 func (bc *Blockchain) Load(blocks []Block) {
 	bc.mu.Lock()

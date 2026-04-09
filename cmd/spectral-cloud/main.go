@@ -3,14 +3,17 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -32,8 +35,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/time/rate"
 	"google.golang.org/protobuf/proto"
-	"os/signal"
 )
+
+//go:embed static
+var staticFiles embed.FS
 
 type healthResponse struct {
 	Status    string `json:"status"`
@@ -59,6 +64,7 @@ type statusSnapshot struct {
 
 type statusTracker struct {
 	startedAt           time.Time
+	dbPath              string
 	backupInterval      string
 	compactInterval     string
 	backupDir           string
@@ -181,6 +187,7 @@ type routesFile struct {
 }
 
 func main() {
+	loadFileConfig()
 	startedAt := time.Now().UTC()
 	maxBodyBytes := getEnvInt("MAX_BODY_BYTES", 1<<20)
 	backupRetention := getEnvInt("BACKUP_RETENTION", 5)
@@ -281,6 +288,33 @@ func main() {
 	)
 	prometheus.MustRegister(requestDuration)
 
+	tenantBlockHeight := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "spectral_cloud_tenant_blockchain_height",
+			Help: "Current blockchain height per tenant.",
+		},
+		[]string{"tenant"},
+	)
+	prometheus.MustRegister(tenantBlockHeight)
+
+	tenantRouteCount := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "spectral_cloud_tenant_route_count",
+			Help: "Current route count per tenant.",
+		},
+		[]string{"tenant"},
+	)
+	prometheus.MustRegister(tenantRouteCount)
+
+	tenantAgentCount := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "spectral_cloud_tenant_agent_count",
+			Help: "Current registered agent count per tenant.",
+		},
+		[]string{"tenant"},
+	)
+	prometheus.MustRegister(tenantAgentCount)
+
 	authKey := strings.TrimSpace(os.Getenv("API_KEY"))
 	adminKey := strings.TrimSpace(os.Getenv("ADMIN_API_KEY"))
 	adminWriteKey := strings.TrimSpace(os.Getenv("ADMIN_WRITE_KEY"))
@@ -327,6 +361,7 @@ func main() {
 
 	status := &statusTracker{
 		startedAt:           startedAt,
+		dbPath:              dbPath,
 		backupInterval:      backupInterval,
 		compactInterval:     compactInterval,
 		backupDir:           backupDir,
@@ -449,6 +484,35 @@ func main() {
 		strings.TrimSpace(os.Getenv("CORS_MAX_AGE")),
 	)
 	enableAccessLog := getEnvBool("ACCESS_LOG", false)
+
+	// Update per-tenant Prometheus gauges every 15 seconds.
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				names, err := db.TenantNames()
+				if err != nil {
+					continue
+				}
+				if defaultTenant != "" && !stringInSlice(defaultTenant, names) {
+					names = append(names, defaultTenant)
+				}
+				for _, name := range names {
+					state, err := tenantMgr.getTenant(name)
+					if err != nil {
+						continue
+					}
+					tenantBlockHeight.WithLabelValues(name).Set(float64(state.chain.Height()))
+					tenantRouteCount.WithLabelValues(name).Set(float64(state.router.RouteCount()))
+					tenantAgentCount.WithLabelValues(name).Set(float64(agentReg.CountByTenant(name)))
+				}
+			}
+		}
+	}()
 
 	handler := newHandler(tenantMgr, db, maxBodyBytes, requestsTotal, meshPackets, meshRejectRate, meshAnomaly, requestDuration, auth, rateRPS, rateBurst, tenantRateRPS, tenantRateBurst, limits, status, meshNode, anomalyState, agentReg, corsCfg, enableAccessLog, eventBroker, hookDispatcher, blockSigningKey)
 
@@ -615,39 +679,80 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 	})
 
 	mux.HandleFunc("/admin/tenants", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-			return
-		}
-		names, err := db.TenantNames()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to list tenants")
-			return
-		}
-		if auth.defaultTenant != "" && !stringInSlice(auth.defaultTenant, names) {
-			names = append(names, auth.defaultTenant)
-		}
-		sort.Strings(names)
-		type tenantSummary struct {
-			Tenant string `json:"tenant"`
-			Blocks int    `json:"blocks"`
-			Routes int    `json:"routes"`
-		}
-		out := make([]tenantSummary, 0, len(names))
-		for _, name := range names {
-			state, err := tenantMgr.getTenant(name)
+		switch r.Method {
+		case http.MethodGet:
+			names, err := db.TenantNames()
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to load tenant")
+				writeError(w, http.StatusInternalServerError, "failed to list tenants")
 				return
 			}
-			out = append(out, tenantSummary{
-				Tenant: name,
-				Blocks: state.chain.Height(),
-				Routes: state.router.RouteCount(),
-			})
+			if auth.defaultTenant != "" && !stringInSlice(auth.defaultTenant, names) {
+				names = append(names, auth.defaultTenant)
+			}
+			sort.Strings(names)
+			type tenantSummary struct {
+				Tenant string `json:"tenant"`
+				Blocks int    `json:"blocks"`
+				Routes int    `json:"routes"`
+			}
+			out := make([]tenantSummary, 0, len(names))
+			for _, name := range names {
+				state, err := tenantMgr.getTenant(name)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to load tenant")
+					return
+				}
+				out = append(out, tenantSummary{
+					Tenant: name,
+					Blocks: state.chain.Height(),
+					Routes: state.router.RouteCount(),
+				})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(out)
+
+		case http.MethodPost:
+			var body struct {
+				Name string `json:"name"`
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid JSON body")
+				return
+			}
+			name := strings.TrimSpace(body.Name)
+			if name == "" {
+				writeError(w, http.StatusBadRequest, "name is required")
+				return
+			}
+			if err := db.EnsureTenant(name); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to create tenant")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{"tenant": name, "status": "created"})
+
+		case http.MethodDelete:
+			name := strings.TrimSpace(r.URL.Query().Get("name"))
+			if name == "" {
+				writeError(w, http.StatusBadRequest, "name is required")
+				return
+			}
+			if err := db.DeleteTenant(name); err != nil {
+				if strings.Contains(err.Error(), "not found") {
+					writeError(w, http.StatusNotFound, "tenant not found")
+				} else {
+					writeError(w, http.StatusBadRequest, err.Error())
+				}
+				return
+			}
+			tenantMgr.evict(name)
+			w.WriteHeader(http.StatusNoContent)
+
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(out)
 	})
 
 	mux.Handle("/metrics", promhttp.Handler())
@@ -968,6 +1073,206 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		_ = json.NewEncoder(w).Encode(map[string]int{"height": state.chain.Height()})
 	})
 
+	// GET /blockchain/verify — verifies chain hash linkage for the tenant.
+	mux.HandleFunc("/blockchain/verify", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		state, _, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		badIndex, valid := state.chain.VerifyChain()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"valid":     valid,
+			"height":    state.chain.Height(),
+			"bad_index": badIndex,
+		})
+	})
+
+	// GET /blockchain/search?sender=X&recipient=Y — find blocks by transaction parties.
+	mux.HandleFunc("/blockchain/search", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		state, _, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		sender := strings.TrimSpace(r.URL.Query().Get("sender"))
+		recipient := strings.TrimSpace(r.URL.Query().Get("recipient"))
+		if sender == "" && recipient == "" {
+			writeError(w, http.StatusBadRequest, "sender or recipient is required")
+			return
+		}
+		blocks := state.chain.SearchTransactions(sender, recipient)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"count":  len(blocks),
+			"blocks": blocks,
+		})
+	})
+
+	// GET /blockchain/export — export full chain as a downloadable JSON file.
+	mux.HandleFunc("/blockchain/export", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		state, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		export := blockchainFile{
+			Version:   1,
+			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+			Blocks:    state.chain.Snapshot(),
+			Meta:      map[string]string{"tenant": tenant},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Disposition", `attachment; filename="blockchain-`+tenant+`.json"`)
+		_ = json.NewEncoder(w).Encode(export)
+	})
+
+	// GET /routes/export — export all routes as a downloadable JSON file.
+	mux.HandleFunc("/routes/export", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		state, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		export := routesFile{
+			Version:   1,
+			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+			Routes:    state.router.ListRoutes(),
+			Meta:      map[string]string{"tenant": tenant},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Disposition", `attachment; filename="routes-`+tenant+`.json"`)
+		_ = json.NewEncoder(w).Encode(export)
+	})
+
+	// POST /routes/batch — add multiple routes in a single request.
+	// DELETE /routes/batch — delete multiple routes by destination list.
+	type batchRouteEntry struct {
+		Destination string            `json:"destination"`
+		Latency     int               `json:"latency"`
+		Throughput  int               `json:"throughput"`
+		TTLSeconds  int               `json:"ttl_seconds"`
+		Satellite   bool              `json:"satellite"`
+		Tags        map[string]string `json:"tags"`
+	}
+	mux.HandleFunc("/routes/batch", func(w http.ResponseWriter, r *http.Request) {
+		state, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		switch r.Method {
+		case http.MethodPost:
+			r.Body = http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))
+			var entries []batchRouteEntry
+			if err := json.NewDecoder(r.Body).Decode(&entries); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid JSON body")
+				return
+			}
+			if len(entries) == 0 {
+				writeError(w, http.StatusBadRequest, "at least one route is required")
+				return
+			}
+			if limits.maxRoutes > 0 && state.router.RouteCount()+len(entries) > limits.maxRoutes {
+				writeError(w, http.StatusTooManyRequests, "tenant route limit would be exceeded")
+				return
+			}
+			var added int
+			for _, e := range entries {
+				var ttl time.Duration
+				if e.TTLSeconds > 0 {
+					ttl = time.Duration(e.TTLSeconds) * time.Second
+				}
+				if err := state.router.AddRouteWithOptions(e.Destination, routing.RouteMetric{
+					Latency:    e.Latency,
+					Throughput: e.Throughput,
+				}, routing.RouteOptions{
+					TTL:       ttl,
+					Satellite: e.Satellite,
+					Tags:      e.Tags,
+				}); err == nil {
+					added++
+				}
+			}
+			if err := db.SaveRoutesTenant(tenant, state.router); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to persist routes")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]int{"added": added, "submitted": len(entries)})
+
+		case http.MethodDelete:
+			r.Body = http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))
+			var destinations []string
+			if err := json.NewDecoder(r.Body).Decode(&destinations); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid JSON body")
+				return
+			}
+			if len(destinations) == 0 {
+				writeError(w, http.StatusBadRequest, "at least one destination is required")
+				return
+			}
+			deleted, notFound := 0, 0
+			for _, dst := range destinations {
+				dst = strings.TrimSpace(dst)
+				if dst == "" {
+					continue
+				}
+				if err := state.router.DeleteRoute(dst); err != nil {
+					notFound++
+				} else {
+					deleted++
+				}
+			}
+			if deleted > 0 {
+				if err := db.SaveRoutesTenant(tenant, state.router); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to persist routes")
+					return
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]int{
+				"deleted":   deleted,
+				"not_found": notFound,
+			})
+
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
+
+	// GET /mesh/peers — per-peer health data.
+	mux.HandleFunc("/mesh/peers", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if meshNode == nil {
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "disabled"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(meshNode.PeerHealth())
+	})
+
 	defaultAgentTTL := getEnvInt("AGENT_TTL_SECONDS", 300)
 
 	mux.HandleFunc("/agents", func(w http.ResponseWriter, r *http.Request) {
@@ -978,6 +1283,17 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 		switch r.Method {
 		case http.MethodGet:
+			// Single-agent lookup when ?id= is provided.
+			if id := strings.TrimSpace(r.URL.Query().Get("id")); id != "" {
+				a, ok := agentReg.Get(tenant, id)
+				if !ok {
+					writeError(w, http.StatusNotFound, "agent not found")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(a)
+				return
+			}
 			capability := strings.TrimSpace(r.URL.Query().Get("capability"))
 			var agents []agent.Agent
 			if capability != "" {
@@ -1111,6 +1427,171 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		_ = json.NewEncoder(w).Encode(block)
 	})
 
+	// GET /events/history?limit=N — returns recent events from the ring buffer.
+	mux.HandleFunc("/events/history", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if eventBroker == nil {
+			writeError(w, http.StatusServiceUnavailable, "event broker unavailable")
+			return
+		}
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		limit, _, _ := parseIntQueryMulti(r, "limit")
+		typeFilter := strings.TrimSpace(r.URL.Query().Get("type"))
+		all := eventBroker.History(limit)
+		// Filter by tenant and optional event type.
+		out := make([]events.Event, 0, len(all))
+		for _, ev := range all {
+			if strings.TrimSpace(tenant) != "" && ev.TenantID != "" && ev.TenantID != tenant {
+				continue
+			}
+			if typeFilter != "" && string(ev.Type) != typeFilter {
+				continue
+			}
+			out = append(out, ev)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"count":  len(out),
+			"events": out,
+		})
+	})
+
+	// POST /admin/backup — trigger an on-demand backup immediately.
+	mux.HandleFunc("/admin/backup", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if status == nil || strings.TrimSpace(status.dbPath) == "" {
+			writeError(w, http.StatusServiceUnavailable, "backup not configured")
+			return
+		}
+		if strings.TrimSpace(status.backupDir) == "" {
+			writeError(w, http.StatusServiceUnavailable, "backup directory not configured")
+			return
+		}
+		if err := os.MkdirAll(status.backupDir, 0o755); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to create backup directory")
+			return
+		}
+		if err := runBackup(status.dbPath, status.backupDir, status.backupRetention, status); err != nil {
+			writeError(w, http.StatusInternalServerError, "backup failed: "+err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status":  "ok",
+			"message": "backup completed",
+		})
+	})
+
+	// POST /admin/compact — trigger an on-demand compaction immediately.
+	mux.HandleFunc("/admin/compact", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if status == nil || strings.TrimSpace(status.dbPath) == "" {
+			writeError(w, http.StatusServiceUnavailable, "compact not configured")
+			return
+		}
+		if strings.TrimSpace(status.compactionDir) == "" {
+			writeError(w, http.StatusServiceUnavailable, "compaction directory not configured")
+			return
+		}
+		if err := os.MkdirAll(status.compactionDir, 0o755); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to create compaction directory")
+			return
+		}
+		if err := runCompaction(status.dbPath, status.compactionDir, status.compactionRetention, status); err != nil {
+			writeError(w, http.StatusInternalServerError, "compact failed: "+err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status":  "ok",
+			"message": "compaction completed",
+		})
+	})
+
+	// GET /admin/backup/list — list backup files in the backup directory.
+	mux.HandleFunc("/admin/backup/list", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if status == nil || strings.TrimSpace(status.backupDir) == "" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"backups": []any{}})
+			return
+		}
+		pattern := filepath.Join(status.backupDir, "*.bak")
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list backups")
+			return
+		}
+		sort.Sort(sort.Reverse(sort.StringSlice(matches)))
+		type backupEntry struct {
+			Name    string `json:"name"`
+			SizeB   int64  `json:"size_bytes"`
+			ModTime string `json:"mod_time"`
+		}
+		entries := make([]backupEntry, 0, len(matches))
+		for _, path := range matches {
+			info, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+			entries = append(entries, backupEntry{
+				Name:    filepath.Base(path),
+				SizeB:   info.Size(),
+				ModTime: info.ModTime().UTC().Format(time.RFC3339),
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"backup_dir": status.backupDir,
+			"count":      len(entries),
+			"backups":    entries,
+		})
+	})
+
+	// POST /agents/status?id=X&status=Y — update the status of a registered agent.
+	mux.HandleFunc("/agents/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		id := strings.TrimSpace(r.URL.Query().Get("id"))
+		statusStr := strings.TrimSpace(r.URL.Query().Get("status"))
+		if id == "" {
+			writeError(w, http.StatusBadRequest, "id is required")
+			return
+		}
+		if statusStr == "" {
+			writeError(w, http.StatusBadRequest, "status is required")
+			return
+		}
+		if err := agentReg.UpdateStatus(tenant, id, agent.Status(statusStr)); err != nil {
+			writeError(w, http.StatusNotFound, "agent not found")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	// GET /events — Server-Sent Events stream for real-time event fan-out.
 	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -1176,14 +1657,20 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 	})
 
+	// Serve the embedded web dashboard at /ui/.
+	uiFS, _ := fs.Sub(staticFiles, "static")
+	mux.Handle("/ui/", http.StripPrefix("/ui", http.FileServer(http.FS(uiFS))))
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, "/ui/", http.StatusFound)
+			return
+		}
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("spectral-cloud running\n"))
+		writeError(w, http.StatusNotFound, "not found")
 	})
 
 	var limiter *ipLimiter

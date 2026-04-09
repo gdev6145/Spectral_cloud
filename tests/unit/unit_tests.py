@@ -723,5 +723,538 @@ class TestRequestIDHeader(unittest.TestCase):
         self.assertEqual(returned_id, "test-id-xyz")
 
 
+class TestChainVerifyLogic(unittest.TestCase):
+    """Pure-Python unit tests for chain verification logic."""
+
+    def _make_block(self, index, prev_hash, hash_val):
+        return {"index": index, "previous_hash": prev_hash, "hash": hash_val}
+
+    def test_valid_chain_passes(self):
+        """A chain where each PreviousHash matches the prior block's Hash."""
+        chain = [
+            self._make_block(0, "", "abc"),
+            self._make_block(1, "abc", "def"),
+            self._make_block(2, "def", "ghi"),
+        ]
+        for i in range(1, len(chain)):
+            self.assertEqual(chain[i]["previous_hash"], chain[i-1]["hash"])
+
+    def test_broken_link_detected(self):
+        """A chain with a wrong PreviousHash fails at that block."""
+        chain = [
+            self._make_block(0, "", "abc"),
+            self._make_block(1, "WRONG", "def"),
+        ]
+        bad_index = None
+        for i in range(1, len(chain)):
+            if chain[i]["previous_hash"] != chain[i-1]["hash"]:
+                bad_index = i
+                break
+        self.assertEqual(bad_index, 1)
+
+    def test_single_block_genesis_always_valid(self):
+        chain = [self._make_block(0, "", "abc")]
+        for i in range(1, len(chain)):
+            self.assertEqual(chain[i]["previous_hash"], chain[i-1]["hash"])
+        # No iteration → valid by definition
+        self.assertEqual(len(chain), 1)
+
+
+class TestTransactionSearchLogic(unittest.TestCase):
+    """Pure-Python unit tests for transaction search filtering."""
+
+    def _blocks(self):
+        return [
+            {"index": 0, "transactions": []},
+            {"index": 1, "transactions": [{"sender": "alice", "recipient": "bob", "amount": 10}]},
+            {"index": 2, "transactions": [{"sender": "carol", "recipient": "bob", "amount": 5}]},
+            {"index": 3, "transactions": [{"sender": "alice", "recipient": "carol", "amount": 2}]},
+        ]
+
+    def _search(self, sender="", recipient=""):
+        return [
+            b for b in self._blocks()
+            for tx in b["transactions"]
+            if (sender == "" or tx["sender"] == sender)
+            and (recipient == "" or tx["recipient"] == recipient)
+        ]
+
+    def test_search_by_sender(self):
+        results = self._search(sender="alice")
+        self.assertEqual(len(results), 2)
+
+    def test_search_by_recipient(self):
+        results = self._search(recipient="bob")
+        self.assertEqual(len(results), 2)
+
+    def test_search_both_filters(self):
+        results = self._search(sender="alice", recipient="carol")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["index"], 3)
+
+    def test_no_match_returns_empty(self):
+        results = self._search(sender="nobody")
+        self.assertEqual(len(results), 0)
+
+
+class TestDeleteTenantLogic(unittest.TestCase):
+    """Unit tests for tenant deletion guard logic."""
+
+    def _can_delete(self, tenant, default_tenant="default"):
+        if not tenant:
+            return False, "tenant is empty"
+        if tenant == default_tenant:
+            return False, "cannot delete the default tenant"
+        return True, None
+
+    def test_cannot_delete_default(self):
+        ok, reason = self._can_delete("default")
+        self.assertFalse(ok)
+        self.assertIn("default", reason)
+
+    def test_can_delete_non_default(self):
+        ok, _ = self._can_delete("custom-tenant")
+        self.assertTrue(ok)
+
+    def test_empty_tenant_rejected(self):
+        ok, _ = self._can_delete("")
+        self.assertFalse(ok)
+
+
+class TestBatchRouteValidation(unittest.TestCase):
+    """Unit tests for batch route request validation logic."""
+
+    def _validate_batch(self, entries, max_routes=0, current_count=0):
+        if not entries:
+            return 400, "at least one route is required"
+        if max_routes > 0 and current_count + len(entries) > max_routes:
+            return 429, "tenant route limit would be exceeded"
+        for e in entries:
+            if not e.get("destination", "").strip():
+                return 400, "destination is required"
+        return 201, None
+
+    def test_empty_batch_rejected(self):
+        code, msg = self._validate_batch([])
+        self.assertEqual(code, 400)
+
+    def test_limit_exceeded_rejected(self):
+        code, _ = self._validate_batch(
+            [{"destination": "n1"}, {"destination": "n2"}],
+            max_routes=3, current_count=2,
+        )
+        self.assertEqual(code, 429)
+
+    def test_valid_batch_accepted(self):
+        code, _ = self._validate_batch([{"destination": "n1"}, {"destination": "n2"}])
+        self.assertEqual(code, 201)
+
+    def test_missing_destination_rejected(self):
+        code, _ = self._validate_batch([{"destination": ""}])
+        self.assertEqual(code, 400)
+
+
+# ---------------------------------------------------------------------------
+# Integration tests for new wave-4 endpoints
+# ---------------------------------------------------------------------------
+
+@unittest.skipUnless(SPECTRAL_URL, "SPECTRAL_URL not set — skipping integration tests")
+class TestChainVerifyEndpoint(unittest.TestCase):
+
+    def test_verify_returns_valid_for_fresh_chain(self):
+        status, body = http_get("/blockchain/verify")
+        self.assertEqual(status, 200)
+        self.assertIn("valid", body)
+        self.assertIn("height", body)
+
+    def test_verify_height_matches_blockchain(self):
+        _, verify_body = http_get("/blockchain/verify")
+        _, height_body = http_get("/blockchain/height")
+        self.assertEqual(verify_body["height"], height_body["height"])
+
+
+@unittest.skipUnless(SPECTRAL_URL, "SPECTRAL_URL not set — skipping integration tests")
+class TestBlockchainSearchEndpoint(unittest.TestCase):
+
+    def test_search_requires_sender_or_recipient(self):
+        status, body = http_get("/blockchain/search")
+        self.assertEqual(status, 400)
+        self.assertIn("error", body)
+
+    def test_search_with_sender_returns_200(self):
+        status, body = http_get("/blockchain/search?sender=x")
+        self.assertEqual(status, 200)
+        self.assertIn("count", body)
+        self.assertIn("blocks", body)
+
+
+@unittest.skipUnless(SPECTRAL_URL, "SPECTRAL_URL not set — skipping integration tests")
+class TestExportEndpoints(unittest.TestCase):
+
+    def test_blockchain_export_returns_json_file(self):
+        status, body = http_get("/blockchain/export")
+        self.assertEqual(status, 200)
+        self.assertEqual(body.get("version"), 1)
+        self.assertIn("blocks", body)
+        self.assertIn("updated_at", body)
+
+    def test_routes_export_returns_json_file(self):
+        status, body = http_get("/routes/export")
+        self.assertEqual(status, 200)
+        self.assertEqual(body.get("version"), 1)
+        self.assertIn("routes", body)
+
+
+@unittest.skipUnless(SPECTRAL_URL, "SPECTRAL_URL not set — skipping integration tests")
+class TestRoutesBatchEndpoint(unittest.TestCase):
+
+    def test_empty_batch_rejected(self):
+        status, body = http_post("/routes/batch", [])
+        self.assertEqual(status, 400)
+        self.assertIn("error", body)
+
+    def test_batch_add_routes(self):
+        batch = [
+            {"destination": "batch-n1", "latency": 5, "throughput": 100},
+            {"destination": "batch-n2", "latency": 10, "throughput": 200},
+        ]
+        status, body = http_post("/routes/batch", batch)
+        self.assertEqual(status, 201)
+        self.assertEqual(body["added"], 2)
+        self.assertEqual(body["submitted"], 2)
+
+
+@unittest.skipUnless(SPECTRAL_URL, "SPECTRAL_URL not set — skipping integration tests")
+class TestMeshPeersEndpoint(unittest.TestCase):
+
+    def test_mesh_peers_returns_200(self):
+        status, body = http_get("/mesh/peers")
+        self.assertEqual(status, 200)
+        # Either disabled (no mesh) or a dict of peers.
+        self.assertIsInstance(body, dict)
+
+
+@unittest.skipUnless(SPECTRAL_URL, "SPECTRAL_URL not set — skipping integration tests")
+class TestAdminTenantManagement(unittest.TestCase):
+
+    def test_create_and_delete_tenant(self):
+        tenant_name = "test-tenant-api"
+        status, body = http_post("/admin/tenants", {"name": tenant_name})
+        self.assertIn(status, (200, 201))
+        self.assertEqual(body.get("tenant"), tenant_name)
+
+        # Clean up.
+        import urllib.request
+        req = urllib.request.Request(
+            SPECTRAL_URL + f"/admin/tenants?name={tenant_name}",
+            method="DELETE",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                self.assertIn(resp.status, (200, 204))
+        except urllib.error.HTTPError as e:
+            self.fail(f"DELETE tenant failed: {e.code}")
+
+    def test_delete_nonexistent_tenant_returns_404(self):
+        import urllib.request
+        req = urllib.request.Request(
+            SPECTRAL_URL + "/admin/tenants?name=does-not-exist-xyz",
+            method="DELETE",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                self.fail(f"Expected 404, got {resp.status}")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 404)
+
+    def test_delete_default_tenant_rejected(self):
+        import urllib.request
+        req = urllib.request.Request(
+            SPECTRAL_URL + "/admin/tenants?name=default",
+            method="DELETE",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                self.fail(f"Expected 4xx, got {resp.status}")
+        except urllib.error.HTTPError as e:
+            self.assertIn(e.code, (400, 403, 422))
+
+
+class TestEventHistoryLogic(unittest.TestCase):
+    """Pure-Python unit tests for event history ring-buffer logic."""
+
+    def _ring(self, events, cap):
+        """Simulate a ring buffer of capacity cap; return list of retained events."""
+        buf = [None] * cap
+        head = 0
+        for ev in events:
+            buf[head] = ev
+            head = (head + 1) % cap
+        # Reconstruct ordered contents (oldest first).
+        total = len(events)
+        filled = min(total, cap)
+        out = []
+        for i in range(filled):
+            idx = (head - filled + i) % cap
+            out.append(buf[idx])
+        return out
+
+    def test_ring_retains_all_when_not_full(self):
+        result = self._ring([1, 2, 3], cap=10)
+        self.assertEqual(result, [1, 2, 3])
+
+    def test_ring_drops_oldest_when_full(self):
+        result = self._ring([1, 2, 3, 4, 5], cap=3)
+        self.assertEqual(result, [3, 4, 5])
+
+    def test_ring_wrap_preserves_order(self):
+        result = self._ring(list(range(10)), cap=4)
+        self.assertEqual(result, [6, 7, 8, 9])
+
+    def test_empty_ring(self):
+        result = self._ring([], cap=5)
+        self.assertEqual(result, [])
+
+
+class TestConfigFileFallback(unittest.TestCase):
+    """Unit tests for config-file-as-env-fallback logic."""
+
+    def _apply(self, file_cfg, current_env):
+        """
+        Simulate applyFileConfig: for each key in file_cfg, set it in
+        current_env only if not already present.
+        Returns the resulting env dict.
+        """
+        env = dict(current_env)
+        for key, val in file_cfg.items():
+            if val and key not in env:
+                env[key] = val
+        return env
+
+    def test_file_sets_missing_keys(self):
+        result = self._apply({"PORT": "9090", "DATA_DIR": "/data"}, {})
+        self.assertEqual(result["PORT"], "9090")
+        self.assertEqual(result["DATA_DIR"], "/data")
+
+    def test_existing_env_wins(self):
+        result = self._apply({"PORT": "9090"}, {"PORT": "8080"})
+        self.assertEqual(result["PORT"], "8080")
+
+    def test_empty_file_value_not_applied(self):
+        result = self._apply({"PORT": ""}, {})
+        self.assertNotIn("PORT", result)
+
+
+class TestAgentStatusLogic(unittest.TestCase):
+    """Unit tests for agent status validation."""
+
+    VALID_STATUSES = {"healthy", "degraded", "unknown"}
+
+    def _validate_status(self, status):
+        return status in self.VALID_STATUSES
+
+    def test_healthy_valid(self):
+        self.assertTrue(self._validate_status("healthy"))
+
+    def test_degraded_valid(self):
+        self.assertTrue(self._validate_status("degraded"))
+
+    def test_unknown_valid(self):
+        self.assertTrue(self._validate_status("unknown"))
+
+    def test_invalid_status(self):
+        self.assertFalse(self._validate_status("offline"))
+
+    def test_empty_status_invalid(self):
+        self.assertFalse(self._validate_status(""))
+
+
+class TestBatchRouteDeleteLogic(unittest.TestCase):
+    """Unit tests for batch route deletion validation."""
+
+    def _simulate_batch_delete(self, destinations, existing):
+        """Returns (deleted, not_found)."""
+        deleted, not_found = 0, 0
+        for dst in destinations:
+            dst = dst.strip()
+            if not dst:
+                continue
+            if dst in existing:
+                existing.discard(dst)
+                deleted += 1
+            else:
+                not_found += 1
+        return deleted, not_found
+
+    def test_all_found(self):
+        d, nf = self._simulate_batch_delete(["a", "b"], {"a", "b", "c"})
+        self.assertEqual(d, 2)
+        self.assertEqual(nf, 0)
+
+    def test_some_not_found(self):
+        d, nf = self._simulate_batch_delete(["a", "x"], {"a", "b"})
+        self.assertEqual(d, 1)
+        self.assertEqual(nf, 1)
+
+    def test_all_not_found(self):
+        d, nf = self._simulate_batch_delete(["x", "y"], {"a"})
+        self.assertEqual(d, 0)
+        self.assertEqual(nf, 2)
+
+    def test_empty_destination_skipped(self):
+        d, nf = self._simulate_batch_delete(["", "  "], {"a"})
+        self.assertEqual(d, 0)
+        self.assertEqual(nf, 0)
+
+
+# ---------------------------------------------------------------------------
+# Wave-5 integration tests
+# ---------------------------------------------------------------------------
+
+@unittest.skipUnless(SPECTRAL_URL, "SPECTRAL_URL not set — skipping integration tests")
+class TestEventHistoryEndpoint(unittest.TestCase):
+
+    def test_history_returns_200(self):
+        status, body = http_get("/events/history")
+        self.assertEqual(status, 200)
+        self.assertIn("count", body)
+        self.assertIn("events", body)
+
+    def test_history_limit_param(self):
+        # Seed an event first.
+        http_post("/blockchain/add", [{"sender": "hist-test", "recipient": "b", "amount": 1}])
+        status, body = http_get("/events/history?limit=1")
+        self.assertEqual(status, 200)
+        self.assertLessEqual(len(body.get("events", [])), 1)
+
+    def test_history_type_filter(self):
+        status, body = http_get("/events/history?type=block_added")
+        self.assertEqual(status, 200)
+        for ev in body.get("events", []):
+            self.assertEqual(ev["type"], "block_added")
+
+
+@unittest.skipUnless(SPECTRAL_URL, "SPECTRAL_URL not set — skipping integration tests")
+class TestOnDemandAdminEndpoints(unittest.TestCase):
+
+    def test_backup_list_returns_200(self):
+        status, body = http_get("/admin/backup/list")
+        self.assertEqual(status, 200)
+        self.assertIn("backups", body)
+
+    def test_backup_endpoint_method_enforced(self):
+        # GET is not allowed; only POST.
+        status, _ = http_get("/admin/backup")
+        self.assertEqual(status, 405)
+
+    def test_compact_endpoint_method_enforced(self):
+        status, _ = http_get("/admin/compact")
+        self.assertEqual(status, 405)
+
+
+@unittest.skipUnless(SPECTRAL_URL, "SPECTRAL_URL not set — skipping integration tests")
+class TestAgentGetByID(unittest.TestCase):
+
+    def test_get_missing_agent_returns_404(self):
+        status, body = http_get("/agents?id=nonexistent-wave5-agent")
+        self.assertEqual(status, 404)
+        self.assertIn("error", body)
+
+    def test_register_then_get_by_id(self):
+        agent_id = "wave5-get-by-id"
+        http_post("/agents/register", {
+            "id": agent_id,
+            "addr": "10.0.5.1:9000",
+            "status": "healthy",
+            "ttl_seconds": 300,
+        })
+        status, body = http_get(f"/agents?id={agent_id}")
+        self.assertEqual(status, 200)
+        self.assertEqual(body.get("id"), agent_id)
+
+
+@unittest.skipUnless(SPECTRAL_URL, "SPECTRAL_URL not set — skipping integration tests")
+class TestAgentStatusEndpoint(unittest.TestCase):
+
+    def test_update_status_flow(self):
+        agent_id = "wave5-status-agent"
+        http_post("/agents/register", {
+            "id": agent_id,
+            "addr": "10.0.5.2:9000",
+            "status": "healthy",
+            "ttl_seconds": 300,
+        })
+        # Update status to degraded.
+        import urllib.request
+        req = urllib.request.Request(
+            SPECTRAL_URL + f"/agents/status?id={agent_id}&status=degraded",
+            method="POST",
+            data=b"",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                self.assertEqual(resp.status, 204)
+        except urllib.error.HTTPError as e:
+            self.fail(f"status update failed: {e.code}")
+
+        # Verify via GET.
+        _, body = http_get(f"/agents?id={agent_id}")
+        self.assertEqual(body.get("status"), "degraded")
+
+    def test_missing_id_returns_400(self):
+        import urllib.request
+        req = urllib.request.Request(
+            SPECTRAL_URL + "/agents/status?status=healthy",
+            method="POST",
+            data=b"",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                self.fail(f"Expected 400, got {resp.status}")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 400)
+
+
+@unittest.skipUnless(SPECTRAL_URL, "SPECTRAL_URL not set — skipping integration tests")
+class TestRoutesBatchDeleteEndpoint(unittest.TestCase):
+
+    def test_empty_batch_returns_400(self):
+        import urllib.request
+        data = json.dumps([]).encode()
+        req = urllib.request.Request(
+            SPECTRAL_URL + "/routes/batch",
+            method="DELETE",
+            data=data,
+        )
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=5):
+                self.fail("Expected 400")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 400)
+
+    def test_batch_delete(self):
+        # Add routes first.
+        dests = ["wave5-del-1", "wave5-del-2"]
+        for dest in dests:
+            http_post(f"/routes?destination={dest}&latency=5&throughput=50", {})
+
+        import urllib.request
+        data = json.dumps(dests + ["does-not-exist"]).encode()
+        req = urllib.request.Request(
+            SPECTRAL_URL + "/routes/batch",
+            method="DELETE",
+            data=data,
+        )
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                body = json.loads(resp.read())
+                self.assertEqual(body["deleted"], 2)
+                self.assertEqual(body["not_found"], 1)
+        except urllib.error.HTTPError as e:
+            self.fail(f"batch delete failed: {e.code}")
+
+
 if __name__ == "__main__":
     unittest.main()

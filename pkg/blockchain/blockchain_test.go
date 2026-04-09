@@ -139,3 +139,94 @@ func TestVerify(t *testing.T) {
 		t.Fatal("expected nil block to fail verification")
 	}
 }
+
+func TestVerifyChainValid(t *testing.T) {
+	bc := NewBlockchain()
+	bc.AddBlock([]Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+	bc.AddBlock([]Transaction{{Sender: "b", Recipient: "c", Amount: 2}})
+
+	idx, ok := bc.VerifyChain()
+	if !ok {
+		t.Fatalf("expected valid chain, first bad index reported: %d", idx)
+	}
+	if idx != -1 {
+		t.Fatalf("expected idx=-1 for valid chain, got %d", idx)
+	}
+}
+
+func TestVerifyChainTamperedHash(t *testing.T) {
+	bc := NewBlockchain()
+	bc.AddBlock([]Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+
+	// Tamper the genesis block hash directly (bypass the lock for test access).
+	bc.blocks[0].Hash = "deadbeef"
+
+	idx, ok := bc.VerifyChain()
+	if ok {
+		t.Fatal("expected chain to be invalid after tamper")
+	}
+	if idx != 0 {
+		t.Fatalf("expected first bad index=0, got %d", idx)
+	}
+}
+
+func TestVerifyChainBrokenLink(t *testing.T) {
+	bc := NewBlockchain()
+	bc.AddBlock([]Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+
+	// Break the PreviousHash link without touching the hash calculation.
+	bc.blocks[1].PreviousHash = "not-the-genesis-hash"
+
+	idx, ok := bc.VerifyChain()
+	if ok {
+		t.Fatal("expected chain to be invalid with broken link")
+	}
+	if idx != 1 {
+		t.Fatalf("expected first bad index=1, got %d", idx)
+	}
+}
+
+func TestSearchTransactionsEmpty(t *testing.T) {
+	bc := NewBlockchain()
+	results := bc.SearchTransactions("alice", "")
+	if len(results) != 0 {
+		t.Fatalf("expected no results for empty chain, got %d", len(results))
+	}
+}
+
+func TestSearchTransactionsBySender(t *testing.T) {
+	bc := NewBlockchain()
+	bc.AddBlock([]Transaction{{Sender: "alice", Recipient: "bob", Amount: 10}})
+	bc.AddBlock([]Transaction{{Sender: "carol", Recipient: "alice", Amount: 5}})
+
+	results := bc.SearchTransactions("alice", "")
+	if len(results) != 1 {
+		t.Fatalf("expected 1 block for sender=alice, got %d", len(results))
+	}
+	if results[0].Transactions[0].Sender != "alice" {
+		t.Fatal("unexpected block returned")
+	}
+}
+
+func TestSearchTransactionsByRecipient(t *testing.T) {
+	bc := NewBlockchain()
+	bc.AddBlock([]Transaction{{Sender: "alice", Recipient: "bob", Amount: 10}})
+	bc.AddBlock([]Transaction{{Sender: "carol", Recipient: "bob", Amount: 5}})
+	bc.AddBlock([]Transaction{{Sender: "alice", Recipient: "carol", Amount: 2}})
+
+	results := bc.SearchTransactions("", "bob")
+	if len(results) != 2 {
+		t.Fatalf("expected 2 blocks for recipient=bob, got %d", len(results))
+	}
+}
+
+func TestSearchTransactionsBothFilters(t *testing.T) {
+	bc := NewBlockchain()
+	bc.AddBlock([]Transaction{{Sender: "alice", Recipient: "bob", Amount: 1}})
+	bc.AddBlock([]Transaction{{Sender: "alice", Recipient: "carol", Amount: 2}})
+
+	results := bc.SearchTransactions("alice", "carol")
+	if len(results) != 1 {
+		t.Fatalf("expected 1 block for alice→carol, got %d", len(results))
+	}
+}

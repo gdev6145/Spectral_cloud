@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spectral Cloud</title>
+<style>
+:root {
+  --bg:       #0d0f14;
+  --surface:  #161b27;
+  --border:   #232a3a;
+  --accent:   #6c63ff;
+  --accent2:  #00d4aa;
+  --warn:     #f5a623;
+  --danger:   #e05252;
+  --text:     #e2e8f0;
+  --muted:    #64748b;
+  --card:     #1a2035;
+  --input:    #0f1520;
+  --radius:   8px;
+  --sidebar:  220px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.5 'Inter', system-ui, sans-serif; display: flex; height: 100vh; overflow: hidden; }
+
+/* SIDEBAR */
+nav { width: var(--sidebar); background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
+.logo { padding: 20px 16px 12px; border-bottom: 1px solid var(--border); }
+.logo h1 { font-size: 16px; font-weight: 700; color: var(--accent); letter-spacing: .5px; }
+.logo span { font-size: 11px; color: var(--muted); }
+.nav-links { flex: 1; padding: 8px 0; overflow-y: auto; }
+.nav-links a { display: flex; align-items: center; gap: 10px; padding: 9px 16px; color: var(--muted); text-decoration: none; font-size: 13px; border-left: 3px solid transparent; transition: all .15s; cursor: pointer; }
+.nav-links a:hover { color: var(--text); background: rgba(108,99,255,.08); }
+.nav-links a.active { color: var(--accent); border-left-color: var(--accent); background: rgba(108,99,255,.12); }
+.nav-links a svg { width: 16px; height: 16px; flex-shrink: 0; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; margin-left: auto; flex-shrink: 0; }
+.status-dot.ok { background: var(--accent2); box-shadow: 0 0 6px var(--accent2); }
+.status-dot.err { background: var(--danger); }
+.nav-footer { padding: 12px 16px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); }
+.nav-footer strong { display: block; color: var(--text); font-size: 12px; margin-bottom: 2px; }
+
+/* MAIN */
+main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.topbar { height: 52px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 20px; flex-shrink: 0; }
+.topbar h2 { font-size: 15px; font-weight: 600; }
+.topbar-right { display: flex; align-items: center; gap: 12px; }
+.badge { font-size: 11px; padding: 2px 8px; border-radius: 20px; background: rgba(108,99,255,.15); color: var(--accent); }
+.content { flex: 1; overflow-y: auto; padding: 20px; }
+
+/* CARDS */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+.card-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; }
+.card-value { font-size: 28px; font-weight: 700; color: var(--text); }
+.card-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.card.accent .card-value { color: var(--accent); }
+.card.green .card-value { color: var(--accent2); }
+.card.warn .card-value { color: var(--warn); }
+
+/* TABLES */
+.table-wrap { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: auto; margin-bottom: 16px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { background: var(--surface); color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); }
+td { padding: 9px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: rgba(255,255,255,.02); }
+.mono { font-family: 'JetBrains Mono', 'Fira Mono', monospace; font-size: 11px; color: var(--muted); }
+.pill { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+.pill.healthy { background: rgba(0,212,170,.12); color: var(--accent2); }
+.pill.degraded { background: rgba(245,166,35,.12); color: var(--warn); }
+.pill.unknown { background: rgba(100,116,139,.15); color: var(--muted); }
+.pill.sat { background: rgba(108,99,255,.12); color: var(--accent); }
+
+/* FORMS */
+.section { margin-bottom: 20px; }
+.section-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin-bottom: 10px; }
+.form-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 8px; }
+.form-group { display: flex; flex-direction: column; gap: 4px; }
+.form-group label { font-size: 11px; color: var(--muted); }
+input, select, textarea { background: var(--input); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 7px 10px; font-size: 13px; outline: none; min-width: 140px; }
+input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 100%; }
+.btn { padding: 7px 14px; border-radius: 6px; border: none; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity .15s; white-space: nowrap; }
+.btn:hover { opacity: .85; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+.btn-danger { background: var(--danger); color: #fff; }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+
+/* EVENTS */
+.event-feed { background: var(--input); border: 1px solid var(--border); border-radius: var(--radius); height: 340px; overflow-y: auto; padding: 10px; font-family: monospace; font-size: 12px; }
+.event-line { padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,.04); display: flex; gap: 10px; align-items: flex-start; }
+.event-line:last-child { border-bottom: none; }
+.event-time { color: var(--muted); flex-shrink: 0; }
+.event-type { flex-shrink: 0; }
+.event-type.block_added { color: var(--accent2); }
+.event-type.route_added { color: #60a5fa; }
+.event-type.route_deleted { color: var(--danger); }
+.event-type.agent_registered { color: var(--accent); }
+.event-type.agent_heartbeat { color: var(--muted); }
+.event-type.agent_deregistered { color: var(--warn); }
+.event-type.mesh_anomaly { color: var(--danger); }
+.event-data { color: var(--text); word-break: break-all; }
+
+/* MISC */
+.empty { text-align: center; padding: 32px; color: var(--muted); font-size: 13px; }
+.alert { padding: 10px 14px; border-radius: var(--radius); font-size: 13px; margin-bottom: 12px; }
+.alert.ok { background: rgba(0,212,170,.1); border: 1px solid rgba(0,212,170,.2); color: var(--accent2); }
+.alert.err { background: rgba(224,82,82,.1); border: 1px solid rgba(224,82,82,.2); color: var(--danger); }
+.hash { font-family: monospace; font-size: 11px; color: var(--muted); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; }
+.flex { display: flex; gap: 8px; align-items: center; }
+.ml-auto { margin-left: auto; }
+.spin { animation: spin 1s linear infinite; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.tab-bar { display: flex; gap: 4px; margin-bottom: 16px; }
+.tab { padding: 6px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; color: var(--muted); border: 1px solid transparent; }
+.tab.active { background: rgba(108,99,255,.15); color: var(--accent); border-color: rgba(108,99,255,.3); }
+.tab:hover:not(.active) { color: var(--text); }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="logo">
+    <h1>⬡ Spectral Cloud</h1>
+    <span>Edge AI Infrastructure</span>
+  </div>
+  <div class="nav-links">
+    <a onclick="go('overview')" id="nav-overview" class="active">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+      Overview
+      <span class="status-dot ok" id="health-dot"></span>
+    </a>
+    <a onclick="go('blockchain')" id="nav-blockchain">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      Blockchain
+    </a>
+    <a onclick="go('routes')" id="nav-routes">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M6 9v3a6 6 0 006 6h3"/></svg>
+      Routes
+    </a>
+    <a onclick="go('agents')" id="nav-agents">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+      Agents
+    </a>
+    <a onclick="go('events')" id="nav-events">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      Events
+    </a>
+    <a onclick="go('admin')" id="nav-admin">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+      Admin
+    </a>
+  </div>
+  <div class="nav-footer">
+    <strong id="server-url">localhost</strong>
+    <span id="uptime-label">—</span>
+  </div>
+</nav>
+
+<main>
+  <div class="topbar">
+    <h2 id="page-title">Overview</h2>
+    <div class="topbar-right">
+      <span class="badge" id="tenant-badge">default</span>
+      <button class="btn btn-outline btn-sm" onclick="refresh()">↻ Refresh</button>
+    </div>
+  </div>
+  <div class="content" id="content">Loading…</div>
+</main>
+
+<script>
+const API = '';  // same origin
+let currentPage = 'overview';
+let sseSource = null;
+let autoRefreshTimer = null;
+
+// ── navigation ──────────────────────────────────────────────────────────────
+function go(page) {
+  currentPage = page;
+  document.querySelectorAll('.nav-links a').forEach(a => a.classList.remove('active'));
+  const el = document.getElementById('nav-' + page);
+  if (el) el.classList.add('active');
+  document.getElementById('page-title').textContent =
+    {overview:'Overview',blockchain:'Blockchain',routes:'Routes',agents:'Agents',events:'Events',admin:'Admin'}[page];
+  stopSSE();
+  clearTimeout(autoRefreshTimer);
+  render(page);
+}
+
+// ── API helpers ──────────────────────────────────────────────────────────────
+async function api(path, opts={}) {
+  const r = await fetch(API + path, opts);
+  if (!r.ok) { const e = await r.json().catch(()=>({error:r.statusText})); throw new Error(e.error||r.statusText); }
+  if (r.status === 204) return null;
+  return r.json().catch(() => null);
+}
+function post(path, body) {
+  return api(path, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+}
+function del(path, body) {
+  const opts = {method:'DELETE'};
+  if (body !== undefined) { opts.headers={'Content-Type':'application/json'}; opts.body=JSON.stringify(body); }
+  return api(path, opts);
+}
+function toast(msg, ok=true) {
+  const d = document.createElement('div');
+  d.className = 'alert ' + (ok?'ok':'err');
+  d.style.cssText = 'position:fixed;top:16px;right:16px;z-index:999;max-width:360px;';
+  d.textContent = msg;
+  document.body.appendChild(d);
+  setTimeout(() => d.remove(), 3000);
+}
+function esc(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function fmtTime(ts) {
+  if (!ts) return '—';
+  return new Date(ts).toLocaleTimeString();
+}
+function fmtHash(h) { return h ? `<span class="hash" title="${esc(h)}">${esc(h)}</span>` : '—'; }
+function shortHash(h) { return h ? h.substring(0,12)+'…' : '—'; }
+
+// ── page renderers ────────────────────────────────────────────────────────────
+
+async function render(page) {
+  try {
+    switch(page) {
+      case 'overview':   await renderOverview(); break;
+      case 'blockchain': await renderBlockchain(); break;
+      case 'routes':     await renderRoutes(); break;
+      case 'agents':     await renderAgents(); break;
+      case 'events':     await renderEvents(); break;
+      case 'admin':      await renderAdmin(); break;
+    }
+  } catch(e) {
+    document.getElementById('content').innerHTML = `<div class="alert err">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+// ── OVERVIEW ─────────────────────────────────────────────────────────────────
+async function renderOverview() {
+  const [health, status, height, routesList, agentsList, histRes] = await Promise.allSettled([
+    api('/health'), api('/admin/status'), api('/blockchain/height'),
+    api('/routes'), api('/agents'), api('/events/history?limit=8')
+  ]);
+  const h = health.value||{};
+  const st = status.value||{};
+  const ht = height.value||{};
+  const routes = routesList.value||[];
+  const agents = agentsList.value||[];
+  const hist = histRes.value||{events:[]};
+
+  // update sidebar health dot
+  document.getElementById('health-dot').className = 'status-dot ' + (h.status==='ok'?'ok':'err');
+  document.getElementById('uptime-label').textContent = st.uptime_seconds ? `up ${fmt_uptime(st.uptime_seconds)}` : '';
+  document.getElementById('server-url').textContent = window.location.host;
+
+  const c = `
+  <div class="cards">
+    <div class="card green"><div class="card-label">Status</div><div class="card-value" style="font-size:18px">${esc(h.status||'—')}</div><div class="card-sub">${esc(h.timestamp?new Date(h.timestamp).toLocaleTimeString():'')}</div></div>
+    <div class="card accent"><div class="card-label">Chain Height</div><div class="card-value">${esc(h.blocks??ht.height??'—')}</div><div class="card-sub">blocks</div></div>
+    <div class="card"><div class="card-label">Routes</div><div class="card-value">${routes.length}</div><div class="card-sub">active</div></div>
+    <div class="card"><div class="card-label">Agents</div><div class="card-value">${agents.length}</div><div class="card-sub">registered</div></div>
+    <div class="card"><div class="card-label">Uptime</div><div class="card-value" style="font-size:20px">${st.uptime_seconds?fmt_uptime(st.uptime_seconds):'—'}</div><div class="card-sub">${esc(st.now?new Date(st.now).toLocaleDateString():'')}</div></div>
+  </div>
+  <div class="section">
+    <div class="section-title">Best Route</div>
+    ${await bestRouteCard()}
+  </div>
+  <div class="section">
+    <div class="section-title">Recent Events</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Time</th><th>Type</th><th>Tenant</th><th>Detail</th></tr></thead>
+        <tbody>
+          ${(hist.events||[]).slice().reverse().map(ev=>`
+          <tr>
+            <td class="mono">${fmtTime(ev.timestamp)}</td>
+            <td><span class="pill ${esc(ev.type)}" style="background:rgba(108,99,255,.1);color:var(--accent)">${esc(ev.type)}</span></td>
+            <td class="mono">${esc(ev.tenant_id||'—')}</td>
+            <td class="mono">${esc(ev.data ? (ev.data.destination||ev.data.id||ev.data.index??'') : '')}</td>
+          </tr>`).join('')||'<tr><td colspan="4" class="empty">No events yet</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+  document.getElementById('content').innerHTML = c;
+  autoRefreshTimer = setTimeout(() => { if(currentPage==='overview') renderOverview(); }, 5000);
+}
+
+async function bestRouteCard() {
+  try {
+    const b = await api('/routes/best');
+    return `<div class="card" style="max-width:320px">
+      <div class="card-label">Best Hop</div>
+      <div style="font-size:15px;font-weight:600;margin:4px 0">${esc(b.destination)}</div>
+      <div class="card-sub">latency ${b.metric.latency}ms · thr ${b.metric.throughput} · ${b.satellite?'🛰 satellite':'terrestrial'}</div>
+    </div>`;
+  } catch { return `<div class="card-sub">No routes available</div>`; }
+}
+
+function fmt_uptime(s) {
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
+  return h ? `${h}h ${m}m` : `${m}m ${s%60}s`;
+}
+
+// ── BLOCKCHAIN ────────────────────────────────────────────────────────────────
+let bcOffset = 0;
+const BC_LIMIT = 10;
+
+async function renderBlockchain() {
+  const [chainRes, verifyRes] = await Promise.allSettled([
+    api(`/blockchain?limit=${BC_LIMIT}&offset=${bcOffset}`), api('/blockchain/verify')
+  ]);
+  const chain = chainRes.value || {blocks:[], height:0};
+  const verify = verifyRes.value || {};
+  const blocks = chain.blocks||[];
+
+  document.getElementById('content').innerHTML = `
+  <div class="section">
+    <div class="flex" style="margin-bottom:12px">
+      <div>
+        <span class="pill ${verify.valid?'healthy':'degraded'}">${verify.valid?'✓ Chain Valid':'✗ Chain Invalid'}</span>
+        <span style="margin-left:10px;color:var(--muted);font-size:12px">Height: ${chain.height}</span>
+      </div>
+      <div class="ml-auto flex">
+        <button class="btn btn-outline btn-sm" onclick="bcOffset=Math.max(0,bcOffset-${BC_LIMIT});renderBlockchain()">← Prev</button>
+        <span style="padding:4px 8px;font-size:12px;color:var(--muted)">${bcOffset}–${Math.min(bcOffset+BC_LIMIT,chain.height)} of ${chain.height}</span>
+        <button class="btn btn-outline btn-sm" onclick="bcOffset=Math.min(bcOffset+${BC_LIMIT},Math.max(0,chain.height-${BC_LIMIT}));renderBlockchain()">Next →</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Time</th><th>Txns</th><th>Hash</th><th>Prev Hash</th></tr></thead>
+        <tbody>
+          ${blocks.map(b=>`<tr>
+            <td><strong>${b.index}</strong></td>
+            <td class="mono">${fmtTime(b.timestamp)}</td>
+            <td>${(b.transactions||[]).length ? `<span title="${esc(JSON.stringify(b.transactions))}">${(b.transactions||[]).length} tx</span>` : '<span style="color:var(--muted)">—</span>'}</td>
+            <td>${fmtHash(b.hash)}</td>
+            <td>${fmtHash(b.previous_hash)}</td>
+          </tr>`).join('')||'<tr><td colspan="5" class="empty">No blocks</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <div class="section">
+      <div class="section-title">Add Block</div>
+      <div class="card">
+        <div class="form-group" style="margin-bottom:8px"><label>Transactions (JSON array)</label>
+        <textarea id="bc-txns" placeholder='[{"sender":"alice","recipient":"bob","amount":10}]'></textarea></div>
+        <button class="btn btn-primary" onclick="addBlock()">Add Block</button>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">Search Transactions</div>
+      <div class="card">
+        <div class="form-row">
+          <div class="form-group"><label>Sender</label><input id="bc-sender" placeholder="alice"></div>
+          <div class="form-group"><label>Recipient</label><input id="bc-recipient" placeholder="bob"></div>
+          <button class="btn btn-primary" style="margin-top:18px" onclick="searchTxns()">Search</button>
+        </div>
+        <div id="bc-search-result"></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function addBlock() {
+  try {
+    const txns = JSON.parse(document.getElementById('bc-txns').value || '[]');
+    await post('/blockchain/add', txns);
+    toast('Block added'); bcOffset = 0; renderBlockchain();
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function searchTxns() {
+  const s = document.getElementById('bc-sender').value.trim();
+  const r = document.getElementById('bc-recipient').value.trim();
+  if (!s && !r) { toast('Enter sender or recipient', false); return; }
+  try {
+    const res = await api(`/blockchain/search?${s?'sender='+encodeURIComponent(s):''}${s&&r?'&':''}${r?'recipient='+encodeURIComponent(r):''}`);
+    const el = document.getElementById('bc-search-result');
+    if (!res || !res.count) { el.innerHTML = '<div class="empty">No results</div>'; return; }
+    el.innerHTML = `<div style="margin-top:10px;color:var(--accent2);font-size:12px">${res.count} block(s) found</div>
+    ${res.blocks.map(b=>`<div class="mono" style="margin-top:6px;padding:6px;background:var(--input);border-radius:6px">Block #${b.index} — ${(b.transactions||[]).map(t=>t.sender+'→'+t.recipient+' $'+t.amount).join(', ')}</div>`).join('')}`;
+  } catch(e) { toast('Search failed: '+e.message, false); }
+}
+
+// ── ROUTES ───────────────────────────────────────────────────────────────────
+async function renderRoutes() {
+  const routes = await api('/routes');
+  document.getElementById('content').innerHTML = `
+  <div class="section">
+    <div class="flex" style="margin-bottom:12px">
+      <div class="section-title" style="margin:0">${routes.length} Route(s)</div>
+      <div class="ml-auto flex">
+        <button class="btn btn-outline btn-sm" onclick="renderRoutes()">↻</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Destination</th><th>Latency</th><th>Throughput</th><th>Tags</th><th>Expires</th><th></th></tr></thead>
+        <tbody>
+          ${routes.map(r=>`<tr>
+            <td><strong>${esc(r.destination)}</strong>${r.satellite?' <span class="pill sat">SAT</span>':''}</td>
+            <td>${r.metric.latency}ms</td><td>${r.metric.throughput}</td>
+            <td class="mono">${r.tags?Object.entries(r.tags).map(([k,v])=>k+':'+v).join(', '):'—'}</td>
+            <td class="mono">${r.expires_at?fmtTime(r.expires_at):'∞'}</td>
+            <td><button class="btn btn-danger btn-sm" onclick="deleteRoute('${esc(r.destination)}')">✕</button></td>
+          </tr>`).join('')||'<tr><td colspan="6" class="empty">No routes</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <div class="section">
+      <div class="section-title">Add Route</div>
+      <div class="card">
+        <div class="form-row">
+          <div class="form-group"><label>Destination</label><input id="r-dest" placeholder="node-1"></div>
+          <div class="form-group"><label>Latency (ms)</label><input id="r-lat" type="number" value="10" style="width:90px"></div>
+          <div class="form-group"><label>Throughput</label><input id="r-thr" type="number" value="100" style="width:90px"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>TTL (s, 0=∞)</label><input id="r-ttl" type="number" value="0" style="width:90px"></div>
+          <div class="form-group"><label>Satellite</label><select id="r-sat" style="width:90px"><option value="">No</option><option value="true">Yes</option></select></div>
+          <div class="form-group"><label>Tags (k:v,…)</label><input id="r-tags" placeholder="region:us,tier:1"></div>
+        </div>
+        <button class="btn btn-primary" onclick="addRoute()">Add Route</button>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">Batch Add (JSON)</div>
+      <div class="card">
+        <div class="form-group" style="margin-bottom:8px"><label>Routes array</label>
+        <textarea id="r-batch" placeholder='[{"destination":"n1","latency":5,"throughput":100}]'></textarea></div>
+        <button class="btn btn-primary" onclick="batchAddRoutes()">Batch Add</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function addRoute() {
+  const dest = document.getElementById('r-dest').value.trim();
+  if (!dest) { toast('Destination required', false); return; }
+  const tags = {};
+  document.getElementById('r-tags').value.split(',').forEach(t=>{const [k,v]=t.split(':');if(k&&v)tags[k.trim()]=v.trim();});
+  const ttl = parseInt(document.getElementById('r-ttl').value)||0;
+  const sat = document.getElementById('r-sat').value === 'true';
+  const params = new URLSearchParams({destination:dest,latency:document.getElementById('r-lat').value,throughput:document.getElementById('r-thr').value});
+  if (ttl) params.set('ttlSeconds', ttl);
+  if (sat) params.set('satellite', 'true');
+  Object.entries(tags).forEach(([k,v])=>params.append('tag',k+':'+v));
+  try { await api('/routes?'+params, {method:'POST'}); toast('Route added'); renderRoutes(); }
+  catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function batchAddRoutes() {
+  try {
+    const entries = JSON.parse(document.getElementById('r-batch').value||'[]');
+    const res = await post('/routes/batch', entries);
+    toast(`Added ${res.added}/${res.submitted} routes`); renderRoutes();
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function deleteRoute(dest) {
+  if (!confirm('Delete route ' + dest + '?')) return;
+  try { await del('/routes?destination='+encodeURIComponent(dest)); toast('Route deleted'); renderRoutes(); }
+  catch(e) { toast('Error: '+e.message, false); }
+}
+
+// ── AGENTS ────────────────────────────────────────────────────────────────────
+async function renderAgents() {
+  const agents = await api('/agents');
+  document.getElementById('content').innerHTML = `
+  <div class="section">
+    <div class="flex" style="margin-bottom:12px">
+      <div class="section-title" style="margin:0">${agents.length} Agent(s)</div>
+      <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="renderAgents()">↻</button></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>ID</th><th>Status</th><th>Address</th><th>Capabilities</th><th>Expires</th><th>Actions</th></tr></thead>
+        <tbody>
+          ${agents.map(a=>`<tr>
+            <td><strong>${esc(a.id)}</strong></td>
+            <td><span class="pill ${esc(a.status)}">${esc(a.status)}</span></td>
+            <td class="mono">${esc(a.addr||'—')}</td>
+            <td class="mono">${(a.capabilities||[]).join(', ')||'—'}</td>
+            <td class="mono">${a.expires_at?fmtTime(a.expires_at):'∞'}</td>
+            <td class="flex">
+              <select onchange="setAgentStatus('${esc(a.id)}',this.value)" style="width:100px;padding:3px 6px;font-size:11px">
+                <option value="">set status</option>
+                <option value="healthy">healthy</option>
+                <option value="degraded">degraded</option>
+                <option value="unknown">unknown</option>
+              </select>
+              <button class="btn btn-outline btn-sm" onclick="heartbeat('${esc(a.id)}')">♥</button>
+              <button class="btn btn-danger btn-sm" onclick="deregisterAgent('${esc(a.id)}')">✕</button>
+            </td>
+          </tr>`).join('')||'<tr><td colspan="6" class="empty">No agents</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="section">
+    <div class="section-title">Register Agent</div>
+    <div class="card">
+      <div class="form-row">
+        <div class="form-group"><label>Agent ID</label><input id="ag-id" placeholder="edge-01"></div>
+        <div class="form-group"><label>Address</label><input id="ag-addr" placeholder="10.0.0.1:9000"></div>
+        <div class="form-group"><label>Status</label><select id="ag-status"><option>healthy</option><option>degraded</option><option>unknown</option></select></div>
+        <div class="form-group"><label>TTL (s)</label><input id="ag-ttl" type="number" value="300" style="width:80px"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Capabilities (comma-sep)</label><input id="ag-caps" placeholder="inference,embeddings" style="min-width:240px"></div>
+        <button class="btn btn-primary" style="margin-top:18px" onclick="registerAgent()">Register</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function registerAgent() {
+  const id = document.getElementById('ag-id').value.trim();
+  if (!id) { toast('ID required', false); return; }
+  const caps = document.getElementById('ag-caps').value.split(',').map(s=>s.trim()).filter(Boolean);
+  try {
+    await post('/agents/register', {
+      id, addr: document.getElementById('ag-addr').value.trim(),
+      status: document.getElementById('ag-status').value,
+      ttl_seconds: parseInt(document.getElementById('ag-ttl').value)||300,
+      capabilities: caps
+    });
+    toast('Agent registered'); renderAgents();
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function setAgentStatus(id, status) {
+  if (!status) return;
+  try { await api(`/agents/status?id=${encodeURIComponent(id)}&status=${status}`,{method:'POST'}); toast(`${id} → ${status}`); renderAgents(); }
+  catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function heartbeat(id) {
+  try { await api(`/agents/heartbeat?id=${encodeURIComponent(id)}&ttl_seconds=300`,{method:'POST'}); toast('Heartbeat sent'); renderAgents(); }
+  catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function deregisterAgent(id) {
+  if (!confirm('Deregister '+id+'?')) return;
+  try { await del(`/agents?id=${encodeURIComponent(id)}`); toast('Agent removed'); renderAgents(); }
+  catch(e) { toast('Error: '+e.message, false); }
+}
+
+// ── EVENTS ────────────────────────────────────────────────────────────────────
+let sseRunning = false;
+
+async function renderEvents() {
+  const hist = await api('/events/history?limit=50').catch(()=>({events:[]}));
+  document.getElementById('content').innerHTML = `
+  <div class="section">
+    <div class="flex" style="margin-bottom:12px">
+      <div class="section-title" style="margin:0">Live Event Stream</div>
+      <div class="ml-auto flex">
+        <select id="ev-type-filter" style="width:160px;padding:4px 8px;font-size:12px" onchange="restartSSE()">
+          <option value="">All types</option>
+          <option value="block_added">block_added</option>
+          <option value="route_added">route_added</option>
+          <option value="route_deleted">route_deleted</option>
+          <option value="agent_registered">agent_registered</option>
+          <option value="agent_heartbeat">agent_heartbeat</option>
+        </select>
+        <button class="btn btn-outline btn-sm" id="sse-btn" onclick="toggleSSE()">⏸ Pause</button>
+        <button class="btn btn-outline btn-sm" onclick="clearFeed()">Clear</button>
+      </div>
+    </div>
+    <div class="event-feed" id="event-feed">
+      ${(hist.events||[]).map(ev=>eventLine(ev)).join('')}
+    </div>
+  </div>
+  <div class="section">
+    <div class="section-title">History (last 50)</div>
+    <div style="color:var(--muted);font-size:12px">${(hist.events||[]).length} event(s) in history buffer</div>
+  </div>`;
+  startSSE();
+}
+
+function eventLine(ev) {
+  const data = ev.data ? JSON.stringify(ev.data).substring(0,80) : '';
+  return `<div class="event-line">
+    <span class="event-time">${fmtTime(ev.timestamp)}</span>
+    <span class="event-type ${esc(ev.type)}">${esc(ev.type)}</span>
+    <span class="event-data">${esc(data)}</span>
+  </div>`;
+}
+
+function startSSE() {
+  if (sseSource) sseSource.close();
+  const typeFilter = document.getElementById('ev-type-filter')?.value || '';
+  const url = API + '/events' + (typeFilter ? '?type='+encodeURIComponent(typeFilter) : '');
+  sseSource = new EventSource(url);
+  sseRunning = true;
+  sseSource.onmessage = (e) => {
+    const feed = document.getElementById('event-feed');
+    if (!feed) return;
+    try {
+      const ev = JSON.parse(e.data);
+      feed.innerHTML += eventLine(ev);
+      feed.scrollTop = feed.scrollHeight;
+    } catch {}
+  };
+  sseSource.addEventListener('connected', () => {});
+  sseSource.onerror = () => {
+    if (sseRunning) setTimeout(startSSE, 3000);
+  };
+  const btn = document.getElementById('sse-btn');
+  if (btn) btn.textContent = '⏸ Pause';
+}
+
+function toggleSSE() {
+  if (sseRunning) { stopSSE(); document.getElementById('sse-btn').textContent = '▶ Resume'; }
+  else { startSSE(); }
+}
+
+function stopSSE() {
+  sseRunning = false;
+  if (sseSource) { sseSource.close(); sseSource = null; }
+}
+
+function restartSSE() { startSSE(); }
+function clearFeed() { const f = document.getElementById('event-feed'); if(f) f.innerHTML=''; }
+
+// ── ADMIN ─────────────────────────────────────────────────────────────────────
+async function renderAdmin() {
+  const [statusRes, tenantsRes, backupsRes, verifyRes] = await Promise.allSettled([
+    api('/admin/status'), api('/admin/tenants'), api('/admin/backup/list'), api('/blockchain/verify')
+  ]);
+  const st = statusRes.value||{};
+  const tenants = tenantsRes.value||[];
+  const backups = backupsRes.value||{backups:[]};
+  const verify = verifyRes.value||{};
+
+  document.getElementById('content').innerHTML = `
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <div>
+      <div class="section">
+        <div class="section-title">System Status</div>
+        <div class="table-wrap">
+          <table>
+            <tbody>
+              <tr><td style="color:var(--muted)">Uptime</td><td>${st.uptime_seconds?fmt_uptime(st.uptime_seconds):'—'}</td></tr>
+              <tr><td style="color:var(--muted)">Last Backup</td><td class="mono">${st.last_backup?fmtTime(st.last_backup):'Never'}</td></tr>
+              <tr><td style="color:var(--muted)">Last Compact</td><td class="mono">${st.last_compact?fmtTime(st.last_compact):'Never'}</td></tr>
+              <tr><td style="color:var(--muted)">Backup Dir</td><td class="mono">${esc(st.backup_dir||'—')}</td></tr>
+              <tr><td style="color:var(--muted)">Chain Valid</td><td><span class="pill ${verify.valid?'healthy':'degraded'}">${verify.valid?'✓ Valid':'✗ Invalid'}</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="section">
+        <div class="section-title">Maintenance</div>
+        <div class="card">
+          <div class="flex" style="gap:10px">
+            <button class="btn btn-outline" onclick="triggerBackup()">💾 Run Backup Now</button>
+            <button class="btn btn-outline" onclick="triggerCompact()">🗜 Run Compact Now</button>
+            <button class="btn btn-outline" onclick="verifyChain()">✓ Verify Chain</button>
+          </div>
+          <div id="maint-result" style="margin-top:10px"></div>
+        </div>
+      </div>
+      <div class="section">
+        <div class="section-title">Backups (${(backups.backups||[]).length})</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Size</th><th>Time</th></tr></thead>
+            <tbody>
+              ${(backups.backups||[]).slice(0,8).map(b=>`<tr>
+                <td class="mono">${esc(b.name)}</td>
+                <td>${fmt_bytes(b.size_bytes)}</td>
+                <td class="mono">${fmtTime(b.mod_time)}</td>
+              </tr>`).join('')||'<tr><td colspan="3" class="empty">No backups</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="section">
+        <div class="section-title">Tenants</div>
+        <div class="table-wrap" style="margin-bottom:12px">
+          <table>
+            <thead><tr><th>Tenant</th><th>Blocks</th><th>Routes</th><th></th></tr></thead>
+            <tbody id="tenant-table">
+              ${tenants.map(t=>`<tr>
+                <td><strong>${esc(t.tenant)}</strong></td>
+                <td>${t.blocks}</td><td>${t.routes}</td>
+                <td>${t.tenant!=='default'?`<button class="btn btn-danger btn-sm" onclick="deleteTenant('${esc(t.tenant)}')">✕</button>`:'<span style="color:var(--muted);font-size:11px">default</span>'}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div class="card">
+          <div class="form-row">
+            <div class="form-group"><label>New Tenant Name</label><input id="new-tenant" placeholder="team-beta"></div>
+            <button class="btn btn-primary" style="margin-top:18px" onclick="createTenant()">Create</button>
+          </div>
+        </div>
+      </div>
+      <div class="section">
+        <div class="section-title">Exports</div>
+        <div class="card">
+          <div class="flex">
+            <a href="/blockchain/export" download class="btn btn-outline">⬇ Blockchain JSON</a>
+            <a href="/routes/export" download class="btn btn-outline">⬇ Routes JSON</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function triggerBackup() {
+  try { await api('/admin/backup',{method:'POST'}); toast('Backup completed'); renderAdmin(); }
+  catch(e) { document.getElementById('maint-result').innerHTML=`<div class="alert err">${esc(e.message)}</div>`; }
+}
+
+async function triggerCompact() {
+  try { await api('/admin/compact',{method:'POST'}); toast('Compaction completed'); renderAdmin(); }
+  catch(e) { document.getElementById('maint-result').innerHTML=`<div class="alert err">${esc(e.message)}</div>`; }
+}
+
+async function verifyChain() {
+  try {
+    const r = await api('/blockchain/verify');
+    document.getElementById('maint-result').innerHTML=`<div class="alert ${r.valid?'ok':'err'}">${r.valid?'✓ Chain is valid':'✗ Chain invalid at block '+r.bad_index} (height ${r.height})</div>`;
+  } catch(e) { document.getElementById('maint-result').innerHTML=`<div class="alert err">${esc(e.message)}</div>`; }
+}
+
+async function createTenant() {
+  const name = document.getElementById('new-tenant').value.trim();
+  if (!name) { toast('Name required', false); return; }
+  try { await post('/admin/tenants', {name}); toast('Tenant '+name+' created'); renderAdmin(); }
+  catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function deleteTenant(name) {
+  if (!confirm('Delete tenant "'+name+'" and all its data?')) return;
+  try { await del('/admin/tenants?name='+encodeURIComponent(name)); toast('Tenant deleted'); renderAdmin(); }
+  catch(e) { toast('Error: '+e.message, false); }
+}
+
+function fmt_bytes(b) {
+  if (b < 1024) return b+'B';
+  if (b < 1048576) return (b/1024).toFixed(1)+'KB';
+  return (b/1048576).toFixed(1)+'MB';
+}
+
+// ── BOOT ────────────────────────────────────────────────────────────────────
+go('overview');
+</script>
+</body>
+</html>
