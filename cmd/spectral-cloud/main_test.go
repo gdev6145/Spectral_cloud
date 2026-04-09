@@ -12,6 +12,7 @@ import (
 
 	"github.com/gdev6145/Spectral_cloud/pkg/agent"
 	"github.com/gdev6145/Spectral_cloud/pkg/events"
+	"github.com/gdev6145/Spectral_cloud/pkg/jobs"
 	"github.com/gdev6145/Spectral_cloud/pkg/mesh"
 	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
 	"github.com/gdev6145/Spectral_cloud/pkg/store"
@@ -32,7 +33,7 @@ func makeHandler(db *store.Store, counter *prometheus.CounterVec, auth authConfi
 	anomalyState := &meshAnomalyState{}
 	agentReg := agent.NewRegistry()
 	broker := events.NewBroker()
-	return newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist, auth, 100, 200, 0, 0, tenantLimits{}, status, meshNode, anomalyState, agentReg, corsConfig{}, false, broker, nil, "")
+	return newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist, auth, 100, 200, 0, 0, tenantLimits{}, status, meshNode, anomalyState, agentReg, corsConfig{}, false, broker, nil, "", nil, nil, nil, nil)
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -1244,5 +1245,290 @@ func TestPersistenceRejectsInvalidBlocks(t *testing.T) {
 	}
 	if len(blocks) != 1 {
 		t.Fatalf("expected 1 valid block (genesis), got %d", len(blocks))
+	}
+}
+
+func TestAuditEndpoint(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_audit_req_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// Trigger a write to populate the audit log.
+	resp, err := http.Post(srv.URL+"/blockchain/add", "application/json", bytes.NewBufferString(`[]`))
+	if err != nil {
+		t.Fatalf("add block: %v", err)
+	}
+	resp.Body.Close()
+
+	resp, err = http.Get(srv.URL + "/audit")
+	if err != nil {
+		t.Fatalf("GET /audit: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var body struct {
+		Count   int `json:"count"`
+		Entries []struct {
+			Method string `json:"method"`
+			Path   string `json:"path"`
+		} `json:"entries"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Count == 0 {
+		t.Fatal("expected at least 1 audit entry")
+	}
+}
+
+func TestAgentRouteEndpoint(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_agent_route_req_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// Register an agent with a capability.
+	body := `{"id":"cap-agent","capabilities":["inference"],"status":"healthy","ttl_seconds":300}`
+	resp, err := http.Post(srv.URL+"/agents/register", "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	resp.Body.Close()
+
+	resp, err = http.Get(srv.URL + "/agents/route?capability=inference")
+	if err != nil {
+		t.Fatalf("GET /agents/route: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var res struct {
+		Count  int `json:"count"`
+		Agents []struct{ ID string `json:"id"` } `json:"agents"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.Count != 1 || res.Agents[0].ID != "cap-agent" {
+		t.Errorf("unexpected route result: %+v", res)
+	}
+}
+
+func TestJobsEndpoints(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_jobs_req_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	// makeHandler passes nil jobQueue by default; create handler with job queue.
+	tenantMgr := newTenantManager(db)
+	_, _ = tenantMgr.getTenant("default")
+	meshCounter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_jobs_mesh_total", Help: "test"}, []string{"outcome"})
+	meshReject := prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_jobs_mesh_reject", Help: "test"})
+	meshAnom := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_jobs_mesh_anom", Help: "test"}, []string{"type"})
+	durHist := prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "test_jobs_dur", Help: "test"}, []string{"path", "method"})
+	agentReg := agent.NewRegistry()
+	broker := events.NewBroker()
+	jq := jobs.NewQueue()
+	handler := newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist,
+		authConfig{defaultTenant: "default"}, 100, 200, 0, 0, tenantLimits{}, nil, nil, &meshAnomalyState{},
+		agentReg, corsConfig{}, false, broker, nil, "", jq, nil, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// Submit a job.
+	jobBody := `{"capability":"inference","payload":{"prompt":"test"}}`
+	resp, err := http.Post(srv.URL+"/agents/jobs", "application/json", bytes.NewBufferString(jobBody))
+	if err != nil {
+		t.Fatalf("POST /agents/jobs: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 201 {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	var submitted struct{ ID string `json:"id"` }
+	if err := json.NewDecoder(resp.Body).Decode(&submitted); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if submitted.ID == "" {
+		t.Fatal("expected job ID")
+	}
+
+	// List jobs.
+	resp2, err := http.Get(srv.URL + "/agents/jobs")
+	if err != nil {
+		t.Fatalf("GET /agents/jobs: %v", err)
+	}
+	defer resp2.Body.Close()
+	var listed struct {
+		Count int `json:"count"`
+	}
+	_ = json.NewDecoder(resp2.Body).Decode(&listed)
+	if listed.Count != 1 {
+		t.Errorf("expected 1 job, got %d", listed.Count)
+	}
+
+	// Update job status.
+	patchBody := `{"status":"done","result":"42"}`
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/agents/jobs/"+submitted.ID,
+		bytes.NewBufferString(patchBody))
+	req.Header.Set("Content-Type", "application/json")
+	resp3, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH: %v", err)
+	}
+	defer resp3.Body.Close()
+	if resp3.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp3.StatusCode)
+	}
+	var updated struct {
+		Status string `json:"status"`
+		Result string `json:"result"`
+	}
+	_ = json.NewDecoder(resp3.Body).Decode(&updated)
+	if updated.Status != "done" || updated.Result != "42" {
+		t.Errorf("unexpected update: %+v", updated)
+	}
+}
+
+func TestMetricsJSONEndpoint(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_metrics_json_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/metrics/json")
+	if err != nil {
+		t.Fatalf("GET /metrics/json: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var snap struct {
+		Timestamp string `json:"timestamp"`
+		Jobs      int    `json:"jobs"`
+		Tenants   []struct {
+			Tenant string `json:"tenant"`
+		} `json:"tenants"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&snap); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if snap.Timestamp == "" {
+		t.Error("expected timestamp")
+	}
+	if len(snap.Tenants) == 0 {
+		t.Error("expected at least one tenant")
+	}
+}
+
+func TestBlockchainImportEndpoint(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_bc_import_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// Export current chain (genesis only).
+	exportResp, err := http.Get(srv.URL + "/blockchain/export")
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	exportBody, _ := io.ReadAll(exportResp.Body)
+	exportResp.Body.Close()
+
+	// Import it back — should be a no-op (all blocks already exist).
+	importResp, err := http.Post(srv.URL+"/blockchain/import", "application/json", bytes.NewReader(exportBody))
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	defer importResp.Body.Close()
+	if importResp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", importResp.StatusCode)
+	}
+	var result struct {
+		Imported int `json:"imported"`
+		Skipped  int `json:"skipped"`
+	}
+	if err := json.NewDecoder(importResp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// All blocks already exist — should skip all.
+	if result.Imported != 0 {
+		t.Errorf("expected 0 imported, got %d", result.Imported)
+	}
+}
+
+func TestRoutesImportEndpoint(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_rt_import_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// Add a route then export it.
+	http.Post(srv.URL+"/routes?destination=import-test&latency=10&throughput=500", "text/plain", nil)
+	exportResp, _ := http.Get(srv.URL + "/routes/export")
+	exportBody, _ := io.ReadAll(exportResp.Body)
+	exportResp.Body.Close()
+
+	// Delete original route.
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/routes?destination=import-test", nil)
+	http.DefaultClient.Do(req)
+
+	// Import it back.
+	importResp, err := http.Post(srv.URL+"/routes/import", "application/json", bytes.NewReader(exportBody))
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	defer importResp.Body.Close()
+	if importResp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", importResp.StatusCode)
+	}
+	var result struct {
+		Imported int `json:"imported"`
+		Total    int `json:"total"`
+	}
+	if err := json.NewDecoder(importResp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if result.Imported != 1 {
+		t.Errorf("expected 1 imported, got %d", result.Imported)
 	}
 }
