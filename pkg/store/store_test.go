@@ -342,3 +342,149 @@ func TestWriteRoutesTenantAndReadBack(t *testing.T) {
 		t.Fatal("expected routes, got none")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Additional coverage: Load (default tenant), WriteBlocks, WriteRoutes,
+// RotateEncryptedBackup
+// ---------------------------------------------------------------------------
+
+func TestLoad_DefaultTenant(t *testing.T) {
+dir := t.TempDir()
+s, err := Open(filepath.Join(dir, "test.db"))
+if err != nil {
+t.Fatalf("open: %v", err)
+}
+defer s.Close()
+
+// Write blocks and routes to the default tenant, then Load into new objects.
+chain := blockchain.NewBlockchain()
+chain.AddBlock([]blockchain.Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+if err := s.WriteBlocks(chain.Snapshot()); err != nil {
+t.Fatalf("write blocks: %v", err)
+}
+
+router := routing.NewRoutingEngine()
+_ = router.AddRoute("node-load", routing.RouteMetric{Latency: 42})
+if err := s.WriteRoutes(router.ListRoutes()); err != nil {
+t.Fatalf("write routes: %v", err)
+}
+
+chain2 := blockchain.NewBlockchain()
+router2 := routing.NewRoutingEngine()
+if err := s.Load(chain2, router2); err != nil {
+t.Fatalf("load: %v", err)
+}
+if chain2.Height() != 2 {
+t.Fatalf("expected height 2 after load, got %d", chain2.Height())
+}
+if router2.RouteCount() != 1 {
+t.Fatalf("expected 1 route after load, got %d", router2.RouteCount())
+}
+}
+
+func TestWriteBlocks_DefaultTenant(t *testing.T) {
+dir := t.TempDir()
+s, err := Open(filepath.Join(dir, "test.db"))
+if err != nil {
+t.Fatalf("open: %v", err)
+}
+defer s.Close()
+
+chain := blockchain.NewBlockchain()
+chain.AddBlock([]blockchain.Transaction{{Sender: "x", Recipient: "y", Amount: 7}})
+if err := s.WriteBlocks(chain.Snapshot()); err != nil {
+t.Fatalf("write blocks: %v", err)
+}
+
+blocks, err := s.ReadBlocks()
+if err != nil {
+t.Fatalf("read blocks: %v", err)
+}
+if len(blocks) != 2 {
+t.Fatalf("expected 2 blocks, got %d", len(blocks))
+}
+}
+
+func TestWriteRoutes_DefaultTenant(t *testing.T) {
+dir := t.TempDir()
+s, err := Open(filepath.Join(dir, "test.db"))
+if err != nil {
+t.Fatalf("open: %v", err)
+}
+defer s.Close()
+
+router := routing.NewRoutingEngine()
+_ = router.AddRoute("node-wr", routing.RouteMetric{Latency: 15, Throughput: 80})
+if err := s.WriteRoutes(router.ListRoutes()); err != nil {
+t.Fatalf("write routes: %v", err)
+}
+
+routes, err := s.ReadRoutes()
+if err != nil {
+t.Fatalf("read routes: %v", err)
+}
+if len(routes) != 1 || routes[0].Destination != "node-wr" {
+t.Fatalf("unexpected routes: %v", routes)
+}
+}
+
+func TestRotateEncryptedBackup(t *testing.T) {
+dir := t.TempDir()
+dbPath := filepath.Join(dir, "test.db")
+
+// Write data then close so BackupEncrypted can open it read-only.
+func() {
+s, err := Open(dbPath)
+if err != nil {
+t.Fatalf("open: %v", err)
+}
+defer s.Close()
+chain := blockchain.NewBlockchain()
+chain.AddBlock([]blockchain.Transaction{{Sender: "alice", Recipient: "bob", Amount: 100}})
+_ = s.WriteBlocks(chain.Snapshot())
+}()
+
+// Generate two 32-byte keys.
+oldKey := make([]byte, 32)
+newKey := make([]byte, 32)
+for i := range oldKey {
+oldKey[i] = byte(i + 1)
+}
+for i := range newKey {
+newKey[i] = byte(i + 100)
+}
+oldKeyB64 := base64.StdEncoding.EncodeToString(oldKey)
+newKeyB64 := base64.StdEncoding.EncodeToString(newKey)
+
+oldBackup := filepath.Join(dir, "backup.enc")
+newBackup := filepath.Join(dir, "backup-new.enc")
+
+if err := BackupEncrypted(dbPath, oldBackup, oldKeyB64); err != nil {
+t.Fatalf("backup: %v", err)
+}
+
+	if err := RotateEncryptedBackup(oldBackup, newBackup, oldKeyB64, newKeyB64); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	// Restore from the rotated backup to verify decryption with new key.
+	restoreDir := t.TempDir()
+	restorePath := filepath.Join(restoreDir, "restored.db")
+	if err := RestoreEncrypted(restorePath, newBackup, newKeyB64); err != nil {
+		t.Fatalf("restore with new key: %v", err)
+	}
+
+	s2, err := Open(restorePath)
+	if err != nil {
+		t.Fatalf("open restored: %v", err)
+	}
+	defer s2.Close()
+
+	blocks, err := s2.ReadBlocks()
+	if err != nil {
+		t.Fatalf("read restored blocks: %v", err)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks after rotate, got %d", len(blocks))
+	}
+}

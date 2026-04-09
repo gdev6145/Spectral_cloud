@@ -205,3 +205,87 @@ func TestListSortedByRegisteredAt(t *testing.T) {
 		t.Fatalf("expected first to come before second, got %s first", agents[0].ID)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Additional coverage: ListByCapability, CountByTenant
+// ---------------------------------------------------------------------------
+
+func TestListByCapability_MatchesCapability(t *testing.T) {
+r := NewRegistry()
+_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1", Capabilities: []string{"inference", "storage"}})
+_ = r.Register(RegisterRequest{ID: "a2", TenantID: "t1", Capabilities: []string{"storage"}})
+_ = r.Register(RegisterRequest{ID: "a3", TenantID: "t1", Capabilities: []string{"inference"}})
+
+agents := r.ListByCapability("t1", "inference")
+if len(agents) != 2 {
+t.Fatalf("expected 2 inference agents, got %d", len(agents))
+}
+}
+
+func TestListByCapability_EmptyCapabilityReturnsAll(t *testing.T) {
+r := NewRegistry()
+_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1", Capabilities: []string{"inference"}})
+_ = r.Register(RegisterRequest{ID: "a2", TenantID: "t1", Capabilities: []string{"storage"}})
+
+agents := r.ListByCapability("t1", "")
+if len(agents) != 2 {
+t.Fatalf("expected 2 agents with empty capability filter, got %d", len(agents))
+}
+}
+
+func TestListByCapability_NoMatch(t *testing.T) {
+r := NewRegistry()
+_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1", Capabilities: []string{"storage"}})
+
+agents := r.ListByCapability("t1", "inference")
+if len(agents) != 0 {
+t.Fatalf("expected 0 agents, got %d", len(agents))
+}
+}
+
+func TestListByCapability_AllTenants(t *testing.T) {
+r := NewRegistry()
+_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1", Capabilities: []string{"gpu"}})
+_ = r.Register(RegisterRequest{ID: "a2", TenantID: "t2", Capabilities: []string{"gpu"}})
+_ = r.Register(RegisterRequest{ID: "a3", TenantID: "t3", Capabilities: []string{"cpu"}})
+
+agents := r.ListByCapability("", "gpu")
+if len(agents) != 2 {
+t.Fatalf("expected 2 gpu agents across all tenants, got %d", len(agents))
+}
+}
+
+func TestCountByTenant_Basic(t *testing.T) {
+r := NewRegistry()
+_ = r.Register(RegisterRequest{ID: "a1", TenantID: "tenant-x"})
+_ = r.Register(RegisterRequest{ID: "a2", TenantID: "tenant-x"})
+_ = r.Register(RegisterRequest{ID: "a3", TenantID: "tenant-y"})
+
+if got := r.CountByTenant("tenant-x"); got != 2 {
+t.Fatalf("expected 2 for tenant-x, got %d", got)
+}
+if got := r.CountByTenant("tenant-y"); got != 1 {
+t.Fatalf("expected 1 for tenant-y, got %d", got)
+}
+}
+
+func TestCountByTenant_ExcludesExpired(t *testing.T) {
+	r := NewRegistry()
+	_ = r.Register(RegisterRequest{ID: "alive", TenantID: "t1", TTLSeconds: 3600})
+	_ = r.Register(RegisterRequest{ID: "dying", TenantID: "t1", TTLSeconds: 1})
+	r.Deregister("t1", "dying")
+	time.Sleep(5 * time.Millisecond)
+
+	if got := r.CountByTenant("t1"); got != 1 {
+		t.Fatalf("expected 1 live agent, got %d", got)
+	}
+}
+
+func TestCountByTenant_NoneForUnknown(t *testing.T) {
+r := NewRegistry()
+_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1"})
+
+if got := r.CountByTenant("unknown"); got != 0 {
+t.Fatalf("expected 0 for unknown tenant, got %d", got)
+}
+}

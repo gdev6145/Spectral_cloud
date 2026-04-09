@@ -191,3 +191,110 @@ func TestSelectBestNextHopSkipsExpired(t *testing.T) {
 		t.Fatalf("expected 'active', got %q", best.Destination)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Additional coverage: NewRoutingEngineFromRoutes, UpdateLinkQuality,
+// GetLinkQuality, ListRoutes, Load, PrintRoutes
+// ---------------------------------------------------------------------------
+
+func TestNewRoutingEngineFromRoutes(t *testing.T) {
+future := time.Now().UTC().Add(time.Hour)
+past := time.Now().UTC().Add(-time.Hour)
+routes := []Route{
+{Destination: "live", Metric: RouteMetric{Latency: 10}, ExpiresAt: &future},
+{Destination: "expired", Metric: RouteMetric{Latency: 5}, ExpiresAt: &past},
+}
+re := NewRoutingEngineFromRoutes(routes)
+// Expired route should be pruned during construction.
+if re.RouteCount() != 1 {
+t.Fatalf("expected 1 live route, got %d", re.RouteCount())
+}
+if _, err := re.GetRoute("live"); err != nil {
+t.Fatalf("expected live route, got %v", err)
+}
+}
+
+func TestUpdateLinkQuality_Exists(t *testing.T) {
+re := NewRoutingEngine()
+_ = re.AddRoute("node-a", RouteMetric{Latency: 10, Throughput: 100})
+if err := re.UpdateLinkQuality("node-a", RouteMetric{Latency: 20, Throughput: 200}); err != nil {
+t.Fatalf("unexpected error: %v", err)
+}
+m, _ := re.GetLinkQuality("node-a")
+if m.Latency != 20 || m.Throughput != 200 {
+t.Fatalf("expected updated metrics, got %+v", m)
+}
+}
+
+func TestUpdateLinkQuality_NotFound(t *testing.T) {
+re := NewRoutingEngine()
+if err := re.UpdateLinkQuality("missing", RouteMetric{}); err == nil {
+t.Fatal("expected error for missing route")
+}
+}
+
+func TestGetLinkQuality_Exists(t *testing.T) {
+re := NewRoutingEngine()
+_ = re.AddRoute("node-b", RouteMetric{Latency: 5, Throughput: 50})
+m, err := re.GetLinkQuality("node-b")
+if err != nil {
+t.Fatalf("unexpected error: %v", err)
+}
+if m.Latency != 5 || m.Throughput != 50 {
+t.Fatalf("unexpected metric: %+v", m)
+}
+}
+
+func TestGetLinkQuality_NotFound(t *testing.T) {
+re := NewRoutingEngine()
+if _, err := re.GetLinkQuality("ghost"); err == nil {
+t.Fatal("expected error for missing route")
+}
+}
+
+func TestGetLinkQuality_Expired(t *testing.T) {
+re := NewRoutingEngine()
+_ = re.AddRouteWithTTL("node-exp", RouteMetric{Latency: 1}, 5*time.Millisecond)
+time.Sleep(15 * time.Millisecond)
+if _, err := re.GetLinkQuality("node-exp"); err == nil {
+t.Fatal("expected error for expired route metric")
+}
+}
+
+func TestListRoutes_PrunesExpired(t *testing.T) {
+re := NewRoutingEngine()
+_ = re.AddRoute("live", RouteMetric{Latency: 1})
+_ = re.AddRouteWithTTL("dead", RouteMetric{Latency: 2}, 5*time.Millisecond)
+time.Sleep(15 * time.Millisecond)
+routes := re.ListRoutes()
+if len(routes) != 1 || routes[0].Destination != "live" {
+t.Fatalf("expected only 'live' route, got %v", routes)
+}
+}
+
+func TestLoad_ReplacesRoutes(t *testing.T) {
+re := NewRoutingEngine()
+_ = re.AddRoute("old", RouteMetric{Latency: 99})
+newRoutes := []Route{
+{Destination: "new1", Metric: RouteMetric{Latency: 1}},
+{Destination: "new2", Metric: RouteMetric{Latency: 2}},
+}
+re.Load(newRoutes)
+if re.RouteCount() != 2 {
+t.Fatalf("expected 2 routes after load, got %d", re.RouteCount())
+}
+if _, err := re.GetRoute("old"); err == nil {
+t.Fatal("old route should have been replaced")
+}
+}
+
+func TestPrintRoutes_DoesNotPanic(t *testing.T) {
+re := NewRoutingEngine()
+_ = re.AddRoute("node-print", RouteMetric{Latency: 5, Throughput: 100})
+past := time.Now().UTC().Add(-time.Hour)
+_ = re.AddRouteWithTTL("expired-print", RouteMetric{Latency: 1}, 1*time.Millisecond)
+time.Sleep(5 * time.Millisecond)
+// PrintRoutes writes to stdout; we only care it doesn't panic.
+re.PrintRoutes()
+_ = past
+}
