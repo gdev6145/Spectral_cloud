@@ -11,10 +11,15 @@ import (
 	"time"
 
 	"github.com/gdev6145/Spectral_cloud/pkg/agent"
+	"github.com/gdev6145/Spectral_cloud/pkg/agentgroup"
+	"github.com/gdev6145/Spectral_cloud/pkg/circuit"
 	"github.com/gdev6145/Spectral_cloud/pkg/events"
 	"github.com/gdev6145/Spectral_cloud/pkg/jobs"
+	"github.com/gdev6145/Spectral_cloud/pkg/kv"
 	"github.com/gdev6145/Spectral_cloud/pkg/mesh"
+	"github.com/gdev6145/Spectral_cloud/pkg/notify"
 	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
+	"github.com/gdev6145/Spectral_cloud/pkg/scheduler"
 	"github.com/gdev6145/Spectral_cloud/pkg/store"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/protobuf/proto"
@@ -33,7 +38,13 @@ func makeHandler(db *store.Store, counter *prometheus.CounterVec, auth authConfi
 	anomalyState := &meshAnomalyState{}
 	agentReg := agent.NewRegistry()
 	broker := events.NewBroker()
-	return newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist, auth, 100, 200, 0, 0, tenantLimits{}, status, meshNode, anomalyState, agentReg, corsConfig{}, false, broker, nil, "", nil, nil, nil, nil)
+	kvStore := kv.New()
+	notifyMgr := notify.New()
+	jq := jobs.NewQueue()
+	circuitMgr := circuit.New(5, 30*time.Second)
+	groupMgr := agentgroup.New()
+	sched := scheduler.New(jq)
+	return newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist, auth, 100, 200, 0, 0, tenantLimits{}, status, meshNode, anomalyState, agentReg, corsConfig{}, false, broker, nil, "", jq, nil, kvStore, notifyMgr, circuitMgr, groupMgr, sched)
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -1351,7 +1362,7 @@ func TestJobsEndpoints(t *testing.T) {
 	jq := jobs.NewQueue()
 	handler := newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist,
 		authConfig{defaultTenant: "default"}, 100, 200, 0, 0, tenantLimits{}, nil, nil, &meshAnomalyState{},
-		agentReg, corsConfig{}, false, broker, nil, "", jq, nil, nil, nil)
+		agentReg, corsConfig{}, false, broker, nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq))
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
@@ -1530,5 +1541,223 @@ func TestRoutesImportEndpoint(t *testing.T) {
 	}
 	if result.Imported != 1 {
 		t.Errorf("expected 1 imported, got %d", result.Imported)
+	}
+}
+
+func TestKVEndpoints(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_kv_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/kv/mykey", bytes.NewBufferString(`{"value":"hello","ttl":0}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("PUT expected 200, got %d", resp.StatusCode)
+	}
+
+	gr, _ := http.Get(srv.URL + "/kv/mykey")
+	defer gr.Body.Close()
+	var entry struct{ Value string `json:"value"` }
+	json.NewDecoder(gr.Body).Decode(&entry)
+	if entry.Value != "hello" {
+		t.Errorf("expected hello, got %s", entry.Value)
+	}
+
+	delReq, _ := http.NewRequest(http.MethodDelete, srv.URL+"/kv/mykey", nil)
+	dr, _ := http.DefaultClient.Do(delReq)
+	defer dr.Body.Close()
+	if dr.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE expected 204, got %d", dr.StatusCode)
+	}
+}
+
+func TestSearchEndpoint(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_search_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	http.Post(srv.URL+"/routes?destination=alpha-node&latency=10&throughput=100", "text/plain", nil)
+
+	resp, _ := http.Get(srv.URL + "/search?q=alpha")
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var result struct {
+		Routes []struct{ Destination string `json:"destination"` } `json:"routes"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+	if len(result.Routes) != 1 || result.Routes[0].Destination != "alpha-node" {
+		t.Errorf("expected alpha-node, got %+v", result.Routes)
+	}
+}
+
+func TestNotificationRuleEndpoints(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_notif_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	body := `{"name":"r1","webhook_url":"http://example.com/hook","event_types":["agent.registered"]}`
+	cr, _ := http.Post(srv.URL+"/admin/notifications", "application/json", bytes.NewBufferString(body))
+	defer cr.Body.Close()
+	if cr.StatusCode != http.StatusCreated {
+		t.Fatalf("POST expected 201, got %d", cr.StatusCode)
+	}
+	var rule struct{ ID string `json:"id"` }
+	json.NewDecoder(cr.Body).Decode(&rule)
+
+	dr, _ := http.NewRequest(http.MethodDelete, srv.URL+"/admin/notifications/"+rule.ID, nil)
+	delResp, _ := http.DefaultClient.Do(dr)
+	defer delResp.Body.Close()
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE expected 204, got %d", delResp.StatusCode)
+	}
+}
+
+func TestCircuitBreakerEndpoints(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_circuit_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// Record a failure.
+	fr, _ := http.Post(srv.URL+"/circuit/record", "application/json",
+		bytes.NewBufferString(`{"agent_id":"agent-x","success":false}`))
+	defer fr.Body.Close()
+	if fr.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", fr.StatusCode)
+	}
+	var b struct {
+		State    string `json:"state"`
+		Failures int    `json:"failures"`
+	}
+	json.NewDecoder(fr.Body).Decode(&b)
+	if b.Failures != 1 {
+		t.Errorf("expected 1 failure, got %d", b.Failures)
+	}
+
+	// List breakers.
+	lr, _ := http.Get(srv.URL + "/circuit")
+	defer lr.Body.Close()
+	var list struct{ Count int `json:"count"` }
+	json.NewDecoder(lr.Body).Decode(&list)
+	if list.Count != 1 {
+		t.Errorf("expected 1 breaker, got %d", list.Count)
+	}
+
+	// Reset.
+	rr, _ := http.Post(srv.URL+"/circuit/reset?agent_id=agent-x", "application/json", nil)
+	defer rr.Body.Close()
+	var reset struct{ Failures int `json:"failures"` }
+	json.NewDecoder(rr.Body).Decode(&reset)
+	if reset.Failures != 0 {
+		t.Errorf("expected 0 after reset, got %d", reset.Failures)
+	}
+}
+
+func TestAgentGroupEndpoints(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_groups_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// Create group.
+	cr, _ := http.Post(srv.URL+"/agent-groups", "application/json", bytes.NewBufferString(`{"name":"workers"}`))
+	defer cr.Body.Close()
+	if cr.StatusCode != http.StatusCreated {
+		t.Fatalf("POST expected 201, got %d", cr.StatusCode)
+	}
+	var g struct{ ID string `json:"id"` }
+	json.NewDecoder(cr.Body).Decode(&g)
+
+	// Add member.
+	mr, _ := http.Post(srv.URL+"/agent-groups/"+g.ID+"/members", "application/json",
+		bytes.NewBufferString(`{"agent_id":"agent-1"}`))
+	defer mr.Body.Close()
+	if mr.StatusCode != 200 {
+		t.Fatalf("add member expected 200, got %d", mr.StatusCode)
+	}
+
+	// Get next (round-robin).
+	nr, _ := http.Get(srv.URL + "/agent-groups/" + g.ID + "/next")
+	defer nr.Body.Close()
+	if nr.StatusCode != 200 {
+		t.Fatalf("next expected 200, got %d", nr.StatusCode)
+	}
+	var next struct{ AgentID string `json:"agent_id"` }
+	json.NewDecoder(nr.Body).Decode(&next)
+	if next.AgentID != "agent-1" {
+		t.Errorf("expected agent-1, got %s", next.AgentID)
+	}
+
+	// Delete group.
+	delReq, _ := http.NewRequest(http.MethodDelete, srv.URL+"/agent-groups/"+g.ID, nil)
+	dr, _ := http.DefaultClient.Do(delReq)
+	defer dr.Body.Close()
+	if dr.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE expected 204, got %d", dr.StatusCode)
+	}
+}
+
+func TestSchedulerEndpoints(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_sched_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// Create schedule.
+	body := `{"name":"hourly-sync","capability":"sync","interval_seconds":3600}`
+	cr, _ := http.Post(srv.URL+"/schedules", "application/json", bytes.NewBufferString(body))
+	defer cr.Body.Close()
+	if cr.StatusCode != http.StatusCreated {
+		t.Fatalf("POST expected 201, got %d", cr.StatusCode)
+	}
+	var s struct{ ID string `json:"id"`; Name string `json:"name"` }
+	json.NewDecoder(cr.Body).Decode(&s)
+	if s.Name != "hourly-sync" || s.ID == "" {
+		t.Errorf("unexpected schedule: %+v", s)
+	}
+
+	// List.
+	lr, _ := http.Get(srv.URL + "/schedules")
+	defer lr.Body.Close()
+	var list struct{ Count int `json:"count"` }
+	json.NewDecoder(lr.Body).Decode(&list)
+	if list.Count != 1 {
+		t.Errorf("expected 1, got %d", list.Count)
+	}
+
+	// Delete.
+	delReq, _ := http.NewRequest(http.MethodDelete, srv.URL+"/schedules/"+s.ID, nil)
+	dr, _ := http.DefaultClient.Do(delReq)
+	defer dr.Body.Close()
+	if dr.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE expected 204, got %d", dr.StatusCode)
 	}
 }

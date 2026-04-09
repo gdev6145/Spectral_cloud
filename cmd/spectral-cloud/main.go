@@ -26,9 +26,16 @@ import (
 	"github.com/gdev6145/Spectral_cloud/pkg/auth"
 	"github.com/gdev6145/Spectral_cloud/pkg/blockchain"
 	"github.com/gdev6145/Spectral_cloud/pkg/events"
+	"github.com/gdev6145/Spectral_cloud/pkg/healthcheck"
+	"github.com/gdev6145/Spectral_cloud/pkg/jobs"
+	"github.com/gdev6145/Spectral_cloud/pkg/agentgroup"
+	"github.com/gdev6145/Spectral_cloud/pkg/circuit"
+	"github.com/gdev6145/Spectral_cloud/pkg/kv"
 	"github.com/gdev6145/Spectral_cloud/pkg/mesh"
 	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
+	"github.com/gdev6145/Spectral_cloud/pkg/notify"
 	"github.com/gdev6145/Spectral_cloud/pkg/routing"
+	"github.com/gdev6145/Spectral_cloud/pkg/scheduler"
 	"github.com/gdev6145/Spectral_cloud/pkg/store"
 	"github.com/gdev6145/Spectral_cloud/pkg/webhook"
 	"github.com/prometheus/client_golang/prometheus"
@@ -462,7 +469,36 @@ func main() {
 		}
 	}()
 
+	jobQueue := jobs.NewQueue()
+	go func() {
+		// Prune completed jobs older than 24h every 10 minutes.
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				jobQueue.Prune(24 * time.Hour)
+			}
+		}
+	}()
+
 	eventBroker := events.NewBroker()
+
+	var hcChecker *healthcheck.Checker
+	hcIntervalStr := strings.TrimSpace(os.Getenv("AGENT_HEALTH_INTERVAL"))
+	if hcIntervalStr != "" {
+		if hcInterval, err := time.ParseDuration(hcIntervalStr); err == nil && hcInterval > 0 {
+			hcTimeout := 5 * time.Second
+			if t, err := time.ParseDuration(strings.TrimSpace(os.Getenv("AGENT_HEALTH_TIMEOUT"))); err == nil && t > 0 {
+				hcTimeout = t
+			}
+			hcChecker = healthcheck.New(agentReg, eventBroker, hcInterval, hcTimeout)
+			hcChecker.Start(ctx)
+			log.Printf("agent health checker enabled (interval=%s, timeout=%s)", hcInterval, hcTimeout)
+		}
+	}
 
 	webhookURL := strings.TrimSpace(os.Getenv("WEBHOOK_URL"))
 	webhookSecret := strings.TrimSpace(os.Getenv("WEBHOOK_SECRET"))
@@ -476,6 +512,33 @@ func main() {
 	hookDispatcher := webhook.New(webhookURL, webhookSecret, webhookDur)
 
 	blockSigningKey := strings.TrimSpace(os.Getenv("BLOCK_SIGNING_KEY"))
+
+	kvStore := kv.New()
+	go func() {
+		// Prune expired KV entries every 5 minutes.
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				kvStore.Prune()
+			}
+		}
+	}()
+
+	notifyMgr := notify.New()
+	notifyMgr.Start(ctx, eventBroker)
+
+	circuitThreshold := getEnvInt("CIRCUIT_THRESHOLD", 5)
+	circuitResetSec := getEnvInt("CIRCUIT_RESET_SECONDS", 30)
+	circuitMgr := circuit.New(circuitThreshold, time.Duration(circuitResetSec)*time.Second)
+
+	groupMgr := agentgroup.New()
+
+	sched := scheduler.New(jobQueue)
+	defer sched.StopAll()
 
 	corsCfg := parseCORSConfig(
 		strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS")),
@@ -514,7 +577,7 @@ func main() {
 		}
 	}()
 
-	handler := newHandler(tenantMgr, db, maxBodyBytes, requestsTotal, meshPackets, meshRejectRate, meshAnomaly, requestDuration, auth, rateRPS, rateBurst, tenantRateRPS, tenantRateBurst, limits, status, meshNode, anomalyState, agentReg, corsCfg, enableAccessLog, eventBroker, hookDispatcher, blockSigningKey)
+	handler := newHandler(tenantMgr, db, maxBodyBytes, requestsTotal, meshPackets, meshRejectRate, meshAnomaly, requestDuration, auth, rateRPS, rateBurst, tenantRateRPS, tenantRateBurst, limits, status, meshNode, anomalyState, agentReg, corsCfg, enableAccessLog, eventBroker, hookDispatcher, blockSigningKey, jobQueue, hcChecker, kvStore, notifyMgr, circuitMgr, groupMgr, sched)
 
 	srv := &http.Server{
 		Addr:              ":" + port,
@@ -575,7 +638,7 @@ func main() {
 	}
 }
 
-func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, requestsTotal *prometheus.CounterVec, meshPackets *prometheus.CounterVec, meshRejectRate prometheus.Gauge, meshAnomaly *prometheus.GaugeVec, requestDuration *prometheus.HistogramVec, auth authConfig, rateRPS float64, rateBurst int, tenantRateRPS float64, tenantRateBurst int, limits tenantLimits, status *statusTracker, meshNode *mesh.Node, anomalyState *meshAnomalyState, agentReg *agent.Registry, corsCfg corsConfig, enableAccessLog bool, eventBroker *events.Broker, hookDispatcher *webhook.Dispatcher, blockSigningKey string) http.Handler {
+func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, requestsTotal *prometheus.CounterVec, meshPackets *prometheus.CounterVec, meshRejectRate prometheus.Gauge, meshAnomaly *prometheus.GaugeVec, requestDuration *prometheus.HistogramVec, auth authConfig, rateRPS float64, rateBurst int, tenantRateRPS float64, tenantRateBurst int, limits tenantLimits, status *statusTracker, meshNode *mesh.Node, anomalyState *meshAnomalyState, agentReg *agent.Registry, corsCfg corsConfig, enableAccessLog bool, eventBroker *events.Broker, hookDispatcher *webhook.Dispatcher, blockSigningKey string, jobQueue *jobs.Queue, hcChecker *healthcheck.Checker, kvStore *kv.Store, notifyMgr *notify.Manager, circuitMgr *circuit.Manager, groupMgr *agentgroup.Manager, sched *scheduler.Manager) http.Handler {
 	mux := http.NewServeMux()
 	getState := func(r *http.Request) (*tenantState, string, error) {
 		tenant, ok := tenantFromContext(r.Context())
@@ -1592,6 +1655,844 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	// GET /agents/route?capability=X&count=N — return agents that have a capability, best-available first.
+	mux.HandleFunc("/agents/route", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		capability := strings.TrimSpace(r.URL.Query().Get("capability"))
+		if capability == "" {
+			writeError(w, http.StatusBadRequest, "capability is required")
+			return
+		}
+		count := 5
+		if c, err := strconv.Atoi(r.URL.Query().Get("count")); err == nil && c > 0 {
+			count = c
+		}
+		candidates := agentReg.ListByCapability(tenant, capability)
+		if len(candidates) > count {
+			candidates = candidates[:count]
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"capability": capability,
+			"count":      len(candidates),
+			"agents":     candidates,
+		})
+	})
+
+	// GET /agents/jobs — list jobs for the tenant.
+	// POST /agents/jobs — submit a new job.
+	mux.HandleFunc("/agents/jobs", func(w http.ResponseWriter, r *http.Request) {
+		if jobQueue == nil {
+			writeError(w, http.StatusServiceUnavailable, "job queue unavailable")
+			return
+		}
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			list := jobQueue.List(tenant)
+			if list == nil {
+				list = []jobs.Job{}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"count": len(list), "jobs": list})
+		case http.MethodPost:
+			var req struct {
+				AgentID    string         `json:"agent_id"`
+				Capability string         `json:"capability"`
+				Payload    map[string]any `json:"payload"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+			if req.AgentID == "" && req.Capability == "" {
+				writeError(w, http.StatusBadRequest, "agent_id or capability is required")
+				return
+			}
+			j := jobQueue.Submit(tenant, req.AgentID, req.Capability, req.Payload)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(j)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
+
+	// PATCH /agents/jobs/{id} — update a job's status.
+	mux.HandleFunc("/agents/jobs/", func(w http.ResponseWriter, r *http.Request) {
+		if jobQueue == nil {
+			writeError(w, http.StatusServiceUnavailable, "job queue unavailable")
+			return
+		}
+		if r.Method != http.MethodPatch {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/agents/jobs/")
+		if id == "" {
+			writeError(w, http.StatusBadRequest, "job id is required")
+			return
+		}
+		var req struct {
+			Status jobs.Status `json:"status"`
+			Result string      `json:"result,omitempty"`
+			Error  string      `json:"error,omitempty"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if req.Status == "" {
+			writeError(w, http.StatusBadRequest, "status is required")
+			return
+		}
+		if !jobQueue.Update(id, req.Status, req.Result, req.Error) {
+			writeError(w, http.StatusNotFound, "job not found")
+			return
+		}
+		j, _ := jobQueue.Get(id)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(j)
+	})
+
+	// GET /audit?tenant=X&limit=N — query the audit log.
+	mux.HandleFunc("/audit", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		// Admin can override tenant filter.
+		if t := strings.TrimSpace(r.URL.Query().Get("tenant")); t != "" {
+			tenant = t
+		}
+		limit := 50
+		if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && l > 0 {
+			limit = l
+		}
+		entries, err := db.AuditList(tenant, limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read audit log")
+			return
+		}
+		if entries == nil {
+			entries = []store.AuditEntry{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"count": len(entries), "entries": entries})
+	})
+
+	// GET /metrics/json — JSON snapshot of key operational metrics.
+	mux.HandleFunc("/metrics/json", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		names, _ := db.TenantNames()
+		if auth.defaultTenant != "" && !stringInSlice(auth.defaultTenant, names) {
+			names = append(names, auth.defaultTenant)
+		}
+		type tenantMetric struct {
+			Tenant string `json:"tenant"`
+			Blocks int    `json:"blocks"`
+			Routes int    `json:"routes"`
+			Agents int    `json:"agents"`
+		}
+		tenantMetrics := make([]tenantMetric, 0, len(names))
+		for _, name := range names {
+			state, err := tenantMgr.getTenant(name)
+			if err != nil {
+				continue
+			}
+			tenantMetrics = append(tenantMetrics, tenantMetric{
+				Tenant: name,
+				Blocks: state.chain.Height(),
+				Routes: state.router.RouteCount(),
+				Agents: agentReg.CountByTenant(name),
+			})
+		}
+		jobCount := 0
+		if jobQueue != nil {
+			jobCount = jobQueue.Count()
+		}
+		snap := map[string]any{
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"tenants":   tenantMetrics,
+			"jobs":      jobCount,
+		}
+		if status != nil {
+			now := time.Now().UTC()
+			snap["uptime_seconds"] = int64(now.Sub(status.startedAt).Seconds())
+		}
+		if meshNode != nil {
+			stats, _ := meshNode.Snapshot()
+			snap["mesh_peers"] = stats
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(snap)
+	})
+
+	// GET /agents/health — per-agent health check results from the background checker.
+	mux.HandleFunc("/agents/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if hcChecker == nil {
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "disabled", "results": []any{}})
+			return
+		}
+		results := hcChecker.Results()
+		if results == nil {
+			results = []healthcheck.Result{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"count": len(results), "results": results})
+	})
+
+	// POST /blockchain/import — merge blocks from an exported blockchainFile.
+	mux.HandleFunc("/blockchain/import", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		state, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		var imp blockchainFile
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&imp); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid import file")
+			return
+		}
+		if len(imp.Blocks) == 0 {
+			writeError(w, http.StatusBadRequest, "no blocks in import")
+			return
+		}
+		// Validate the imported chain is self-consistent.
+		impChain := blockchain.NewBlockchainFromBlocks(nil)
+		impChain.Load(imp.Blocks)
+		if _, valid := impChain.VerifyChain(); !valid {
+			writeError(w, http.StatusBadRequest, "import chain is invalid")
+			return
+		}
+		currentHeight := state.chain.Height()
+		added := 0
+		for _, b := range imp.Blocks {
+			if b.Index < currentHeight {
+				continue // already have this block
+			}
+			state.chain.AddBlock(b.Transactions)
+			added++
+		}
+		if added > 0 {
+			_ = db.SaveChainTenant(tenant, state.chain)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"imported": added,
+			"skipped":  len(imp.Blocks) - added,
+			"height":   state.chain.Height(),
+		})
+	})
+
+	// POST /routes/import — add routes from an exported routesFile.
+	mux.HandleFunc("/routes/import", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		state, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		var imp routesFile
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&imp); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid import file")
+			return
+		}
+		added, skipped := 0, 0
+		for _, route := range imp.Routes {
+			opts := routing.RouteOptions{
+				Satellite: route.Satellite,
+				Tags:      route.Tags,
+			}
+			if route.ExpiresAt != nil {
+				ttl := time.Until(*route.ExpiresAt)
+				if ttl > 0 {
+					opts.TTL = ttl
+				}
+			}
+			if err := state.router.AddRouteWithOptions(route.Destination, route.Metric, opts); err != nil {
+				skipped++
+				continue
+			}
+			added++
+		}
+		if added > 0 {
+			_ = db.SaveRoutesTenant(tenant, state.router)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"imported": added,
+			"skipped":  skipped,
+			"total":    state.router.RouteCount(),
+		})
+	})
+
+	// KV store endpoints — /kv?prefix=X, /kv/{key}
+	mux.HandleFunc("/kv", func(w http.ResponseWriter, r *http.Request) {
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			prefix := r.URL.Query().Get("prefix")
+			entries := kvStore.List(tenant, prefix)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"entries": entries, "count": len(entries)})
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
+
+	mux.HandleFunc("/kv/", func(w http.ResponseWriter, r *http.Request) {
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		key := strings.TrimPrefix(r.URL.Path, "/kv/")
+		if key == "" {
+			writeError(w, http.StatusBadRequest, "missing key")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			entry, ok := kvStore.Get(tenant, key)
+			if !ok {
+				writeError(w, http.StatusNotFound, "key not found")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(entry)
+		case http.MethodPut:
+			var body struct {
+				Value string        `json:"value"`
+				TTL   time.Duration `json:"ttl"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid body")
+				return
+			}
+			kvStore.Set(tenant, key, body.Value, body.TTL)
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{Type: "kv.set", TenantID: tenant, Timestamp: time.Now().UTC(), Data: map[string]any{"key": key}})
+			}
+			entry, _ := kvStore.Get(tenant, key)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(entry)
+		case http.MethodDelete:
+			if !kvStore.Delete(tenant, key) {
+				writeError(w, http.StatusNotFound, "key not found")
+				return
+			}
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{Type: "kv.delete", TenantID: tenant, Timestamp: time.Now().UTC(), Data: map[string]any{"key": key}})
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
+
+	// GET /search?q=X — unified search across agents, routes, blockchain txns.
+	mux.HandleFunc("/search", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		state, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+		if q == "" {
+			writeError(w, http.StatusBadRequest, "missing q parameter")
+			return
+		}
+
+		type agentResult struct {
+			ID           string   `json:"id"`
+			Tenant       string   `json:"tenant"`
+			Capabilities []string `json:"capabilities"`
+			Status       string   `json:"status"`
+		}
+		type routeResult struct {
+			Destination string `json:"destination"`
+			Latency     int    `json:"latency_ms"`
+		}
+		type txResult struct {
+			BlockIndex int                    `json:"block_index"`
+			Sender     string                 `json:"sender"`
+			Recipient  string                 `json:"recipient"`
+			Amount     float64                `json:"amount"`
+		}
+
+		var agents []agentResult
+		for _, ag := range agentReg.List(tenant) {
+			if strings.Contains(strings.ToLower(ag.ID), q) || strings.Contains(strings.ToLower(string(ag.Status)), q) {
+				agents = append(agents, agentResult{ID: ag.ID, Tenant: ag.TenantID, Capabilities: ag.Capabilities, Status: string(ag.Status)})
+				continue
+			}
+			for _, cap := range ag.Capabilities {
+				if strings.Contains(strings.ToLower(cap), q) {
+					agents = append(agents, agentResult{ID: ag.ID, Tenant: ag.TenantID, Capabilities: ag.Capabilities, Status: string(ag.Status)})
+					break
+				}
+			}
+		}
+
+		var routes []routeResult
+		for _, rt := range state.router.ListRoutes() {
+			if strings.Contains(strings.ToLower(rt.Destination), q) {
+				routes = append(routes, routeResult{Destination: rt.Destination, Latency: rt.Metric.Latency})
+			}
+		}
+
+		var txns []txResult
+		for _, block := range state.chain.Blocks() {
+			for _, tx := range block.Transactions {
+				if strings.Contains(strings.ToLower(tx.Sender), q) ||
+					strings.Contains(strings.ToLower(tx.Recipient), q) {
+					txns = append(txns, txResult{BlockIndex: block.Index, Sender: tx.Sender, Recipient: tx.Recipient, Amount: tx.Amount})
+				}
+			}
+		}
+
+		if agents == nil {
+			agents = []agentResult{}
+		}
+		if routes == nil {
+			routes = []routeResult{}
+		}
+		if txns == nil {
+			txns = []txResult{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"query":        q,
+			"agents":       agents,
+			"routes":       routes,
+			"transactions": txns,
+		})
+	})
+
+	// GET /routes/filter — advanced route filtering by latency, throughput, satellite flag, tag.
+	mux.HandleFunc("/routes/filter", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		state, _, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		q := r.URL.Query()
+		maxLatStr := q.Get("max_latency")
+		minThrStr := q.Get("min_throughput")
+		satStr := q.Get("satellite")
+		tagFilter := q.Get("tag") // "key:value"
+
+		var maxLat, minThr int
+		if maxLatStr != "" {
+			if v, err := strconv.Atoi(maxLatStr); err == nil {
+				maxLat = v
+			}
+		}
+		if minThrStr != "" {
+			if v, err := strconv.Atoi(minThrStr); err == nil {
+				minThr = v
+			}
+		}
+		filterSat := satStr != ""
+		wantSat := satStr == "true" || satStr == "1"
+
+		tagKey, tagVal := "", ""
+		if tagFilter != "" {
+			parts := strings.SplitN(tagFilter, ":", 2)
+			tagKey = parts[0]
+			if len(parts) == 2 {
+				tagVal = parts[1]
+			}
+		}
+
+		var filtered []routing.Route
+		for _, rt := range state.router.ListRoutes() {
+			if maxLat > 0 && rt.Metric.Latency > maxLat {
+				continue
+			}
+			if minThr > 0 && rt.Metric.Throughput < minThr {
+				continue
+			}
+			if filterSat && rt.Satellite != wantSat {
+				continue
+			}
+			if tagKey != "" {
+				v, ok := rt.Tags[tagKey]
+				if !ok {
+					continue
+				}
+				if tagVal != "" && v != tagVal {
+					continue
+				}
+			}
+			filtered = append(filtered, rt)
+		}
+		if filtered == nil {
+			filtered = []routing.Route{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"routes": filtered, "count": len(filtered)})
+	})
+
+	// Notification rule endpoints — /admin/notifications
+	mux.HandleFunc("/admin/notifications", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			rules := notifyMgr.List()
+			if rules == nil {
+				rules = []notify.Rule{}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"rules": rules, "count": len(rules)})
+		case http.MethodPost:
+			var body struct {
+				Name       string   `json:"name"`
+				WebhookURL string   `json:"webhook_url"`
+				Secret     string   `json:"secret"`
+				EventTypes []string `json:"event_types"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid body")
+				return
+			}
+			if strings.TrimSpace(body.Name) == "" {
+				writeError(w, http.StatusBadRequest, "name is required")
+				return
+			}
+			if strings.TrimSpace(body.WebhookURL) == "" {
+				writeError(w, http.StatusBadRequest, "webhook_url is required")
+				return
+			}
+			rule := notifyMgr.Add(body.Name, body.WebhookURL, body.Secret, body.EventTypes)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(rule)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
+
+	mux.HandleFunc("/admin/notifications/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/admin/notifications/")
+		if id == "" {
+			writeError(w, http.StatusBadRequest, "missing rule id")
+			return
+		}
+		switch r.Method {
+		case http.MethodDelete:
+			if !notifyMgr.Delete(id) {
+				writeError(w, http.StatusNotFound, "rule not found")
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
+
+	// ── Circuit breaker endpoints ────────────────────────────────────────────
+
+	// GET /circuit — list all breakers; GET /circuit?agent_id=X — single breaker
+	mux.HandleFunc("/circuit", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if id := r.URL.Query().Get("agent_id"); id != "" {
+			b := circuitMgr.Get(id)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(b)
+			return
+		}
+		breakers := circuitMgr.List()
+		if breakers == nil {
+			breakers = []circuit.Breaker{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"breakers": breakers, "count": len(breakers)})
+	})
+
+	// POST /circuit/record — record success or failure
+	mux.HandleFunc("/circuit/record", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var body struct {
+			AgentID string `json:"agent_id"`
+			Success bool   `json:"success"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		if body.AgentID == "" {
+			writeError(w, http.StatusBadRequest, "agent_id required")
+			return
+		}
+		if body.Success {
+			circuitMgr.RecordSuccess(body.AgentID)
+		} else {
+			circuitMgr.RecordFailure(body.AgentID)
+		}
+		b := circuitMgr.Get(body.AgentID)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(b)
+	})
+
+	// POST /circuit/reset?agent_id=X — manually reset a breaker
+	mux.HandleFunc("/circuit/reset", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSpace(r.URL.Query().Get("agent_id"))
+		if id == "" {
+			writeError(w, http.StatusBadRequest, "agent_id required")
+			return
+		}
+		circuitMgr.Reset(id)
+		b := circuitMgr.Get(id)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(b)
+	})
+
+	// ── Agent group endpoints ─────────────────────────────────────────────────
+
+	// GET/POST /agent-groups
+	mux.HandleFunc("/agent-groups", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			groups := groupMgr.List()
+			if groups == nil {
+				groups = []agentgroup.Group{}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"groups": groups, "count": len(groups)})
+		case http.MethodPost:
+			var body struct {
+				Name string `json:"name"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid body")
+				return
+			}
+			g, err := groupMgr.Create(body.Name)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(g)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
+
+	// DELETE /agent-groups/{id}  POST /agent-groups/{id}/members  DELETE /agent-groups/{id}/members/{agentID}
+	// GET /agent-groups/{id}/next — round-robin next member
+	mux.HandleFunc("/agent-groups/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/agent-groups/")
+		parts := strings.SplitN(path, "/", 3)
+		groupID := parts[0]
+		if groupID == "" {
+			writeError(w, http.StatusBadRequest, "missing group id")
+			return
+		}
+		// /agent-groups/{id}
+		if len(parts) == 1 {
+			if r.Method != http.MethodDelete {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			if !groupMgr.Delete(groupID) {
+				writeError(w, http.StatusNotFound, "group not found")
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		sub := parts[1]
+		// /agent-groups/{id}/members
+		if sub == "members" && len(parts) == 2 {
+			if r.Method != http.MethodPost {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			var body struct {
+				AgentID string `json:"agent_id"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid body")
+				return
+			}
+			if err := groupMgr.AddMember(groupID, body.AgentID); err != nil {
+				writeError(w, http.StatusNotFound, err.Error())
+				return
+			}
+			g, _ := groupMgr.Get(groupID)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(g)
+			return
+		}
+		// /agent-groups/{id}/members/{agentID}
+		if sub == "members" && len(parts) == 3 {
+			agentID := parts[2]
+			if r.Method != http.MethodDelete {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			if err := groupMgr.RemoveMember(groupID, agentID); err != nil {
+				writeError(w, http.StatusNotFound, err.Error())
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		// /agent-groups/{id}/next
+		if sub == "next" && r.Method == http.MethodGet {
+			agentID, ok := groupMgr.Next(groupID, func(id string) bool {
+				return circuitMgr.Allow(id)
+			})
+			if !ok {
+				writeError(w, http.StatusServiceUnavailable, "no available members")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"agent_id": agentID, "group_id": groupID})
+			return
+		}
+		writeError(w, http.StatusNotFound, "unknown sub-path")
+	})
+
+	// ── Scheduler endpoints ───────────────────────────────────────────────────
+
+	// GET/POST /schedules
+	mux.HandleFunc("/schedules", func(w http.ResponseWriter, r *http.Request) {
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			all := sched.List()
+			// filter to tenant
+			filtered := all[:0]
+			for _, s := range all {
+				if s.Tenant == tenant || tenant == "" {
+					filtered = append(filtered, s)
+				}
+			}
+			if filtered == nil {
+				filtered = []scheduler.Schedule{}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"schedules": filtered, "count": len(filtered)})
+		case http.MethodPost:
+			var body struct {
+				Name        string         `json:"name"`
+				AgentID     string         `json:"agent_id"`
+				Capability  string         `json:"capability"`
+				Payload     map[string]any `json:"payload"`
+				IntervalSec int            `json:"interval_seconds"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid body")
+				return
+			}
+			if body.IntervalSec <= 0 {
+				writeError(w, http.StatusBadRequest, "interval_seconds must be > 0")
+				return
+			}
+			s, err := sched.Add(body.Name, tenant, body.AgentID, body.Capability, body.Payload, time.Duration(body.IntervalSec)*time.Second)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{Type: "schedule.created", TenantID: tenant, Timestamp: time.Now().UTC(), Data: map[string]any{"id": s.ID, "name": s.Name}})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(s)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
+
+	// DELETE /schedules/{id}
+	mux.HandleFunc("/schedules/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/schedules/")
+		if id == "" {
+			writeError(w, http.StatusBadRequest, "missing schedule id")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			s, ok := sched.Get(id)
+			if !ok {
+				writeError(w, http.StatusNotFound, "schedule not found")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(s)
+		case http.MethodDelete:
+			if !sched.Delete(id) {
+				writeError(w, http.StatusNotFound, "schedule not found")
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
+
 	// GET /events — Server-Sent Events stream for real-time event fan-out.
 	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -1682,6 +2583,7 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		tenantLimiter = newTenantLimiter(rate.Limit(tenantRateRPS), tenantRateBurst, 10*time.Minute)
 	}
 	handler := withAuth(mux, auth)
+	handler = withAudit(handler, db, auth.defaultTenant)
 	handler = withTenantRateLimit(handler, tenantLimiter, auth.defaultTenant)
 	handler = withRateLimit(handler, limiter)
 	handler = withMetrics(handler, requestsTotal)
@@ -1693,6 +2595,28 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 	handler = withRequestID(handler)
 	handler = withRecover(handler)
 	return handler
+}
+
+// withAudit records all mutating (non-GET) requests to the audit log.
+func withAudit(next http.Handler, db *store.Store, defaultTenant string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		tenant, ok := tenantFromContext(r.Context())
+		if !ok || strings.TrimSpace(tenant) == "" {
+			tenant = defaultTenant
+		}
+		_ = db.AuditRecord(store.AuditEntry{
+			Tenant: tenant,
+			Method: r.Method,
+			Path:   r.URL.Path,
+			Status: rec.status,
+		})
+	})
 }
 
 func withMetrics(next http.Handler, counter *prometheus.CounterVec) http.Handler {

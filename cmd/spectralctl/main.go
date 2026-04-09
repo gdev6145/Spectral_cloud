@@ -102,6 +102,38 @@ func main() {
 		chainSearchCmd(os.Args[2:])
 	case "agent-status":
 		agentStatusCmd(os.Args[2:])
+	case "audit-tail":
+		auditTailCmd(os.Args[2:])
+	case "agent-route":
+		agentRouteCmd(os.Args[2:])
+	case "jobs-list":
+		jobsListCmd(os.Args[2:])
+	case "jobs-submit":
+		jobsSubmitCmd(os.Args[2:])
+	case "import-blockchain":
+		importBlockchainCmd(os.Args[2:])
+	case "import-routes":
+		importRoutesCmd(os.Args[2:])
+	case "metrics":
+		metricsCmd(os.Args[2:])
+	case "kv-get":
+		kvGetCmd(os.Args[2:])
+	case "kv-set":
+		kvSetCmd(os.Args[2:])
+	case "kv-delete":
+		kvDeleteCmd(os.Args[2:])
+	case "kv-list":
+		kvListCmd(os.Args[2:])
+	case "search":
+		searchCmd(os.Args[2:])
+	case "routes-filter":
+		routesFilterCmd(os.Args[2:])
+	case "notify-list":
+		notifyListCmd(os.Args[2:])
+	case "notify-add":
+		notifyAddCmd(os.Args[2:])
+	case "notify-delete":
+		notifyDeleteCmd(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -135,6 +167,22 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  spectralctl tenant-delete --url <http://host:port> --name <name> [--api-key <key>]")
 	fmt.Fprintln(os.Stderr, "  spectralctl chain-search --url <http://host:port> [--sender <s>] [--recipient <r>] [--api-key <key>]")
 	fmt.Fprintln(os.Stderr, "  spectralctl agent-status --url <http://host:port> --id <id> --status <healthy|degraded|unknown> [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl audit-tail --url <http://host:port> [--tenant <t>] [--limit 50] [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl agent-route --url <http://host:port> --capability <cap> [--count 5] [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl jobs-list --url <http://host:port> [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl jobs-submit --url <http://host:port> --capability <cap> [--agent-id <id>] [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl import-blockchain --url <http://host:port> --in <path> [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl import-routes --url <http://host:port> --in <path> [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl metrics --url <http://host:port> [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl kv-get --url <http://host:port> --key <k> [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl kv-set --url <http://host:port> --key <k> --value <v> [--ttl 10m] [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl kv-delete --url <http://host:port> --key <k> [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl kv-list --url <http://host:port> [--prefix <p>] [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl search --url <http://host:port> --q <query> [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl routes-filter --url <http://host:port> [--max-latency N] [--min-throughput N] [--satellite true|false] [--tag k:v] [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl notify-list --url <http://host:port> [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl notify-add --url <http://host:port> --name <n> --webhook-url <u> [--secret <s>] [--event-types e1,e2] [--api-key <key>]")
+	fmt.Fprintln(os.Stderr, "  spectralctl notify-delete --url <http://host:port> --id <id> [--api-key <key>]")
 }
 
 func validateCmd(args []string) {
@@ -1998,4 +2046,747 @@ func apiGET(url, apiKey string, timeout time.Duration) ([]byte, int, error) {
 		return nil, resp.StatusCode, err
 	}
 	return body, resp.StatusCode, nil
+}
+
+func apiPOST(url, apiKey string, payload []byte, timeout time.Duration) ([]byte, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return body, resp.StatusCode, nil
+}
+
+func apiPUT(url, apiKey string, payload []byte, timeout time.Duration) ([]byte, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(payload))
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return body, resp.StatusCode, nil
+}
+
+func apiDELETE(url, apiKey string, timeout time.Duration) ([]byte, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	if strings.TrimSpace(apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return body, resp.StatusCode, nil
+}
+
+// ---------------------------------------------------------------------------
+// audit-tail
+// ---------------------------------------------------------------------------
+
+func auditTailCmd(args []string) {
+	fs := flag.NewFlagSet("audit-tail", flag.ExitOnError)
+	serverURL := fs.String("url", "", "Server URL (required)")
+	apiKey := fs.String("api-key", "", "API key")
+	tenant := fs.String("tenant", "", "Tenant filter (default: all)")
+	limit := fs.Int("limit", 50, "Max entries to show")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	u := strings.TrimRight(*serverURL, "/") + "/audit?limit=" + strconv.Itoa(*limit)
+	if *tenant != "" {
+		u += "&tenant=" + *tenant
+	}
+	body, code, err := apiGET(u, *apiKey, 10*time.Second)
+	if err != nil {
+		exitErr(fmt.Errorf("audit-tail: %w", err))
+	}
+	if code != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", code, string(body)))
+	}
+	var res struct {
+		Count   int `json:"count"`
+		Entries []struct {
+			ID        uint64 `json:"id"`
+			Timestamp string `json:"timestamp"`
+			Tenant    string `json:"tenant"`
+			Method    string `json:"method"`
+			Path      string `json:"path"`
+			Status    int    `json:"status"`
+			Detail    string `json:"detail"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		exitErr(fmt.Errorf("parse response: %w", err))
+	}
+	fmt.Printf("%-4s  %-24s  %-10s  %-7s  %-40s  %s\n", "ID", "Timestamp", "Tenant", "Method", "Path", "Status")
+	fmt.Println(strings.Repeat("-", 100))
+	for _, e := range res.Entries {
+		fmt.Printf("%-4d  %-24s  %-10s  %-7s  %-40s  %d\n",
+			e.ID, e.Timestamp, e.Tenant, e.Method, e.Path, e.Status)
+	}
+	fmt.Printf("\n%d entries\n", res.Count)
+}
+
+// ---------------------------------------------------------------------------
+// agent-route
+// ---------------------------------------------------------------------------
+
+func agentRouteCmd(args []string) {
+	fs := flag.NewFlagSet("agent-route", flag.ExitOnError)
+	serverURL := fs.String("url", "", "Server URL (required)")
+	apiKey := fs.String("api-key", "", "API key")
+	capability := fs.String("capability", "", "Capability to look up (required)")
+	count := fs.Int("count", 5, "Max agents to return")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	if *capability == "" {
+		exitErr(errors.New("--capability is required"))
+	}
+	u := strings.TrimRight(*serverURL, "/") + "/agents/route?capability=" + *capability +
+		"&count=" + strconv.Itoa(*count)
+	body, code, err := apiGET(u, *apiKey, 10*time.Second)
+	if err != nil {
+		exitErr(fmt.Errorf("agent-route: %w", err))
+	}
+	if code != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", code, string(body)))
+	}
+	var res map[string]any
+	if err := json.Unmarshal(body, &res); err != nil {
+		exitErr(fmt.Errorf("parse response: %w", err))
+	}
+	out, _ := json.MarshalIndent(res, "", "  ")
+	fmt.Println(string(out))
+}
+
+// ---------------------------------------------------------------------------
+// jobs-list
+// ---------------------------------------------------------------------------
+
+func jobsListCmd(args []string) {
+	fs := flag.NewFlagSet("jobs-list", flag.ExitOnError)
+	serverURL := fs.String("url", "", "Server URL (required)")
+	apiKey := fs.String("api-key", "", "API key")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	u := strings.TrimRight(*serverURL, "/") + "/agents/jobs"
+	body, code, err := apiGET(u, *apiKey, 10*time.Second)
+	if err != nil {
+		exitErr(fmt.Errorf("jobs-list: %w", err))
+	}
+	if code != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", code, string(body)))
+	}
+	var res struct {
+		Count int `json:"count"`
+		Jobs  []struct {
+			ID         string `json:"id"`
+			AgentID    string `json:"agent_id"`
+			Capability string `json:"capability"`
+			Status     string `json:"status"`
+			CreatedAt  string `json:"created_at"`
+		} `json:"jobs"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		exitErr(fmt.Errorf("parse response: %w", err))
+	}
+	fmt.Printf("%-12s  %-12s  %-12s  %-10s  %s\n", "ID", "Agent", "Capability", "Status", "Created")
+	fmt.Println(strings.Repeat("-", 80))
+	for _, j := range res.Jobs {
+		fmt.Printf("%-12s  %-12s  %-12s  %-10s  %s\n",
+			j.ID, j.AgentID, j.Capability, j.Status, j.CreatedAt)
+	}
+	fmt.Printf("\n%d job(s)\n", res.Count)
+}
+
+// ---------------------------------------------------------------------------
+// jobs-submit
+// ---------------------------------------------------------------------------
+
+func jobsSubmitCmd(args []string) {
+	fs := flag.NewFlagSet("jobs-submit", flag.ExitOnError)
+	serverURL := fs.String("url", "", "Server URL (required)")
+	apiKey := fs.String("api-key", "", "API key")
+	capability := fs.String("capability", "", "Required capability")
+	agentID := fs.String("agent-id", "", "Target agent ID")
+	timeout := fs.Duration("timeout", 10*time.Second, "Request timeout")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	if *capability == "" && *agentID == "" {
+		exitErr(errors.New("--capability or --agent-id is required"))
+	}
+	payload := map[string]any{
+		"agent_id":   *agentID,
+		"capability": *capability,
+		"payload":    map[string]any{},
+	}
+	body, _ := json.Marshal(payload)
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	u := strings.TrimRight(*serverURL, "/") + "/agents/jobs"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
+	if err != nil {
+		exitErr(fmt.Errorf("build request: %w", err))
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(*apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+*apiKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		exitErr(fmt.Errorf("jobs-submit: %w", err))
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 201 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", resp.StatusCode, string(respBody)))
+	}
+	var res map[string]any
+	_ = json.Unmarshal(respBody, &res)
+	out, _ := json.MarshalIndent(res, "", "  ")
+	fmt.Println(string(out))
+}
+
+// ---------------------------------------------------------------------------
+// import-blockchain
+// ---------------------------------------------------------------------------
+
+func importBlockchainCmd(args []string) {
+	fs := flag.NewFlagSet("import-blockchain", flag.ExitOnError)
+	serverURL := fs.String("url", "", "Server URL (required)")
+	apiKey := fs.String("api-key", "", "API key")
+	inPath := fs.String("in", "", "Path to blockchain JSON export (required)")
+	timeout := fs.Duration("timeout", 30*time.Second, "Request timeout")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	if *inPath == "" {
+		exitErr(errors.New("--in is required"))
+	}
+	data, err := os.ReadFile(*inPath)
+	if err != nil {
+		exitErr(fmt.Errorf("read file: %w", err))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	u := strings.TrimRight(*serverURL, "/") + "/blockchain/import"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(data))
+	if err != nil {
+		exitErr(fmt.Errorf("build request: %w", err))
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(*apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+*apiKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		exitErr(fmt.Errorf("import-blockchain: %w", err))
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", resp.StatusCode, string(body)))
+	}
+	var result map[string]any
+	_ = json.Unmarshal(body, &result)
+	out, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Println(string(out))
+}
+
+// ---------------------------------------------------------------------------
+// import-routes
+// ---------------------------------------------------------------------------
+
+func importRoutesCmd(args []string) {
+	fs := flag.NewFlagSet("import-routes", flag.ExitOnError)
+	serverURL := fs.String("url", "", "Server URL (required)")
+	apiKey := fs.String("api-key", "", "API key")
+	inPath := fs.String("in", "", "Path to routes JSON export (required)")
+	timeout := fs.Duration("timeout", 30*time.Second, "Request timeout")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	if *inPath == "" {
+		exitErr(errors.New("--in is required"))
+	}
+	data, err := os.ReadFile(*inPath)
+	if err != nil {
+		exitErr(fmt.Errorf("read file: %w", err))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	u := strings.TrimRight(*serverURL, "/") + "/routes/import"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(data))
+	if err != nil {
+		exitErr(fmt.Errorf("build request: %w", err))
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(*apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+*apiKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		exitErr(fmt.Errorf("import-routes: %w", err))
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", resp.StatusCode, string(body)))
+	}
+	var result map[string]any
+	_ = json.Unmarshal(body, &result)
+	out, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Println(string(out))
+}
+
+// ---------------------------------------------------------------------------
+// metrics
+// ---------------------------------------------------------------------------
+
+func metricsCmd(args []string) {
+	fs := flag.NewFlagSet("metrics", flag.ExitOnError)
+	serverURL := fs.String("url", "", "Server URL (required)")
+	apiKey := fs.String("api-key", "", "API key")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	body, code, err := apiGET(strings.TrimRight(*serverURL, "/")+"/metrics/json", *apiKey, 10*time.Second)
+	if err != nil {
+		exitErr(fmt.Errorf("metrics: %w", err))
+	}
+	if code != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", code, string(body)))
+	}
+	var snap struct {
+		Timestamp     string `json:"timestamp"`
+		UptimeSeconds int64  `json:"uptime_seconds"`
+		Jobs          int    `json:"jobs"`
+		Tenants       []struct {
+			Tenant string `json:"tenant"`
+			Blocks int    `json:"blocks"`
+			Routes int    `json:"routes"`
+			Agents int    `json:"agents"`
+		} `json:"tenants"`
+	}
+	if err := json.Unmarshal(body, &snap); err != nil {
+		fmt.Println(string(body))
+		return
+	}
+	h := snap.UptimeSeconds / 3600
+	m := (snap.UptimeSeconds % 3600) / 60
+	fmt.Printf("Timestamp : %s\n", snap.Timestamp)
+	fmt.Printf("Uptime    : %dh %dm\n", h, m)
+	fmt.Printf("Jobs      : %d\n", snap.Jobs)
+	fmt.Printf("\n%-16s  %8s  %8s  %8s\n", "Tenant", "Blocks", "Routes", "Agents")
+	fmt.Println(strings.Repeat("-", 46))
+	for _, t := range snap.Tenants {
+		fmt.Printf("%-16s  %8d  %8d  %8d\n", t.Tenant, t.Blocks, t.Routes, t.Agents)
+	}
+}
+
+func kvGetCmd(args []string) {
+	fs := flag.NewFlagSet("kv-get", flag.ExitOnError)
+	serverURL := fs.String("url", "", "server URL")
+	key := fs.String("key", "", "KV key")
+	apiKey := fs.String("api-key", "", "API key")
+	_ = fs.Parse(args)
+	if *serverURL == "" || *key == "" {
+		exitErr(errors.New("--url and --key are required"))
+	}
+	body, code, err := apiGET(strings.TrimRight(*serverURL, "/")+"/kv/"+*key, *apiKey, 10*time.Second)
+	if err != nil {
+		exitErr(fmt.Errorf("kv-get: %w", err))
+	}
+	if code == 404 {
+		exitErr(fmt.Errorf("key not found"))
+	}
+	if code != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", code, string(body)))
+	}
+	var entry struct {
+		Key       string `json:"key"`
+		Value     string `json:"value"`
+		Tenant    string `json:"tenant"`
+		ExpiresAt string `json:"expires_at"`
+		UpdatedAt string `json:"updated_at"`
+	}
+	if err := json.Unmarshal(body, &entry); err != nil {
+		fmt.Println(string(body))
+		return
+	}
+	fmt.Printf("Key       : %s\n", entry.Key)
+	fmt.Printf("Value     : %s\n", entry.Value)
+	fmt.Printf("Tenant    : %s\n", entry.Tenant)
+	if entry.ExpiresAt != "" {
+		fmt.Printf("Expires   : %s\n", entry.ExpiresAt)
+	}
+	fmt.Printf("Updated   : %s\n", entry.UpdatedAt)
+}
+
+func kvSetCmd(args []string) {
+	fs := flag.NewFlagSet("kv-set", flag.ExitOnError)
+	serverURL := fs.String("url", "", "server URL")
+	key := fs.String("key", "", "KV key")
+	value := fs.String("value", "", "KV value")
+	ttlStr := fs.String("ttl", "", "TTL (e.g. 10m, 1h, 0 for no expiry)")
+	apiKey := fs.String("api-key", "", "API key")
+	_ = fs.Parse(args)
+	if *serverURL == "" || *key == "" {
+		exitErr(errors.New("--url and --key are required"))
+	}
+	var ttlNs int64
+	if *ttlStr != "" {
+		d, err := time.ParseDuration(*ttlStr)
+		if err != nil {
+			exitErr(fmt.Errorf("invalid --ttl: %w", err))
+		}
+		ttlNs = int64(d)
+	}
+	payload, _ := json.Marshal(map[string]any{"value": *value, "ttl": ttlNs})
+	body, code, err := apiPUT(strings.TrimRight(*serverURL, "/")+"/kv/"+*key, *apiKey, payload, 10*time.Second)
+	if err != nil {
+		exitErr(fmt.Errorf("kv-set: %w", err))
+	}
+	if code != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", code, string(body)))
+	}
+	fmt.Printf("Set %s\n", *key)
+}
+
+func kvDeleteCmd(args []string) {
+	fs := flag.NewFlagSet("kv-delete", flag.ExitOnError)
+	serverURL := fs.String("url", "", "server URL")
+	key := fs.String("key", "", "KV key")
+	apiKey := fs.String("api-key", "", "API key")
+	_ = fs.Parse(args)
+	if *serverURL == "" || *key == "" {
+		exitErr(errors.New("--url and --key are required"))
+	}
+	body, code, err := apiDELETE(strings.TrimRight(*serverURL, "/")+"/kv/"+*key, *apiKey, 10*time.Second)
+	if err != nil {
+		exitErr(fmt.Errorf("kv-delete: %w", err))
+	}
+	if code == 404 {
+		exitErr(errors.New("key not found"))
+	}
+	if code != 204 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", code, string(body)))
+	}
+	fmt.Printf("Deleted %s\n", *key)
+}
+
+func kvListCmd(args []string) {
+	fs := flag.NewFlagSet("kv-list", flag.ExitOnError)
+	serverURL := fs.String("url", "", "server URL")
+	prefix := fs.String("prefix", "", "key prefix filter")
+	apiKey := fs.String("api-key", "", "API key")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	u := strings.TrimRight(*serverURL, "/") + "/kv"
+	if *prefix != "" {
+		u += "?prefix=" + *prefix
+	}
+	body, code, err := apiGET(u, *apiKey, 10*time.Second)
+	if err != nil {
+		exitErr(fmt.Errorf("kv-list: %w", err))
+	}
+	if code != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", code, string(body)))
+	}
+	var result struct {
+		Count   int `json:"count"`
+		Entries []struct {
+			Key       string `json:"key"`
+			Value     string `json:"value"`
+			ExpiresAt string `json:"expires_at"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		fmt.Println(string(body))
+		return
+	}
+	fmt.Printf("%-32s  %-24s  %s\n", "Key", "Value", "Expires")
+	fmt.Println(strings.Repeat("-", 70))
+	for _, e := range result.Entries {
+		exp := "-"
+		if e.ExpiresAt != "" {
+			exp = e.ExpiresAt
+		}
+		v := e.Value
+		if len(v) > 24 {
+			v = v[:21] + "..."
+		}
+		fmt.Printf("%-32s  %-24s  %s\n", e.Key, v, exp)
+	}
+	fmt.Printf("\nTotal: %d\n", result.Count)
+}
+
+func searchCmd(args []string) {
+	fs := flag.NewFlagSet("search", flag.ExitOnError)
+	serverURL := fs.String("url", "", "server URL")
+	query := fs.String("q", "", "search query")
+	apiKey := fs.String("api-key", "", "API key")
+	_ = fs.Parse(args)
+	if *serverURL == "" || *query == "" {
+		exitErr(errors.New("--url and --q are required"))
+	}
+	body, code, err := apiGET(strings.TrimRight(*serverURL, "/")+"/search?q="+*query, *apiKey, 10*time.Second)
+	if err != nil {
+		exitErr(fmt.Errorf("search: %w", err))
+	}
+	if code != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", code, string(body)))
+	}
+	var result struct {
+		Query  string `json:"query"`
+		Agents []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"agents"`
+		Routes []struct {
+			Destination string `json:"destination"`
+			Latency     int    `json:"latency_ms"`
+		} `json:"routes"`
+		Transactions []struct {
+			BlockIndex int    `json:"block_index"`
+			Sender     string `json:"sender"`
+			Recipient  string `json:"recipient"`
+		} `json:"transactions"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		fmt.Println(string(body))
+		return
+	}
+	fmt.Printf("Query: %q\n", result.Query)
+	if len(result.Agents) > 0 {
+		fmt.Printf("\nAgents (%d):\n", len(result.Agents))
+		for _, a := range result.Agents {
+			fmt.Printf("  %-20s  %s\n", a.ID, a.Status)
+		}
+	}
+	if len(result.Routes) > 0 {
+		fmt.Printf("\nRoutes (%d):\n", len(result.Routes))
+		for _, r := range result.Routes {
+			fmt.Printf("  %-30s  latency=%dms\n", r.Destination, r.Latency)
+		}
+	}
+	if len(result.Transactions) > 0 {
+		fmt.Printf("\nTransactions (%d):\n", len(result.Transactions))
+		for _, tx := range result.Transactions {
+			fmt.Printf("  block=%-4d  %s → %s\n", tx.BlockIndex, tx.Sender, tx.Recipient)
+		}
+	}
+	if len(result.Agents)+len(result.Routes)+len(result.Transactions) == 0 {
+		fmt.Println("No results.")
+	}
+}
+
+func routesFilterCmd(args []string) {
+	fs := flag.NewFlagSet("routes-filter", flag.ExitOnError)
+	serverURL := fs.String("url", "", "server URL")
+	maxLatency := fs.Int("max-latency", 0, "max latency ms (0 = no filter)")
+	minThroughput := fs.Int("min-throughput", 0, "min throughput Mbps (0 = no filter)")
+	satellite := fs.String("satellite", "", "satellite filter: true|false (empty = all)")
+	tag := fs.String("tag", "", "tag filter: key:value")
+	apiKey := fs.String("api-key", "", "API key")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	u := strings.TrimRight(*serverURL, "/") + "/routes/filter?"
+	if *maxLatency > 0 {
+		u += fmt.Sprintf("max_latency=%d&", *maxLatency)
+	}
+	if *minThroughput > 0 {
+		u += fmt.Sprintf("min_throughput=%d&", *minThroughput)
+	}
+	if *satellite != "" {
+		u += "satellite=" + *satellite + "&"
+	}
+	if *tag != "" {
+		u += "tag=" + *tag + "&"
+	}
+	u = strings.TrimRight(u, "&?")
+	body, code, err := apiGET(u, *apiKey, 10*time.Second)
+	if err != nil {
+		exitErr(fmt.Errorf("routes-filter: %w", err))
+	}
+	if code != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", code, string(body)))
+	}
+	var result struct {
+		Count  int `json:"count"`
+		Routes []struct {
+			Destination string `json:"destination"`
+			Metric      struct {
+				Latency    int `json:"latency"`
+				Throughput int `json:"throughput"`
+			} `json:"metric"`
+			Satellite bool `json:"satellite"`
+		} `json:"routes"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		fmt.Println(string(body))
+		return
+	}
+	fmt.Printf("%-30s  %10s  %12s  %9s\n", "Destination", "Latency(ms)", "Throughput(M)", "Satellite")
+	fmt.Println(strings.Repeat("-", 68))
+	for _, r := range result.Routes {
+		fmt.Printf("%-30s  %10d  %12d  %9v\n", r.Destination, r.Metric.Latency, r.Metric.Throughput, r.Satellite)
+	}
+	fmt.Printf("\nTotal: %d\n", result.Count)
+}
+
+func notifyListCmd(args []string) {
+	fs := flag.NewFlagSet("notify-list", flag.ExitOnError)
+	serverURL := fs.String("url", "", "server URL")
+	apiKey := fs.String("api-key", "", "API key")
+	_ = fs.Parse(args)
+	if *serverURL == "" {
+		exitErr(errors.New("--url is required"))
+	}
+	body, code, err := apiGET(strings.TrimRight(*serverURL, "/")+"/admin/notifications", *apiKey, 10*time.Second)
+	if err != nil {
+		exitErr(fmt.Errorf("notify-list: %w", err))
+	}
+	if code != 200 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", code, string(body)))
+	}
+	var result struct {
+		Count int `json:"count"`
+		Rules []struct {
+			ID         string   `json:"id"`
+			Name       string   `json:"name"`
+			WebhookURL string   `json:"webhook_url"`
+			EventTypes []string `json:"event_types"`
+			Active     bool     `json:"active"`
+			FiredTotal uint64   `json:"fired_total"`
+		} `json:"rules"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		fmt.Println(string(body))
+		return
+	}
+	fmt.Printf("%-12s  %-20s  %-30s  %8s  %6s\n", "ID", "Name", "Webhook", "Active", "Fired")
+	fmt.Println(strings.Repeat("-", 82))
+	for _, r := range result.Rules {
+		fmt.Printf("%-12s  %-20s  %-30s  %8v  %6d\n", r.ID, r.Name, r.WebhookURL, r.Active, r.FiredTotal)
+	}
+	fmt.Printf("\nTotal: %d\n", result.Count)
+}
+
+func notifyAddCmd(args []string) {
+	fs := flag.NewFlagSet("notify-add", flag.ExitOnError)
+	serverURL := fs.String("url", "", "server URL")
+	name := fs.String("name", "", "rule name")
+	webhookURL := fs.String("webhook-url", "", "webhook URL")
+	secret := fs.String("secret", "", "HMAC secret (optional)")
+	eventTypes := fs.String("event-types", "", "comma-separated event types (empty = all)")
+	apiKey := fs.String("api-key", "", "API key")
+	_ = fs.Parse(args)
+	if *serverURL == "" || *name == "" || *webhookURL == "" {
+		exitErr(errors.New("--url, --name, and --webhook-url are required"))
+	}
+	var types []string
+	if *eventTypes != "" {
+		for _, t := range strings.Split(*eventTypes, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				types = append(types, t)
+			}
+		}
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"name":        *name,
+		"webhook_url": *webhookURL,
+		"secret":      *secret,
+		"event_types": types,
+	})
+	body, code, err := apiPOST(strings.TrimRight(*serverURL, "/")+"/admin/notifications", *apiKey, payload, 10*time.Second)
+	if err != nil {
+		exitErr(fmt.Errorf("notify-add: %w", err))
+	}
+	if code != 201 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", code, string(body)))
+	}
+	var rule struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &rule); err != nil {
+		fmt.Println(string(body))
+		return
+	}
+	fmt.Printf("Created rule %s (id=%s)\n", rule.Name, rule.ID)
+}
+
+func notifyDeleteCmd(args []string) {
+	fs := flag.NewFlagSet("notify-delete", flag.ExitOnError)
+	serverURL := fs.String("url", "", "server URL")
+	id := fs.String("id", "", "rule ID")
+	apiKey := fs.String("api-key", "", "API key")
+	_ = fs.Parse(args)
+	if *serverURL == "" || *id == "" {
+		exitErr(errors.New("--url and --id are required"))
+	}
+	body, code, err := apiDELETE(strings.TrimRight(*serverURL, "/")+"/admin/notifications/"+*id, *apiKey, 10*time.Second)
+	if err != nil {
+		exitErr(fmt.Errorf("notify-delete: %w", err))
+	}
+	if code == 404 {
+		exitErr(errors.New("rule not found"))
+	}
+	if code != 204 {
+		exitErr(fmt.Errorf("server returned HTTP %d: %s", code, string(body)))
+	}
+	fmt.Printf("Deleted rule %s\n", *id)
 }
