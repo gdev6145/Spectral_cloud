@@ -116,6 +116,34 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
 .tab { padding: 6px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; color: var(--muted); border: 1px solid transparent; }
 .tab.active { background: rgba(108,99,255,.15); color: var(--accent); border-color: rgba(108,99,255,.3); }
 .tab:hover:not(.active) { color: var(--text); }
+
+/* SKELETON LOADING */
+.skeleton { height: 16px; border-radius: 4px; background: linear-gradient(90deg, var(--surface) 25%, var(--border) 50%, var(--surface) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
+@keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+.skeleton-row td { padding: 10px 14px; }
+
+/* CONTENT FADE-IN */
+#content { animation: fadeIn .2s ease; }
+@keyframes fadeIn { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:none} }
+
+/* LIVE PULSE DOT */
+.pulse-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent2); box-shadow: 0 0 6px var(--accent2); animation: pulseglow 1.5s infinite; display: inline-block; flex-shrink: 0; }
+@keyframes pulseglow { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(1.4)} }
+
+/* MODALS */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.75); z-index: 1000; display: flex; align-items: center; justify-content: center; }
+.modal-box { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 28px; max-width: 460px; width: 92%; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+.modal-title { font-size: 18px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+.modal-desc { font-size: 13px; color: var(--muted); margin-bottom: 20px; line-height: 1.7; }
+.modal-footer { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+
+/* COLLAPSIBLE */
+.collapsible-hdr { cursor: pointer; display: flex; align-items: center; justify-content: space-between; user-select: none; }
+.collapsible-hdr:hover { color: var(--text); }
+.collapsible-body { overflow: hidden; max-height: 0; transition: max-height .3s ease; }
+
+/* QUICK ACTIONS */
+.quick-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
 </style>
 </head>
 <body>
@@ -179,6 +207,14 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
       Admin
     </a>
+    <a onclick="go('notifs')" id="nav-notifs">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      Notifications
+    </a>
+    <a onclick="go('mesh')" id="nav-mesh">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M12 7v3M12 10L6.5 17.5M12 10l5.5 7.5"/></svg>
+      Mesh Peers
+    </a>
   </div>
   <div class="nav-footer">
     <strong id="server-url">localhost</strong>
@@ -197,6 +233,51 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
   <div class="content" id="content">Loading…</div>
 </main>
 
+<!-- API Key Setup Modal -->
+<div id="api-key-modal" class="modal-overlay" style="display:none">
+  <div class="modal-box">
+    <div class="modal-title">🔑 Welcome to Spectral Cloud</div>
+    <div class="modal-desc">Enter your API key to access admin endpoints. You can skip this and configure it later in <strong>Admin → Authentication</strong>.</div>
+    <div class="form-group">
+      <label>API Key</label>
+      <input type="password" id="modal-api-key" placeholder="sk-…" style="width:100%;margin-top:4px">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="skipApiKeyModal()">Skip</button>
+      <button class="btn btn-primary" onclick="saveApiKeyModal()">Save &amp; Continue</button>
+    </div>
+  </div>
+</div>
+
+<!-- Keyboard Shortcuts Modal -->
+<div id="shortcuts-modal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="max-width:500px">
+    <div class="modal-title">⌨ Keyboard Shortcuts</div>
+    <div class="table-wrap" style="margin-bottom:0">
+      <table>
+        <thead><tr><th>Key</th><th>Action</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">g &nbsp;o</td><td>Go to Overview</td></tr>
+          <tr><td class="mono">g &nbsp;b</td><td>Go to Blockchain</td></tr>
+          <tr><td class="mono">g &nbsp;r</td><td>Go to Routes</td></tr>
+          <tr><td class="mono">g &nbsp;a</td><td>Go to Agents</td></tr>
+          <tr><td class="mono">g &nbsp;e</td><td>Go to Events</td></tr>
+          <tr><td class="mono">g &nbsp;k</td><td>Go to KV Store</td></tr>
+          <tr><td class="mono">g &nbsp;s</td><td>Go to Schedules</td></tr>
+          <tr><td class="mono">g &nbsp;n</td><td>Go to Notifications</td></tr>
+          <tr><td class="mono">g &nbsp;m</td><td>Go to Mesh Peers</td></tr>
+          <tr><td class="mono">r</td><td>Refresh current page</td></tr>
+          <tr><td class="mono">?</td><td>Show this help</td></tr>
+          <tr><td class="mono">Esc</td><td>Close any modal</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="closeShortcutsModal()">Close</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const API = '';  // same origin
 let currentPage = 'overview';
@@ -214,7 +295,7 @@ function go(page) {
   const el = document.getElementById('nav-' + page);
   if (el) el.classList.add('active');
   document.getElementById('page-title').textContent =
-    {overview:'Overview',blockchain:'Blockchain',routes:'Routes',agents:'Agents',jobs:'Jobs',events:'Events',kv:'KV Store',search:'Search',schedules:'Schedules',groups:'Agent Groups',circuit:'Circuit Breaker',audit:'Audit Log',admin:'Admin'}[page] || page;
+    {overview:'Overview',blockchain:'Blockchain',routes:'Routes',agents:'Agents',jobs:'Jobs',events:'Events',kv:'KV Store',search:'Search',schedules:'Schedules',groups:'Agent Groups',circuit:'Circuit Breaker',audit:'Audit Log',admin:'Admin',notifs:'Notifications',mesh:'Mesh Peers'}[page] || page;
   stopSSE();
   clearTimeout(autoRefreshTimer);
   render(page, rid);
@@ -297,6 +378,8 @@ async function render(page, rid) {
       case 'circuit':    await renderCircuit(rid); break;
       case 'audit':      await renderAudit(rid); break;
       case 'admin':      await renderAdmin(rid); break;
+      case 'notifs':     await renderNotifs(rid); break;
+      case 'mesh':       await renderMesh(rid); break;
     }
   } catch(e) {
     if (rid && rid !== currentRenderId) return;
@@ -345,6 +428,15 @@ async function renderOverview(rid) {
     <div class="card"><div class="card-label">Agents</div><div class="card-value">${agents.length}</div><div class="card-sub">registered</div></div>
     <div class="card green"><div class="card-label">Mesh Peers</div><div class="card-value">${meshPeers.length}</div><div class="card-sub">connected</div></div>
     <div class="card"><div class="card-label">Uptime</div><div class="card-value" style="font-size:20px">${st.uptime_seconds!==undefined?fmt_uptime(st.uptime_seconds):'—'}</div><div class="card-sub">${esc(st.now?new Date(st.now).toLocaleDateString():'')}</div></div>
+  </div>
+  <div class="section" style="margin-bottom:16px">
+    <div class="section-title">Quick Actions</div>
+    <div class="quick-actions">
+      <button class="btn btn-outline" onclick="go('routes')">＋ Add Route</button>
+      <button class="btn btn-outline" onclick="go('agents')">＋ Register Agent</button>
+      <button class="btn btn-outline" onclick="go('schedules')">＋ New Schedule</button>
+      <button class="btn btn-primary" onclick="quickBackup()">💾 Backup Now</button>
+    </div>
   </div>
   <div style="display:flex;align-items:center;gap:16px;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px;flex-wrap:wrap">
     <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:700">System Health</span>
@@ -413,8 +505,10 @@ async function bestRouteCard() {
 
 function fmt_uptime(s) {
   if (s === undefined || s === null) return '—';
-  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
-  return h ? `${h}h ${m}m` : `${m}m ${s%60}s`;
+  const d = Math.floor(s/86400), h = Math.floor((s%86400)/3600), m = Math.floor((s%3600)/60);
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m ${s%60}s`;
 }
 
 // ── BLOCKCHAIN ────────────────────────────────────────────────────────────────
@@ -422,6 +516,7 @@ let bcOffset = 0;
 const BC_LIMIT = 10;
 
 async function renderBlockchain(rid) {
+  document.getElementById('content').innerHTML = `<div class="section"><div class="table-wrap"><table><thead><tr><th>#</th><th>Time</th><th>Txns</th><th>Hash</th><th>Prev Hash</th></tr></thead><tbody>${skeletonRows(5)}</tbody></table></div></div>`;
   const [chainRes, verifyRes] = await Promise.allSettled([
     api(`/blockchain?limit=${BC_LIMIT}&offset=${bcOffset}`), api('/blockchain/verify')
   ]);
@@ -506,6 +601,7 @@ async function searchTxns() {
 
 // ── ROUTES ───────────────────────────────────────────────────────────────────
 async function renderRoutes(rid) {
+  document.getElementById('content').innerHTML = `<div class="section"><div class="table-wrap"><table><thead><tr><th>Destination</th><th>Latency</th><th>Throughput</th><th>Tags</th><th>Expires</th><th></th></tr></thead><tbody>${skeletonRows(6)}</tbody></table></div></div>`;
   const routesRes = await Promise.allSettled([api('/routes')]);
   if (rid && rid !== currentRenderId) return;
   const routes = routesRes[0].value || [];
@@ -629,6 +725,7 @@ async function applyRouteFilter() {
 
 // ── AGENTS ────────────────────────────────────────────────────────────────────
 async function renderAgents(rid) {
+  document.getElementById('content').innerHTML = `<div class="section"><div class="table-wrap"><table><thead><tr><th>ID</th><th>Status</th><th>Address</th><th>Capabilities</th><th>Expires</th><th>Actions</th></tr></thead><tbody>${skeletonRows(6)}</tbody></table></div></div>`;
   const agentsRes = await Promise.allSettled([api('/agents')]);
   if (rid && rid !== currentRenderId) return;
   const agents = agentsRes[0].value || [];
@@ -857,14 +954,23 @@ async function submitJob() {
 // ── EVENTS ────────────────────────────────────────────────────────────────────
 
 let sseRunning = false;
+let liveEventCount = 0;
 
 async function renderEvents(rid) {
-  const hist = await api('/events/history?limit=50').catch(()=>({events:[]}));
+  const content = document.getElementById('content');
+  if (content) content.innerHTML = `<div class="section"><div class="flex" style="margin-bottom:12px"><div class="section-title" style="margin:0">Events</div></div><div class="event-feed" style="height:200px">${skeletonRows(1,6).replace(/<\/td><td>/g,'</td><td style="width:auto">').replace(/class="skeleton"/g,'class="skeleton" style="height:12px"')}</div></div>`;
+  liveEventCount = 0;
+  const hist = await api('/events/history?limit=100').catch(()=>({events:[]}));
   if (rid && rid !== currentRenderId) return;
+  const evTab = 'live';
   document.getElementById('content').innerHTML = `
   <div class="section">
     <div class="flex" style="margin-bottom:12px">
-      <div class="section-title" style="margin:0">Live Event Stream</div>
+      <div class="section-title" style="margin:0;display:flex;align-items:center;gap:8px">
+        <span id="sse-pulse-dot" class="pulse-dot" style="display:none"></span>
+        Live Event Stream
+        <span id="sse-live-count" style="font-size:11px;color:var(--muted);margin-left:4px"></span>
+      </div>
       <div class="ml-auto flex">
         <select id="ev-type-filter" style="width:160px;padding:4px 8px;font-size:12px" onchange="restartSSE()">
           <option value="">All types</option>
@@ -880,16 +986,25 @@ async function renderEvents(rid) {
         <button class="btn btn-outline btn-sm" onclick="clearFeed()">Clear</button>
       </div>
     </div>
-    <div class="event-feed" id="event-feed">
-      ${(hist.events||[]).map(ev=>eventLine(ev)).join('')}
-    </div>
+    <div class="event-feed" id="event-feed"></div>
   </div>
   <div class="section">
-    <div class="section-title">History (last 50)</div>
-    <div style="color:var(--muted);font-size:12px">${(hist.events||[]).length} event(s) in history buffer</div>
+    <div class="section-title">History (last 100)</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Time</th><th>Type</th><th>Tenant</th><th>Detail</th></tr></thead>
+        <tbody>
+          ${(hist.events||[]).slice().reverse().map(ev=>`<tr>
+            <td class="mono">${fmtTime(ev.timestamp)}</td>
+            <td><span class="event-type ${esc(ev.type)}">${esc(ev.type)}</span></td>
+            <td class="mono">${esc(ev.tenant_id||'—')}</td>
+            <td class="mono">${esc(ev.data ? JSON.stringify(ev.data).substring(0,80) : '')}</td>
+          </tr>`).join('')||'<tr><td colspan="4" class="empty">No history</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+    <div style="margin-top:6px;font-size:11px;color:var(--muted)">${(hist.events||[]).length} event(s) in history buffer</div>
   </div>`;
-  const feed = document.getElementById('event-feed');
-  if (feed) feed.scrollTop = feed.scrollHeight;
   startSSE();
 }
 
@@ -909,18 +1024,29 @@ function startSSE() {
   const url = API + '/events' + (typeFilter ? '?type='+encodeURIComponent(typeFilter) : '');
   sseSource = new EventSource(url);
   sseRunning = true;
+  const dot = document.getElementById('sse-pulse-dot');
+  if (dot) dot.style.display = 'inline-block';
   sseSource.onmessage = (e) => {
     const feed = document.getElementById('event-feed');
     if (!feed) return;
     try {
       const ev = JSON.parse(e.data);
       const isAtBottom = feed.scrollHeight - feed.scrollTop <= feed.clientHeight + 40;
-      feed.innerHTML += eventLine(ev);
-      if (isAtBottom) feed.scrollTop = feed.scrollHeight;
+      const line = document.createElement('div');
+      line.innerHTML = eventLine(ev);
+      feed.insertBefore(line.firstChild, feed.firstChild);
+      liveEventCount++;
+      const cnt = document.getElementById('sse-live-count');
+      if (cnt) cnt.textContent = `(${liveEventCount} live)`;
+      // cap at 200 rows
+      while (feed.children.length > 200) feed.removeChild(feed.lastChild);
+      if (isAtBottom) feed.scrollTop = 0;
     } catch {}
   };
   sseSource.addEventListener('connected', () => {});
   sseSource.onerror = () => {
+    const dot2 = document.getElementById('sse-pulse-dot');
+    if (dot2) dot2.style.display = 'none';
     if (sseRunning) setTimeout(startSSE, 3000);
   };
   const btn = document.getElementById('sse-btn');
@@ -928,13 +1054,20 @@ function startSSE() {
 }
 
 function toggleSSE() {
-  if (sseRunning) { stopSSE(); document.getElementById('sse-btn').textContent = '▶ Resume'; }
-  else { startSSE(); }
+  if (sseRunning) {
+    stopSSE();
+    const btn = document.getElementById('sse-btn');
+    if (btn) btn.textContent = '▶ Resume';
+    const dot = document.getElementById('sse-pulse-dot');
+    if (dot) dot.style.display = 'none';
+  } else { startSSE(); }
 }
 
 function stopSSE() {
   sseRunning = false;
   if (sseSource) { sseSource.close(); sseSource = null; }
+  const dot = document.getElementById('sse-pulse-dot');
+  if (dot) dot.style.display = 'none';
 }
 
 function restartSSE() { startSSE(); }
@@ -1069,6 +1202,8 @@ async function doSearch() {
 
 // ── ADMIN ─────────────────────────────────────────────────────────────────────
 async function renderAdmin(rid) {
+  const content = document.getElementById('content');
+  if (content) content.innerHTML = skeletonCards(4) + `<div class="table-wrap"><table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>${skeletonRows(2,5)}</tbody></table></div>`;
   const [statusRes, tenantsRes, backupsRes, verifyRes, meshRes] = await Promise.allSettled([
     api('/admin/status'), api('/admin/tenants'), api('/admin/backup/list'), api('/blockchain/verify'), api('/admin/mesh')
   ]);
@@ -1230,6 +1365,41 @@ async function renderAdmin(rid) {
   </div>`;
   loadAuditLog();
   loadNotifyRules();
+  // proto debug section appended below
+  const adminContent = document.getElementById('content');
+  if (adminContent) {
+    const protoSection = document.createElement('div');
+    protoSection.className = 'section';
+    protoSection.style.marginTop = '16px';
+    protoSection.innerHTML = `
+    <div class="section-title collapsible-hdr" onclick="toggleProtoDebug()">
+      Protocol Debug <span id="proto-debug-arrow" style="font-size:12px;color:var(--muted)">▶ expand</span>
+    </div>
+    <div class="collapsible-body" id="proto-debug-body">
+      <div style="padding-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div class="card">
+          <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px">Send Data</div>
+          <div class="form-group" style="margin-bottom:8px"><label>Peer ID</label><input id="proto-data-peer" placeholder="peer-01" style="width:100%;margin-top:4px"></div>
+          <div class="form-group" style="margin-bottom:8px"><label>Payload (will be base64 encoded)</label><textarea id="proto-data-payload" placeholder="Enter payload…" style="min-height:60px;width:100%;margin-top:4px"></textarea></div>
+          <button class="btn btn-primary btn-sm" onclick="sendProtoData()">Send Data</button>
+        </div>
+        <div class="card">
+          <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px">Send Control</div>
+          <div class="form-group" style="margin-bottom:8px"><label>Peer ID</label><input id="proto-ctrl-peer" placeholder="peer-01" style="width:100%;margin-top:4px"></div>
+          <div class="form-group" style="margin-bottom:8px"><label>Command</label>
+            <select id="proto-ctrl-cmd" style="width:100%;margin-top:4px">
+              <option value="ping">ping</option>
+              <option value="reset">reset</option>
+              <option value="sync">sync</option>
+              <option value="disconnect">disconnect</option>
+            </select>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="sendProtoControl()">Send Control</button>
+        </div>
+      </div>
+    </div>`;
+    adminContent.appendChild(protoSection);
+  }
 }
 
 async function loadAuditLog() {
@@ -1376,6 +1546,7 @@ function fmt_bytes(b) {
 
 // ── SCHEDULES ──────────────────────────────────────────────────────────────────
 async function renderSchedules(rid) {
+  document.getElementById('content').innerHTML = `<div class="section"><div class="table-wrap"><table><thead><tr><th>Name</th><th>Cron</th><th>Capability</th><th>Agent</th><th>Enabled</th><th>Last Run</th><th>Next Run</th><th></th></tr></thead><tbody>${skeletonRows(8)}</tbody></table></div></div>`;
   const res = await api('/schedules').catch(() => ({schedules:[]}));
   if (rid && rid !== currentRenderId) return;
   const schedules = (res && res.schedules) ? res.schedules : (Array.isArray(res) ? res : []);
@@ -1669,7 +1840,219 @@ async function checkAgentsHealth() {
 
 function fmtBytes(b) { return fmt_bytes(b); }
 
+// ── SKELETON HELPERS ─────────────────────────────────────────────────────────
+function skeletonRows(cols, rows=3) {
+  return Array(rows).fill(0).map(()=>`<tr class="skeleton-row">${Array(cols).fill(0).map(()=>`<td><div class="skeleton"></div></td>`).join('')}</tr>`).join('');
+}
+function skeletonCards(n=4) {
+  return `<div class="cards">${Array(n).fill(0).map(()=>`<div class="card"><div class="skeleton" style="height:12px;width:60%;margin-bottom:8px"></div><div class="skeleton" style="height:32px;width:80%"></div></div>`).join('')}</div>`;
+}
+
+// ── QUICK BACKUP ──────────────────────────────────────────────────────────────
+async function quickBackup() {
+  try { await api('/admin/backup',{method:'POST'}); toast('Backup completed successfully'); }
+  catch(e) { toast('Backup failed: '+e.message, false); }
+}
+
+// ── PROTO DEBUG ───────────────────────────────────────────────────────────────
+function toggleProtoDebug() {
+  const body = document.getElementById('proto-debug-body');
+  const arrow = document.getElementById('proto-debug-arrow');
+  if (!body) return;
+  if (body.style.maxHeight === '0px' || !body.style.maxHeight) {
+    body.style.maxHeight = '500px';
+    if (arrow) arrow.textContent = '▼ collapse';
+  } else {
+    body.style.maxHeight = '0';
+    if (arrow) arrow.textContent = '▶ expand';
+  }
+}
+
+async function sendProtoData() {
+  const peerId = (document.getElementById('proto-data-peer')||{}).value||'';
+  const payload = (document.getElementById('proto-data-payload')||{}).value||'';
+  if (!peerId.trim()) { toast('Peer ID required', false); return; }
+  const payload_b64 = btoa(unescape(encodeURIComponent(payload)));
+  try {
+    await post('/proto/data', {peer_id: peerId.trim(), payload_b64});
+    toast('Data sent to '+peerId.trim());
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function sendProtoControl() {
+  const peerId = (document.getElementById('proto-ctrl-peer')||{}).value||'';
+  const command = (document.getElementById('proto-ctrl-cmd')||{}).value||'ping';
+  if (!peerId.trim()) { toast('Peer ID required', false); return; }
+  try {
+    await post('/proto/control', {peer_id: peerId.trim(), command});
+    toast('Control "'+command+'" sent to '+peerId.trim());
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+// ── NOTIFICATIONS PAGE ────────────────────────────────────────────────────────
+async function renderNotifs(rid) {
+  const content = document.getElementById('content');
+  if (content) content.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Type</th><th>Target</th><th>Message</th><th>Status</th><th>Sent</th><th>Created</th><th></th></tr></thead><tbody>${skeletonRows(7)}</tbody></table></div>`;
+  const res = await api('/admin/notifications').catch(()=>({notifications:[]}));
+  if (rid && rid !== currentRenderId) return;
+  const notifs = res.notifications || [];
+  document.getElementById('content').innerHTML = `
+  <div class="section">
+    <div class="flex" style="margin-bottom:12px">
+      <div class="section-title" style="margin:0">${notifs.length} Notification(s)</div>
+      <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="renderNotifs(currentRenderId)">↻</button></div>
+    </div>
+    <div class="table-wrap" style="margin-bottom:16px">
+      <table>
+        <thead><tr><th>Type</th><th>Target</th><th>Message</th><th>Status</th><th>Sent</th><th>Created</th><th></th></tr></thead>
+        <tbody>
+          ${notifs.map(n=>`<tr>
+            <td><span class="pill ${n.type==='email'?'healthy':n.type==='slack'?'sat':'unknown'}">${esc(n.type)}</span></td>
+            <td class="mono">${esc(n.target)}</td>
+            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(n.message)}">${esc(n.message)}</td>
+            <td><span class="pill ${n.status==='sent'?'healthy':n.status==='failed'?'degraded':'unknown'}">${esc(n.status||'pending')}</span></td>
+            <td class="mono">${fmtTime(n.sent_at)}</td>
+            <td class="mono">${fmtTime(n.created_at)}</td>
+            <td><button class="btn btn-danger btn-sm" onclick="deleteNotif(${JSON.stringify(n.id)})">✕</button></td>
+          </tr>`).join('')||'<tr><td colspan="7" class="empty">No notifications</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="section">
+    <div class="section-title">Send Notification</div>
+    <div class="card">
+      <div class="form-row">
+        <div class="form-group"><label>Type</label>
+          <select id="notif-send-type" style="width:120px">
+            <option value="email">email</option>
+            <option value="webhook">webhook</option>
+            <option value="slack">slack</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex:1"><label>Target</label><input id="notif-send-target" placeholder="user@example.com or webhook URL" style="min-width:240px"></div>
+      </div>
+      <div class="form-group" style="margin-bottom:8px"><label>Message</label><textarea id="notif-send-message" placeholder="Notification message…" style="min-height:70px"></textarea></div>
+      <button class="btn btn-primary" onclick="sendNotification()">Send Notification</button>
+    </div>
+  </div>`;
+}
+
+async function sendNotification() {
+  const type = (document.getElementById('notif-send-type')||{}).value||'email';
+  const target = ((document.getElementById('notif-send-target')||{}).value||'').trim();
+  const message = ((document.getElementById('notif-send-message')||{}).value||'').trim();
+  if (!target || !message) { toast('Target and message required', false); return; }
+  try {
+    await post('/admin/notifications', {type, target, message});
+    toast('Notification sent'); renderNotifs(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function deleteNotif(id) {
+  try {
+    await del('/admin/notifications/'+encodeURIComponent(id));
+    toast('Notification deleted'); renderNotifs(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+// ── MESH PEERS PAGE ───────────────────────────────────────────────────────────
+async function renderMesh(rid) {
+  const content = document.getElementById('content');
+  if (content) content.innerHTML = `<div class="table-wrap"><table><thead><tr><th>ID</th><th>Address</th><th>Latency</th><th>Status</th><th>Last Seen</th></tr></thead><tbody>${skeletonRows(5)}</tbody></table></div>`;
+  const [peersRes, meshRes] = await Promise.allSettled([
+    api('/mesh/peers').catch(()=>({peers:[]})), api('/admin/mesh').catch(()=>({}))
+  ]);
+  if (rid && rid !== currentRenderId) return;
+  const peers = ((peersRes.value||{}).peers) || [];
+  const mesh = meshRes.value || {};
+  document.getElementById('content').innerHTML = `
+  <div class="section">
+    <div class="flex" style="margin-bottom:12px">
+      <div class="section-title" style="margin:0">${peers.length} Mesh Peer(s)</div>
+      <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="renderMesh(currentRenderId)">↻</button></div>
+    </div>
+    <div class="table-wrap" style="margin-bottom:16px">
+      <table>
+        <thead><tr><th>ID</th><th>Address</th><th>Latency</th><th>Status</th><th>Last Seen</th></tr></thead>
+        <tbody>
+          ${peers.map(p=>`<tr>
+            <td class="mono"><strong>${esc(p.id)}</strong></td>
+            <td class="mono">${esc(p.address)}</td>
+            <td>${p.latency_ms != null ? p.latency_ms+'ms' : '—'}</td>
+            <td><span class="pill ${p.status==='online'?'healthy':p.status==='offline'?'degraded':'unknown'}" style="${p.status==='online'?'':''}">
+              ${p.status==='online'?'<span class="pulse-dot" style="display:inline-block;margin-right:4px"></span>':''}${esc(p.status||'unknown')}</span></td>
+            <td class="mono">${fmtTime(p.last_seen)}</td>
+          </tr>`).join('')||'<tr><td colspan="5" class="empty">No peers connected</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="section">
+    <div class="section-title">Mesh Config</div>
+    <pre style="background:var(--input);border:1px solid var(--border);border-radius:var(--radius);padding:14px;font-family:monospace;font-size:12px;overflow:auto;color:var(--accent2);max-height:320px;white-space:pre-wrap;word-break:break-all">${esc(JSON.stringify(mesh,null,2))}</pre>
+  </div>`;
+}
+
+// ── API KEY MODAL ─────────────────────────────────────────────────────────────
+function showApiKeyModal() {
+  const m = document.getElementById('api-key-modal');
+  if (m) m.style.display = 'flex';
+}
+
+function closeApiKeyModal() {
+  const m = document.getElementById('api-key-modal');
+  if (m) m.style.display = 'none';
+}
+
+function saveApiKeyModal() {
+  const input = document.getElementById('modal-api-key');
+  const val = input ? input.value.trim() : '';
+  if (val) {
+    apiKey = val;
+    localStorage.setItem('spectral_api_key', val);
+    toast('API Key saved');
+  }
+  closeApiKeyModal();
+}
+
+function skipApiKeyModal() { closeApiKeyModal(); }
+
+// ── KEYBOARD SHORTCUTS ────────────────────────────────────────────────────────
+function showShortcutsModal() {
+  const m = document.getElementById('shortcuts-modal');
+  if (m) m.style.display = 'flex';
+}
+
+function closeShortcutsModal() {
+  const m = document.getElementById('shortcuts-modal');
+  if (m) m.style.display = 'none';
+}
+
+(function() {
+  let _kbLastKey = '';
+  let _kbLastTime = 0;
+  const _kbNavMap = {o:'overview', b:'blockchain', r:'routes', a:'agents', e:'events', k:'kv', s:'schedules', n:'notifs', m:'mesh'};
+  document.addEventListener('keydown', function(ev) {
+    const tag = (ev.target.tagName||'').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    const key = ev.key;
+    const now = Date.now();
+    if (key === '?') { showShortcutsModal(); return; }
+    if (key === 'Escape') { closeShortcutsModal(); closeApiKeyModal(); return; }
+    if (_kbLastKey === 'g' && (now - _kbLastTime) < 1000) {
+      const page = _kbNavMap[key];
+      if (page) { go(page); _kbLastKey = ''; return; }
+    }
+    if (key === 'r') { refresh(); _kbLastKey = ''; return; }
+    _kbLastKey = key;
+    _kbLastTime = now;
+  });
+})();
+
 // ── BOOT ────────────────────────────────────────────────────────────────────
+if (!apiKey) { setTimeout(showApiKeyModal, 600); }
 go('overview');
 </script>
 </body>
