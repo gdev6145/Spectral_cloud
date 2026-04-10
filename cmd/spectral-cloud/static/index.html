@@ -908,8 +908,8 @@ async function renderRoutes(rid) {
   document.getElementById('content').innerHTML = `<div class="section"><div class="table-wrap"><table><thead><tr><th>Destination</th><th>Latency</th><th>Throughput</th><th>Tags</th><th>Expires</th><th></th></tr></thead><tbody>${skeletonRows(6)}</tbody></table></div></div>`;
   const [routesRes, statsRes] = await Promise.allSettled([api('/routes'), api('/routes/stats').catch(()=>null)]);
   if (rid && rid !== currentRenderId) return;
-  const routes = routesRes[0].value || [];
-  const routeStats = statsRes[1]?.value || null;
+  const routes = routesRes.value || [];
+  const routeStats = statsRes.value || null;
 
   const statsCards = routeStats ? `<div class="cards" style="margin-bottom:16px">
     <div class="card accent"><div class="card-label">Total Routes</div><div class="card-value">${routeStats.total}</div></div>
@@ -957,7 +957,23 @@ async function renderRoutes(rid) {
             <td>${r.metric ? r.metric.latency : '—'}ms</td><td>${r.metric ? r.metric.throughput : '—'}</td>
             <td class="mono">${r.tags?Object.entries(r.tags).map(([k,v])=>k+':'+v).join(', '):'—'}</td>
             <td class="mono">${r.expires_at?fmtTime(r.expires_at):'∞'}</td>
-            <td><button class="btn btn-danger btn-sm" onclick="deleteRoute('${esc(r.destination)}')">✕</button></td>
+            <td class="flex">
+              <button class="btn btn-outline btn-sm" onclick="toggleRouteEdit(${JSON.stringify(r.destination)})">✎</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteRoute('${esc(r.destination)}')">✕</button>
+            </td>
+          </tr>
+          <tr id="route-edit-${esc(r.destination.replace(/[^a-zA-Z0-9_-]/g,'_'))}" style="display:none;background:var(--surface)">
+            <td colspan="6" style="padding:10px 16px">
+              <div class="form-row" style="margin:0;flex-wrap:wrap;gap:10px;align-items:flex-end">
+                <div class="form-group"><label>Latency (ms)</label><input id="re-lat-${esc(r.destination.replace(/[^a-zA-Z0-9_-]/g,'_'))}" type="number" value="${r.metric?r.metric.latency:0}" style="width:80px"></div>
+                <div class="form-group"><label>Throughput</label><input id="re-thr-${esc(r.destination.replace(/[^a-zA-Z0-9_-]/g,'_'))}" type="number" value="${r.metric?r.metric.throughput:0}" style="width:80px"></div>
+                <div class="form-group"><label>TTL (s, 0=∞)</label><input id="re-ttl-${esc(r.destination.replace(/[^a-zA-Z0-9_-]/g,'_'))}" type="number" value="0" style="width:80px"></div>
+                <div class="form-group"><label>Satellite</label><select id="re-sat-${esc(r.destination.replace(/[^a-zA-Z0-9_-]/g,'_'))}" style="width:80px"><option value="" ${!r.satellite?'selected':''}>No</option><option value="true" ${r.satellite?'selected':''}>Yes</option></select></div>
+                <div class="form-group"><label>Tags (k:v,…)</label><input id="re-tags-${esc(r.destination.replace(/[^a-zA-Z0-9_-]/g,'_'))}" value="${r.tags?Object.entries(r.tags).map(([k,v])=>k+':'+v).join(','):''}" style="width:140px"></div>
+                <button class="btn btn-primary btn-sm" onclick="updateRoute(${JSON.stringify(r.destination)})">Save</button>
+                <button class="btn btn-outline btn-sm" onclick="toggleRouteEdit(${JSON.stringify(r.destination)})">Cancel</button>
+              </div>
+            </td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -1046,6 +1062,32 @@ async function deleteRoute(dest) {
   catch(e) { toast('Error: '+e.message, false); }
 }
 
+function toggleRouteEdit(dest) {
+  const sk = dest.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const row = document.getElementById('route-edit-'+sk);
+  if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}
+
+async function updateRoute(dest) {
+  const sk = dest.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const lat = parseInt((document.getElementById('re-lat-'+sk)||{}).value||'0', 10) || 0;
+  const thr = parseInt((document.getElementById('re-thr-'+sk)||{}).value||'0', 10) || 0;
+  const ttl = parseInt((document.getElementById('re-ttl-'+sk)||{}).value||'0', 10) || 0;
+  const sat = ((document.getElementById('re-sat-'+sk)||{}).value||'') === 'true';
+  const tagsRaw = ((document.getElementById('re-tags-'+sk)||{}).value||'').trim();
+  const params = new URLSearchParams({destination: dest, latency: lat, throughput: thr});
+  if (ttl > 0) params.set('ttlSeconds', ttl);
+  if (sat) params.set('satellite', 'true');
+  tagsRaw.split(',').forEach(t => { const [k,v] = t.split(':'); if (k && v) params.append('tag', k.trim()+':'+v.trim()); });
+  try {
+    // delete then re-add with updated values (route system uses upsert semantics)
+    await del('/routes?destination='+encodeURIComponent(dest));
+    await api('/routes?'+params, {method: 'POST'});
+    toast('Route updated');
+    renderRoutes(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
 async function applyRouteFilter() {
   const lat = (document.getElementById('rf-lat') || {}).value;
   const thr = (document.getElementById('rf-thr') || {}).value;
@@ -1080,8 +1122,8 @@ async function renderAgents(rid) {
   document.getElementById('content').innerHTML = `<div class="section"><div class="table-wrap"><table><thead><tr><th>ID</th><th>Status</th><th>Address</th><th>Capabilities</th><th>Expires</th><th>Actions</th></tr></thead><tbody>${skeletonRows(6)}</tbody></table></div></div>`;
   const [agentsRes, statsRes] = await Promise.allSettled([api('/agents'), api('/agents/stats').catch(()=>null)]);
   if (rid && rid !== currentRenderId) return;
-  const agentsAll = agentsRes[0].value || [];
-  const agentStats = statsRes[1] && statsRes[1].value ? statsRes[1].value : null;
+  const agentsAll = agentsRes.value || [];
+  const agentStats = statsRes.value || null;
   const agents = agentCapFilter ? agentsAll.filter(a => (a.capabilities||[]).includes(agentCapFilter)) : agentsAll;
   const allCaps = [...new Set(agentsAll.flatMap(a => a.capabilities||[]))].sort();
 
@@ -1106,14 +1148,16 @@ async function renderAgents(rid) {
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>ID</th><th>Status</th><th>Address</th><th>Capabilities</th><th>Expires</th><th>Actions</th></tr></thead>
+        <thead><tr><th>ID</th><th>Status</th><th>Address</th><th>Capabilities</th><th>Tags</th><th>Last Seen</th><th>Expires</th><th>Actions</th></tr></thead>
         <tbody>
-          ${agents.length === 0 ? `<tr><td colspan="6">${emptyState('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>', 'No agents registered', 'Register your first agent to start dispatching jobs.', 'Register Agent', "document.getElementById('ag-id')?.focus()")}</td></tr>` :
+          ${agents.length === 0 ? `<tr><td colspan="8">${emptyState('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>', 'No agents registered', 'Register your first agent to start dispatching jobs.', 'Register Agent', "document.getElementById('ag-id')?.focus()")}</td></tr>` :
           agents.map(a=>`<tr>
             <td><strong>${esc(a.id)}</strong></td>
             <td><span class="pill ${esc(a.status)}">${esc(a.status)}</span></td>
             <td class="mono">${esc(a.addr||'—')}</td>
             <td class="mono">${(a.capabilities||[]).join(', ')||'—'}</td>
+            <td class="mono">${a.tags&&Object.keys(a.tags).length?Object.entries(a.tags).map(([k,v])=>`<span class="pill unknown" style="font-size:10px">${esc(k)}:${esc(v)}</span>`).join(' '):'—'}</td>
+            <td class="mono" style="font-size:11px">${a.last_seen?fmtTime(a.last_seen):'—'}</td>
             <td class="mono">${a.expires_at?fmtTime(a.expires_at):'∞'}</td>
             <td class="flex" style="gap:4px;flex-wrap:wrap">
               <select onchange="setAgentStatus('${esc(a.id)}',this.value)" style="width:100px;padding:3px 6px;font-size:11px">
@@ -1128,7 +1172,7 @@ async function renderAgents(rid) {
             </td>
           </tr>
           <tr id="dispatch-row-${esc(a.id)}" style="display:none;background:var(--surface)">
-            <td colspan="6" style="padding:12px">
+            <td colspan="8" style="padding:12px">
               <div class="form-row" style="margin:0">
                 <div class="form-group"><label>Capability</label><input id="disp-cap-${esc(a.id)}" value="${esc((a.capabilities||[])[0]||'')}" style="width:120px"></div>
                 <div class="form-group" style="flex:1"><label>Payload (JSON)</label><input id="disp-pay-${esc(a.id)}" placeholder='{"key":"val"}' style="width:100%"></div>
@@ -1152,6 +1196,7 @@ async function renderAgents(rid) {
       </div>
       <div class="form-row">
         <div class="form-group"><label>Capabilities (comma-sep)</label><input id="ag-caps" placeholder="inference,embeddings" style="min-width:240px"></div>
+        <div class="form-group"><label>Tags (k:v,…)</label><input id="ag-tags" placeholder="region:us,tier:1" style="min-width:200px"></div>
         <button class="btn btn-primary" style="margin-top:18px" onclick="registerAgent()">Register</button>
       </div>
     </div>
@@ -1258,12 +1303,15 @@ async function registerAgent() {
   const id = document.getElementById('ag-id').value.trim();
   if (!id) { toast('ID required', false); return; }
   const caps = document.getElementById('ag-caps').value.split(',').map(s=>s.trim()).filter(Boolean);
+  const tags = {};
+  ((document.getElementById('ag-tags')||{}).value||'').split(',').forEach(t=>{const [k,v]=t.split(':');if(k&&v)tags[k.trim()]=v.trim();});
   try {
     await post('/agents/register', {
       id, addr: document.getElementById('ag-addr').value.trim(),
       status: document.getElementById('ag-status').value,
       ttl_seconds: parseInt(document.getElementById('ag-ttl').value)||300,
-      capabilities: caps
+      capabilities: caps,
+      tags: Object.keys(tags).length ? tags : undefined
     });
     toast('Agent registered'); renderAgents(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
@@ -1282,7 +1330,7 @@ async function heartbeat(id) {
 
 async function deregisterAgent(id) {
   if (!confirm('Deregister '+id+'?')) return;
-  try { await del('/agents?id=${encodeURIComponent(id)}'); toast('Agent removed'); renderAgents(currentRenderId); }
+  try { await del(`/agents?id=${encodeURIComponent(id)}`); toast('Agent removed'); renderAgents(currentRenderId); }
   catch(e) { toast('Error: '+e.message, false); }
 }
 
@@ -1330,6 +1378,7 @@ async function renderJobs(rid) {
               <td onclick="event.stopPropagation()" style="white-space:nowrap">
                 ${canCancel?`<button class="btn btn-danger btn-sm" onclick="cancelJob('${esc(j.id)}')">✕ Cancel</button>`:''}
                 ${canComplete?`<button class="btn btn-outline btn-sm" onclick="updateJob('${esc(j.id)}','done','')">✓ Done</button> <button class="btn btn-outline btn-sm" onclick="updateJob('${esc(j.id)}','failed','error')">✗ Fail</button>`:''}
+                ${(!canCancel && !canComplete)?`<button class="btn btn-outline btn-sm" onclick="retryJob('${esc(j.id)}')">↻ Retry</button>`:''}
               </td>
             </tr>
             <tr id="job-detail-${esc(j.id)}" class="detail-row" style="display:none">
@@ -1390,6 +1439,18 @@ async function cancelJob(id) {
   try {
     await del('/agents/jobs/'+encodeURIComponent(id));
     toast('Job cancelled');
+    renderJobs(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function retryJob(id) {
+  // Look up the original job to copy its capability, agent_id, and payload
+  try {
+    const allJobs = (await api('/agents/jobs')).jobs || [];
+    const orig = allJobs.find(j => j.id === id);
+    if (!orig) { toast('Job not found', false); return; }
+    const j = await post('/agents/jobs', {capability: orig.capability || '', agent_id: orig.agent_id || '', payload: orig.payload || {}});
+    toast('Retried as job '+j.id);
     renderJobs(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
 }
@@ -1502,11 +1563,14 @@ async function renderEvents(rid) {
       <table>
         <thead><tr><th>Time</th><th>Type</th><th>Tenant</th><th>Detail</th></tr></thead>
         <tbody>
-          ${(hist.events||[]).slice().reverse().map(ev=>`<tr>
+          ${(hist.events||[]).slice().reverse().map((ev,i)=>`<tr style="cursor:pointer" onclick="toggleEvDetail(${i})">
             <td class="mono">${fmtTime(ev.timestamp)}</td>
             <td><span class="event-type ${esc(ev.type)}">${esc(ev.type)}</span></td>
             <td class="mono">${esc(ev.tenant_id||'—')}</td>
-            <td class="mono">${esc(ev.data ? JSON.stringify(ev.data).substring(0,80) : '')}</td>
+            <td class="mono" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(ev.data ? JSON.stringify(ev.data).substring(0,80) : '')}</td>
+          </tr>
+          <tr id="ev-detail-${i}" style="display:none;background:var(--surface)">
+            <td colspan="4" style="padding:8px 16px"><pre style="margin:0;white-space:pre-wrap;word-break:break-all;font-size:11px">${esc(JSON.stringify(ev.data||{}, null, 2))}</pre></td>
           </tr>`).join('')||'<tr><td colspan="4" class="empty">No history</td></tr>'}
         </tbody>
       </table>
@@ -1523,6 +1587,11 @@ function eventLine(ev) {
     <span class="event-type ${esc(ev.type)}">${esc(ev.type)}</span>
     <span class="event-data">${esc(data)}</span>
   </div>`;
+}
+
+function toggleEvDetail(i) {
+  const row = document.getElementById('ev-detail-'+i);
+  if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
 }
 
 function startSSE() {
@@ -2536,9 +2605,10 @@ async function importRoutesFile(input) {
 async function checkAgentsHealth() {
   try {
     const res = await api('/agents/health');
-    const agents = res.agents || [];
-    const healthy = agents.filter(a=>a.status==='healthy').length;
-    toast('Health: '+healthy+'/'+agents.length+' agents healthy');
+    const results = res.results || [];
+    const healthy = results.filter(r=>r.healthy).length;
+    toast('Health: '+healthy+'/'+results.length+' agents healthy');
+    go('healthchecks');
   } catch(e) { toast('Health check failed: '+e.message, false); }
 }
 
