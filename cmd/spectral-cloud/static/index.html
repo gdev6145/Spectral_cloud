@@ -693,7 +693,7 @@ async function renderOverview(rid) {
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
     <div class="section" style="margin:0">
       <div class="section-title">Best Route</div>
-      ${(()=>{ const b=bestRouteRes.value; return b ? `<div class="card" style="max-width:320px"><div class="card-label">Best Hop</div><div style="font-size:15px;font-weight:600;margin:4px 0">${esc(b.destination)}</div><div class="card-sub">latency ${b.metric?b.metric.latency:"—"}ms</div></div>` : `<div class="card-sub">No routes available</div>`; })()}
+      ${(()=>{ const b=bestRouteRes.value; return b ? `<div class="card" style="max-width:320px"><div class="card-label">Best Next Hop</div><div style="font-size:15px;font-weight:600;margin:4px 0">${esc(b.destination)}</div><div class="card-sub">latency ${b.metric?b.metric.latency:"—"}ms · thr ${b.metric?b.metric.throughput:'—'} · ${b.satellite?'🛰 satellite':'terrestrial'}${b.metric&&b.metric.tags&&Object.keys(b.metric.tags).length?' · '+Object.entries(b.metric.tags).map(([k,v])=>k+':'+v).join(', '):''}</div></div>` : `<div class="card-sub">No routes available</div>`; })()}
     </div>
     <div class="section" style="margin:0">
       <div class="section-title">Tenant Metrics</div>
@@ -1366,6 +1366,18 @@ async function renderJobs(rid) {
       <textarea id="job-payload" placeholder='{"prompt":"hello"}'></textarea></div>
       <button class="btn btn-primary" style="margin-top:12px" onclick="submitJob()">Submit Job</button>
     </div>
+  </div>
+  <div class="section">
+    <div class="section-title">Claim Next Pending Job</div>
+    <div class="card">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Agent workers use this to claim the next pending job assigned to them.</div>
+      <div class="form-row">
+        <div class="form-group"><label>Agent ID</label><input id="claim-agent-id" placeholder="edge-01" style="width:160px"></div>
+        <div class="form-group"><label>Capability (optional)</label><input id="claim-capability" placeholder="inference" style="width:140px"></div>
+        <button class="btn btn-outline" style="margin-top:18px" onclick="claimJob()">⬇ Claim Job</button>
+      </div>
+      <div id="claim-result" style="margin-top:10px"></div>
+    </div>
   </div>`;
 
   if (jobAutoRefresh) {
@@ -1416,6 +1428,33 @@ async function submitJob() {
     toast('Job submitted');
     renderJobs(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function claimJob() {
+  const agentId = ((document.getElementById('claim-agent-id')||{}).value||'').trim();
+  const capability = ((document.getElementById('claim-capability')||{}).value||'').trim();
+  if (!agentId && !capability) { toast('Agent ID or capability required', false); return; }
+  const resultEl = document.getElementById('claim-result');
+  try {
+    let u = '/agents/jobs/claim?';
+    if (agentId) u += 'agent_id='+encodeURIComponent(agentId);
+    if (agentId && capability) u += '&';
+    if (capability) u += 'capability='+encodeURIComponent(capability);
+    const j = await api(u);
+    if (resultEl) resultEl.innerHTML = `
+      <div class="alert ok" style="margin-bottom:8px">✓ Claimed job <span class="mono">${esc(j.id)}</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px">
+        <div><strong>Agent:</strong> <span class="mono">${esc(j.agent_id||'—')}</span></div>
+        <div><strong>Capability:</strong> <span class="mono">${esc(j.capability||'—')}</span></div>
+        <div><strong>Status:</strong> <span class="pill ${esc(j.status)}">${esc(j.status)}</span></div>
+        <div><strong>Created:</strong> <span class="mono">${fmtTime(j.created_at)}</span></div>
+      </div>
+      <div style="margin-top:8px;font-size:11px;color:var(--muted)">Payload:</div>
+      <pre style="margin:4px 0">${esc(JSON.stringify(j.payload||{}, null, 2))}</pre>`;
+    renderJobs(currentRenderId);
+  } catch(e) {
+    if (resultEl) resultEl.innerHTML = `<div class="alert err">No pending job available for this agent/capability.</div>`;
+  }
 }
 
 
@@ -1548,23 +1587,52 @@ async function renderKV(rid) {
   const entries = (r.entries && r.entries.length) ? r.entries : [];
   let rows = entries.map(e => {
     const exp = e.expires_at ? `<span class="mono">${esc(e.expires_at.substring(0,19))}</span>` : '<span class="muted">—</span>';
-    return `<tr>
-      <td class="mono">${esc(e.key)}</td>
-      <td>${esc(e.value)}</td>
+    return `<tr style="cursor:pointer" onclick="kvToggleRow(${JSON.stringify(e.key)})">
+      <td class="mono"><strong>${esc(e.key)}</strong></td>
+      <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.value)}</td>
       <td>${exp}</td>
-      <td>
-        <button class="btn btn-outline btn-sm btn-danger" onclick="kvDelete(${JSON.stringify(e.key)})">Del</button>
+      <td onclick="event.stopPropagation()">
+        <button class="btn btn-outline btn-sm" onclick="kvInspect(${JSON.stringify(e.key)})">✎</button>
+        <button class="btn btn-outline btn-sm btn-danger" onclick="kvDelete(${JSON.stringify(e.key)})">✕</button>
+      </td>
+    </tr>
+    <tr id="kv-row-${esc(e.key.replace(/[^a-zA-Z0-9_-]/g,'_'))}" style="display:none;background:var(--surface)">
+      <td colspan="4" style="padding:10px 16px">
+        <div style="display:grid;grid-template-columns:1fr auto;gap:12px;align-items:start">
+          <div>
+            <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Full Value</div>
+            <pre style="margin:0;white-space:pre-wrap;word-break:break-all">${esc(e.value)}</pre>
+          </div>
+          <div style="min-width:220px">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Update Value</div>
+            <textarea id="kv-inline-val-${esc(e.key.replace(/[^a-zA-Z0-9_-]/g,'_'))}" style="width:100%;font-family:monospace;font-size:12px;min-height:52px">${esc(e.value)}</textarea>
+            <div class="form-row" style="margin-top:4px;gap:6px">
+              <input id="kv-inline-ttl-${esc(e.key.replace(/[^a-zA-Z0-9_-]/g,'_'))}" type="number" value="0" min="0" style="width:70px;padding:3px 6px;font-size:12px" placeholder="TTL s">
+              <button class="btn btn-primary btn-sm" onclick="kvInlineUpdate(${JSON.stringify(e.key)})">Save</button>
+            </div>
+          </div>
+        </div>
       </td>
     </tr>`;
   }).join('');
   document.getElementById('content').innerHTML = `
     <div class="section">
-      <div class="section-title">Set / Update Key</div>
+      <div class="flex" style="margin-bottom:10px">
+        <div class="section-title" style="margin:0">Set / Update Key</div>
+        <div class="ml-auto">
+          <button class="btn btn-outline btn-sm" onclick="renderKV(currentRenderId)">↻</button>
+        </div>
+      </div>
       <div class="form-row">
         <div class="form-group"><label>Key</label><input id="kv-key" placeholder="config.debug" style="width:200px"></div>
         <div class="form-group"><label>Value</label><input id="kv-val" placeholder="true" style="width:200px"></div>
         <div class="form-group"><label>TTL (s, 0=forever)</label><input id="kv-ttl" type="number" value="0" style="width:100px"></div>
         <div class="form-group"><label>&nbsp;</label><button class="btn btn-primary" onclick="kvSet()">Set</button></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Key Lookup</label><input id="kv-lookup" placeholder="config.debug" style="width:200px"></div>
+        <div class="form-group"><label>&nbsp;</label><button class="btn btn-outline" onclick="kvLookup()">Get</button></div>
+        <div id="kv-lookup-result" style="align-self:center"></div>
       </div>
       <div class="form-row">
         <div class="form-group"><label>Prefix filter</label><input id="kv-prefix" placeholder="cfg:" style="width:160px"></div>
@@ -1577,7 +1645,7 @@ async function renderKV(rid) {
         <tbody>${rows || '<tr><td colspan="4" style="text-align:center;color:var(--muted)">No entries</td></tr>'}</tbody>
       </table>
     </div>
-    <p style="color:var(--muted);font-size:12px">Total: ${r.count}</p>
+    <p style="color:var(--muted);font-size:12px">Total: ${r.count} — Click a row to expand and edit inline.</p>
   `;
 }
 
@@ -1601,17 +1669,60 @@ async function kvDelete(key) {
   } catch(e) { toast('Error: '+e.message, true); }
 }
 
+function kvToggleRow(key) {
+  const safeKey = key.replace(/[^a-zA-Z0-9_-]/g,'_');
+  const row = document.getElementById('kv-row-'+safeKey);
+  if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}
+
+function kvInspect(key) {
+  kvToggleRow(key);
+}
+
+async function kvLookup() {
+  const key = ((document.getElementById('kv-lookup')||{}).value||'').trim();
+  if (!key) { toast('Key required', false); return; }
+  const el = document.getElementById('kv-lookup-result');
+  try {
+    const e = await api('/kv/'+encodeURIComponent(key));
+    if (el) el.innerHTML = `<span class="pill healthy" style="cursor:default" title="${esc(e.value)}">${esc(key)}: ${esc(e.value.length>30?e.value.substring(0,30)+'…':e.value)}</span>`;
+    // prefill the Set form for easy editing
+    const kIn = document.getElementById('kv-key');
+    const vIn = document.getElementById('kv-val');
+    if (kIn) kIn.value = e.key;
+    if (vIn) vIn.value = e.value;
+  } catch(e2) {
+    if (el) el.innerHTML = `<span class="pill degraded">${esc(key)}: not found</span>`;
+  }
+}
+
+async function kvInlineUpdate(key) {
+  const safeKey = key.replace(/[^a-zA-Z0-9_-]/g,'_');
+  const valEl = document.getElementById('kv-inline-val-'+safeKey);
+  const ttlEl = document.getElementById('kv-inline-ttl-'+safeKey);
+  const val = valEl ? valEl.value : '';
+  const ttlSec = ttlEl ? (parseInt(ttlEl.value,10)||0) : 0;
+  try {
+    await api('/kv/'+encodeURIComponent(key), {method:'PUT', body: JSON.stringify({value: val, ttl: ttlSec * 1000000000})});
+    toast('Key updated');
+    renderKV(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
 function kvRefreshWithPrefix() {
   const prefix = document.getElementById('kv-prefix').value.trim();
   api('/kv' + (prefix ? '?prefix='+encodeURIComponent(prefix) : '')).then(r => {
     const entries = (r.entries && r.entries.length) ? r.entries : [];
     const rows = entries.map(e => {
       const exp = e.expires_at ? `<span class="mono">${esc(e.expires_at.substring(0,19))}</span>` : '<span class="muted">—</span>';
-      return `<tr>
-        <td class="mono">${esc(e.key)}</td>
-        <td>${esc(e.value)}</td>
+      return `<tr style="cursor:pointer" onclick="kvToggleRow(${JSON.stringify(e.key)})">
+        <td class="mono"><strong>${esc(e.key)}</strong></td>
+        <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.value)}</td>
         <td>${exp}</td>
-        <td><button class="btn btn-outline btn-sm btn-danger" onclick="kvDelete(${JSON.stringify(e.key)})">Del</button></td>
+        <td onclick="event.stopPropagation()">
+          <button class="btn btn-outline btn-sm" onclick="kvInspect(${JSON.stringify(e.key)})">✎</button>
+          <button class="btn btn-outline btn-sm btn-danger" onclick="kvDelete(${JSON.stringify(e.key)})">✕</button>
+        </td>
       </tr>`;
     }).join('');
     const tbody = document.querySelector('.table-wrap tbody');
@@ -2060,7 +2171,7 @@ async function renderSchedules(rid) {
       <table>
         <thead><tr><th>Name</th><th>Cron</th><th>Capability</th><th>Agent</th><th>Enabled</th><th>Last Run</th><th>Next Run</th><th></th></tr></thead>
         <tbody>
-          ${schedules.map(s=>`<tr>
+          ${schedules.map(s=>`<tr style="cursor:pointer" onclick="toggleScheduleDetail('${esc(s.id)}')">
             <td><strong>${esc(s.name)}</strong></td>
             <td class="mono">${esc(s.cron)}</td>
             <td>${esc(s.capability||'—')}</td>
@@ -2068,9 +2179,29 @@ async function renderSchedules(rid) {
             <td><span class="pill ${s.enabled?'healthy':'unknown'}">${s.enabled?'enabled':'disabled'}</span></td>
             <td class="mono">${fmtTime(s.last_run)}</td>
             <td class="mono">${fmtTime(s.next_run)}</td>
-            <td class="flex">
+            <td onclick="event.stopPropagation()" class="flex">
               <button class="btn btn-outline btn-sm" onclick="toggleSchedule('${esc(s.id)}',${!s.enabled})">${s.enabled?'Disable':'Enable'}</button>
               <button class="btn btn-danger btn-sm" onclick="deleteSchedule('${esc(s.id)}')">✕</button>
+            </td>
+          </tr>
+          <tr id="sched-detail-${esc(s.id)}" style="display:none;background:var(--surface)">
+            <td colspan="8" style="padding:10px 16px">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:12px">
+                <div>
+                  <div style="color:var(--muted);margin-bottom:4px;text-transform:uppercase;font-size:11px">Payload</div>
+                  <pre style="margin:0">${esc(JSON.stringify(s.payload||{}, null, 2))}</pre>
+                </div>
+                <div>
+                  <div style="color:var(--muted);margin-bottom:4px;text-transform:uppercase;font-size:11px">Schedule Details</div>
+                  <table style="font-size:11px;border-collapse:collapse;width:100%">
+                    <tr><td style="color:var(--muted);padding:2px 8px 2px 0">ID</td><td class="mono">${esc(s.id)}</td></tr>
+                    <tr><td style="color:var(--muted);padding:2px 8px 2px 0">Tenant</td><td class="mono">${esc(s.tenant||'—')}</td></tr>
+                    <tr><td style="color:var(--muted);padding:2px 8px 2px 0">Created</td><td class="mono">${fmtTime(s.created_at)}</td></tr>
+                    <tr><td style="color:var(--muted);padding:2px 8px 2px 0">Last Run</td><td class="mono">${fmtTime(s.last_run)||'never'}</td></tr>
+                    <tr><td style="color:var(--muted);padding:2px 8px 2px 0">Next Run</td><td class="mono">${fmtTime(s.next_run)||'—'}</td></tr>
+                  </table>
+                </div>
+              </div>
             </td>
           </tr>`).join('')||'<tr><td colspan="8" class="empty">No schedules</td></tr>'}
         </tbody>
@@ -2122,6 +2253,11 @@ async function deleteSchedule(id) {
   if (!confirm('Delete schedule?')) return;
   try { await del('/schedules/'+encodeURIComponent(id)); toast('Schedule deleted'); renderSchedules(currentRenderId); }
   catch(e) { toast('Error: '+e.message, false); }
+}
+
+function toggleScheduleDetail(id) {
+  const row = document.getElementById('sched-detail-'+id);
+  if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
 }
 
 // ── AGENT GROUPS ──────────────────────────────────────────────────────────────
@@ -2684,6 +2820,33 @@ async function renderStats(rid) {
       + barChart(capLabels, capVals, '#a78bfa', 480, 120) + '</div>';
   }
 
+  // by_status breakdown
+  const agentStatusEntries = ags ? Object.entries(ags.by_status||{}) : [];
+  let agentStatusChart = '';
+  if (agentStatusEntries.length > 0) {
+    const statusColors = {healthy:'var(--accent2)', degraded:'var(--warn)', offline:'var(--danger)', unknown:'var(--muted)'};
+    const statusLabels = agentStatusEntries.map(e=>e[0]);
+    const statusVals = agentStatusEntries.map(e=>e[1]);
+    agentStatusChart = '<div class="chart-wrap"><div class="chart-title">Agents by Status</div>'
+      + barChart(statusLabels, statusVals, 'var(--accent)', 340, 100)
+      + '<div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">'
+      + agentStatusEntries.map(([s,n])=>`<span class="pill ${s==='healthy'?'healthy':s==='degraded'?'degraded':'unknown'}">${esc(s)}: ${n}</span>`).join('')
+      + '</div></div>';
+  }
+
+  // by_tenant breakdown
+  const tenantEntries = ags ? Object.entries(ags.by_tenant||{}) : [];
+  let agentTenantTable = '';
+  if (tenantEntries.length > 0) {
+    agentTenantTable = '<div class="section"><div class="section-title">Agents by Tenant</div>'
+      + '<div class="table-wrap"><table><thead><tr><th>Tenant</th><th>Agents</th><th>Share</th></tr></thead><tbody>'
+      + tenantEntries.map(([t,n])=>{
+          const pct = ags.total > 0 ? Math.round(n/ags.total*100) : 0;
+          return `<tr><td class="mono">${esc(t)}</td><td>${n}</td><td><div class="lat-bar-wrap"><div class="lat-bar" style="width:${pct*2}px"></div><span style="font-size:11px;color:var(--muted)">${pct}%</span></div></td></tr>`;
+        }).join('')
+      + '</tbody></table></div></div>';
+  }
+
   let destTableHtml = '';
   if (rts && rts.destinations && rts.destinations.length > 0) {
     const maxLat = rts.max_latency_ms || 1;
@@ -2697,6 +2860,18 @@ async function renderStats(rid) {
       + rows + '</tbody></table></div></div>';
   }
 
+  // Blockchain stats detail
+  let bcDetailCards = '';
+  if (bcs) {
+    bcDetailCards = '<div class="section"><div class="section-title">Blockchain Details</div><div class="cards">'
+      + '<div class="card"><div class="card-label">Unique Senders</div><div class="card-value">' + bcs.unique_senders + '</div></div>'
+      + '<div class="card"><div class="card-label">Unique Recipients</div><div class="card-value">' + bcs.unique_recipients + '</div></div>'
+      + '<div class="card"><div class="card-label">Avg Tx/Block</div><div class="card-value">' + Number(bcs.avg_tx_per_block||0).toFixed(2) + '</div></div>'
+      + '<div class="card"><div class="card-label">Genesis Block</div><div class="card-value" style="font-size:12px">' + (bcs.genesis_time ? new Date(bcs.genesis_time).toLocaleDateString() : '—') + '</div></div>'
+      + '<div class="card"><div class="card-label">Latest Block</div><div class="card-value" style="font-size:12px">' + (bcs.latest_time ? new Date(bcs.latest_time).toLocaleTimeString() : '—') + '</div></div>'
+      + '</div></div>';
+  }
+
   let sysInfoCard = '';
   if (sys) {
     sysInfoCard = '<div class="section"><div class="section-title">System Info</div><div class="cards">'
@@ -2708,7 +2883,7 @@ async function renderStats(rid) {
   }
 
   const el = document.getElementById('content');
-  if (el) el.innerHTML = statCards + timelineChart + agentCapChart + destTableHtml + sysInfoCard;
+  if (el) el.innerHTML = statCards + timelineChart + agentCapChart + agentStatusChart + agentTenantTable + destTableHtml + bcDetailCards + sysInfoCard;
 }
 
 // ── TOPOLOGY PAGE ─────────────────────────────────────────────────────────────
@@ -2878,8 +3053,10 @@ async function mqPublish() {
 async function mqConsume(topic) {
   try {
     const res = await api('/mq/'+encodeURIComponent(topic)+'?count=1');
-    if (!res || !res.count) { toast('No messages in topic', false); return; }
-    toast(`Consumed ${res.count} message(s) from ${topic}`);
+    if (!res || !res.count) { toast('No messages in topic '+topic, false); return; }
+    const msgs = res.messages || [];
+    const detail = msgs.map(m => `[${esc(m.id)}] ${esc(JSON.stringify(m.payload||{}))}`).join('\n');
+    toast(`Consumed ${res.count} from "${topic}"${msgs.length ? ': '+detail.substring(0,80) : ''}`);
     renderMQ(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
 }
