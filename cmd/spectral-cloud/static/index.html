@@ -270,6 +270,10 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
       Notifications
     </a>
+    <a onclick="go('mq')" id="nav-mq">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h11"/><circle cx="19" cy="18" r="3"/><path d="M17 18h-2"/></svg>
+      Message Queue
+    </a>
     <a onclick="go('mesh')" id="nav-mesh">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M12 7v3M12 10L6.5 17.5M12 10l5.5 7.5"/></svg>
       Mesh Peers
@@ -342,6 +346,7 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
           <tr><td class="mono">g &nbsp;k</td><td>Go to KV Store</td></tr>
           <tr><td class="mono">g &nbsp;s</td><td>Go to Schedules</td></tr>
           <tr><td class="mono">g &nbsp;n</td><td>Go to Notifications</td></tr>
+          <tr><td class="mono">g &nbsp;q</td><td>Go to Message Queue</td></tr>
           <tr><td class="mono">g &nbsp;m</td><td>Go to Mesh Peers</td></tr>
           <tr><td class="mono">r</td><td>Refresh current page</td></tr>
           <tr><td class="mono">?</td><td>Show this help</td></tr>
@@ -410,7 +415,7 @@ const PAGE_NAMES = {
   jobs:'Jobs', events:'Events', kv:'KV Store', search:'Search',
   schedules:'Schedules', groups:'Agent Groups', circuit:'Circuit Breaker',
   audit:'Audit Log', admin:'Admin', notifs:'Notifications', mesh:'Mesh Peers',
-  stats:'Analytics', topology:'Topology'
+  stats:'Analytics', topology:'Topology', mq:'Message Queue'
 };
 function go(page) {
   currentRenderId++;
@@ -604,6 +609,7 @@ async function render(page, rid) {
       case 'mesh':       await renderMesh(rid); break;
       case 'stats':      await renderStats(rid); break;
       case 'topology':   await renderTopology(rid); break;
+      case 'mq':         await renderMQ(rid); break;
     }
   } catch(e) {
     if (rid && rid !== currentRenderId) return;
@@ -666,6 +672,7 @@ async function renderOverview(rid) {
       <button class="btn btn-outline" onclick="go('routes')">＋ Add Route</button>
       <button class="btn btn-outline" onclick="go('agents')">＋ Register Agent</button>
       <button class="btn btn-outline" onclick="go('schedules')">＋ New Schedule</button>
+      <button class="btn btn-outline" onclick="go('mq')">📨 Message Queue</button>
       <button class="btn btn-primary" onclick="quickBackup()">💾 Backup Now</button>
     </div>
   </div>
@@ -2308,67 +2315,88 @@ async function sendProtoControl() {
 // ── NOTIFICATIONS PAGE ────────────────────────────────────────────────────────
 async function renderNotifs(rid) {
   const content = document.getElementById('content');
-  if (content) content.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Type</th><th>Target</th><th>Message</th><th>Status</th><th>Sent</th><th>Created</th><th></th></tr></thead><tbody>${skeletonRows(7)}</tbody></table></div>`;
-  const res = await api('/admin/notifications').catch(()=>({notifications:[]}));
+  if (content) content.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Webhook URL</th><th>Events</th><th>Fired</th><th>Created</th><th>Status</th><th></th></tr></thead><tbody>${skeletonRows(4)}</tbody></table></div>`;
+  const res = await api('/admin/notifications').catch(()=>({rules:[]}));
   if (rid && rid !== currentRenderId) return;
-  const notifs = res.notifications || [];
-  document.getElementById('content').innerHTML = `
+  const rules = res.rules || [];
+  const content2 = document.getElementById('content');
+  if (!content2) return;
+  content2.innerHTML = `
   <div class="section">
     <div class="flex" style="margin-bottom:12px">
-      <div class="section-title" style="margin:0">${notifs.length} Notification(s)</div>
+      <div class="section-title" style="margin:0">${rules.length} Notification Rule(s)</div>
       <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="renderNotifs(currentRenderId)">↻</button></div>
     </div>
     <div class="table-wrap" style="margin-bottom:16px">
       <table>
-        <thead><tr><th>Type</th><th>Target</th><th>Message</th><th>Status</th><th>Sent</th><th>Created</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Webhook URL</th><th>Event Types</th><th>Fired</th><th>Created</th><th>Active</th><th></th></tr></thead>
         <tbody>
-          ${notifs.map(n=>`<tr>
-            <td><span class="pill ${n.type==='email'?'healthy':n.type==='slack'?'sat':'unknown'}">${esc(n.type)}</span></td>
-            <td class="mono">${esc(n.target)}</td>
-            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(n.message)}">${esc(n.message)}</td>
-            <td><span class="pill ${n.status==='sent'?'healthy':n.status==='failed'?'degraded':'unknown'}">${esc(n.status||'pending')}</span></td>
-            <td class="mono">${fmtTime(n.sent_at)}</td>
-            <td class="mono">${fmtTime(n.created_at)}</td>
-            <td><button class="btn btn-danger btn-sm" onclick="deleteNotif(${JSON.stringify(n.id)})">✕</button></td>
-          </tr>`).join('')||'<tr><td colspan="7" class="empty">No notifications</td></tr>'}
+          ${rules.length === 0 ? '<tr><td colspan="7" class="empty">No notification rules yet</td></tr>' :
+          rules.map(r=>`<tr>
+            <td><strong>${esc(r.name)}</strong></td>
+            <td class="mono" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.webhook_url)}">${esc(r.webhook_url)}</td>
+            <td class="mono">${(r.event_types&&r.event_types.length)?r.event_types.map(t=>`<span class="pill unknown" style="margin-right:2px">${esc(t)}</span>`).join(''):'<span style="color:var(--muted)">all events</span>'}</td>
+            <td>${r.fired_total||0}</td>
+            <td class="mono">${fmtTime(r.created_at)}</td>
+            <td>
+              <button class="btn btn-sm ${r.active?'btn-primary':'btn-outline'}" onclick="toggleNotifRule(${JSON.stringify(r.id)}, ${!r.active})">
+                ${r.active?'✓ Active':'⏸ Disabled'}
+              </button>
+            </td>
+            <td><button class="btn btn-danger btn-sm" onclick="deleteNotifRule(${JSON.stringify(r.id)})">✕</button></td>
+          </tr>`).join('')}
         </tbody>
       </table>
     </div>
   </div>
   <div class="section">
-    <div class="section-title">Send Notification</div>
+    <div class="section-title">Add Notification Rule</div>
     <div class="card">
       <div class="form-row">
-        <div class="form-group"><label>Type</label>
-          <select id="notif-send-type" style="width:120px">
-            <option value="email">email</option>
-            <option value="webhook">webhook</option>
-            <option value="slack">slack</option>
-          </select>
-        </div>
-        <div class="form-group" style="flex:1"><label>Target</label><input id="notif-send-target" placeholder="user@example.com or webhook URL" style="min-width:240px"></div>
+        <div class="form-group"><label>Rule Name</label><input id="notif-name" placeholder="my-rule" style="width:160px"></div>
+        <div class="form-group" style="flex:1"><label>Webhook URL</label><input id="notif-url" placeholder="https://hooks.example.com/…" style="min-width:280px"></div>
       </div>
-      <div class="form-group" style="margin-bottom:8px"><label>Message</label><textarea id="notif-send-message" placeholder="Notification message…" style="min-height:70px"></textarea></div>
-      <button class="btn btn-primary" onclick="sendNotification()">Send Notification</button>
+      <div class="form-row">
+        <div class="form-group" style="flex:1"><label>Secret (optional HMAC key)</label><input id="notif-secret" type="password" placeholder="optional signing secret" style="min-width:200px"></div>
+        <div class="form-group" style="flex:1"><label>Event Types (comma-separated, blank = all)</label><input id="notif-events" placeholder="block_added,route_added" style="min-width:220px"></div>
+      </div>
+      <button class="btn btn-primary" onclick="addNotifRule()">Add Rule</button>
     </div>
   </div>`;
 }
 
-async function sendNotification() {
-  const type = (document.getElementById('notif-send-type')||{}).value||'email';
-  const target = ((document.getElementById('notif-send-target')||{}).value||'').trim();
-  const message = ((document.getElementById('notif-send-message')||{}).value||'').trim();
-  if (!target || !message) { toast('Target and message required', false); return; }
+async function addNotifRule() {
+  const name = ((document.getElementById('notif-name')||{}).value||'').trim();
+  const url = ((document.getElementById('notif-url')||{}).value||'').trim();
+  const secret = ((document.getElementById('notif-secret')||{}).value||'').trim();
+  const eventsRaw = ((document.getElementById('notif-events')||{}).value||'').trim();
+  if (!name) { toast('Rule name is required', false); return; }
+  if (!url) { toast('Webhook URL is required', false); return; }
+  const event_types = eventsRaw ? eventsRaw.split(',').map(s=>s.trim()).filter(Boolean) : [];
   try {
-    await post('/admin/notifications', {type, target, message});
-    toast('Notification sent'); renderNotifs(currentRenderId);
+    await post('/admin/notifications', {name, webhook_url: url, secret, event_types});
+    toast('Notification rule added');
+    renderNotifs(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
 }
 
-async function deleteNotif(id) {
+async function toggleNotifRule(id, active) {
+  try {
+    await api('/admin/notifications/'+encodeURIComponent(id), {
+      method:'PATCH',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({active})
+    });
+    toast(active ? 'Rule enabled' : 'Rule disabled');
+    renderNotifs(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function deleteNotifRule(id) {
   try {
     await del('/admin/notifications/'+encodeURIComponent(id));
-    toast('Notification deleted'); renderNotifs(currentRenderId);
+    toast('Rule deleted');
+    renderNotifs(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
 }
 
@@ -2448,7 +2476,7 @@ function closeShortcutsModal() {
 (function() {
   let _kbLastKey = '';
   let _kbLastTime = 0;
-  const _kbNavMap = {o:'overview', b:'blockchain', r:'routes', a:'agents', e:'events', k:'kv', s:'schedules', n:'notifs', m:'mesh'};
+  const _kbNavMap = {o:'overview', b:'blockchain', r:'routes', a:'agents', e:'events', k:'kv', s:'schedules', n:'notifs', m:'mesh', q:'mq'};
   document.addEventListener('keydown', function(ev) {
     const tag = (ev.target.tagName||'').toLowerCase();
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
@@ -2629,6 +2657,121 @@ function topoSelectNode(id, data) {
     });
   }
   panel.innerHTML = html;
+}
+
+// ── MESSAGE QUEUE PAGE ───────────────────────────────────────────────────────
+async function renderMQ(rid) {
+  const content = document.getElementById('content');
+  if (content) content.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Topic</th><th>Tenant</th><th>Pending</th><th></th></tr></thead><tbody>${skeletonRows(4)}</tbody></table></div>`;
+  const res = await api('/mq').catch(()=>({topics:[]}));
+  if (rid && rid !== currentRenderId) return;
+  const topics = res.topics || [];
+  const content2 = document.getElementById('content');
+  if (!content2) return;
+  content2.innerHTML = `
+  <div class="section">
+    <div class="flex" style="margin-bottom:12px">
+      <div class="section-title" style="margin:0">Active Topics (${topics.length})</div>
+      <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="renderMQ(currentRenderId)">↻</button></div>
+    </div>
+    <div class="table-wrap" style="margin-bottom:16px">
+      <table>
+        <thead><tr><th>Topic</th><th>Tenant</th><th>Pending</th><th></th></tr></thead>
+        <tbody>
+          ${topics.length === 0 ? '<tr><td colspan="4" class="empty">No topics with pending messages</td></tr>' :
+          topics.map(t=>`<tr>
+            <td><strong class="mono">${esc(t.topic)}</strong></td>
+            <td class="mono">${esc(t.tenant)}</td>
+            <td><span class="pill ${t.pending>0?'healthy':'unknown'}">${t.pending}</span></td>
+            <td class="flex">
+              <button class="btn btn-outline btn-sm" onclick="mqConsume(${JSON.stringify(t.topic)})">⬇ Consume 1</button>
+              <button class="btn btn-danger btn-sm" onclick="mqPurge(${JSON.stringify(t.topic)})">🗑 Purge</button>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <div class="section">
+      <div class="section-title">Publish Message</div>
+      <div class="card">
+        <div class="form-row">
+          <div class="form-group"><label>Topic</label><input id="mq-pub-topic" placeholder="jobs" style="width:140px"></div>
+        </div>
+        <div class="form-group" style="margin-bottom:8px"><label>Payload (JSON object)</label>
+          <textarea id="mq-pub-payload" placeholder='{"task":"summarise","doc":"file.pdf"}' style="min-height:80px;font-family:monospace;font-size:12px"></textarea>
+        </div>
+        <button class="btn btn-primary" onclick="mqPublish()">Publish</button>
+        <div id="mq-pub-result" style="margin-top:8px"></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">Consume Messages</div>
+      <div class="card">
+        <div class="form-row">
+          <div class="form-group"><label>Topic</label><input id="mq-con-topic" placeholder="jobs" style="width:140px"></div>
+          <div class="form-group"><label>Count</label><input id="mq-con-count" type="number" value="1" min="1" style="width:70px"></div>
+          <button class="btn btn-primary" style="margin-top:18px" onclick="mqConsumeForm()">Consume</button>
+        </div>
+        <div id="mq-con-result"></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function mqPublish() {
+  const topic = ((document.getElementById('mq-pub-topic')||{}).value||'').trim();
+  const payloadStr = ((document.getElementById('mq-pub-payload')||{}).value||'').trim();
+  if (!topic) { toast('Topic is required', false); return; }
+  let payload = {};
+  if (payloadStr) {
+    try { payload = JSON.parse(payloadStr); } catch { toast('Payload must be valid JSON', false); return; }
+  }
+  try {
+    const msg = await post('/mq/'+encodeURIComponent(topic), {payload});
+    const el = document.getElementById('mq-pub-result');
+    if (el) el.innerHTML = `<div class="alert ok">✓ Message published: <span class="mono">${esc(msg.id)}</span></div>`;
+    renderMQ(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function mqConsume(topic) {
+  try {
+    const res = await api('/mq/'+encodeURIComponent(topic)+'?count=1');
+    if (!res || !res.count) { toast('No messages in topic', false); return; }
+    toast(`Consumed ${res.count} message(s) from ${topic}`);
+    renderMQ(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function mqConsumeForm() {
+  const topic = ((document.getElementById('mq-con-topic')||{}).value||'').trim();
+  const count = parseInt((document.getElementById('mq-con-count')||{}).value||'1', 10) || 1;
+  if (!topic) { toast('Topic is required', false); return; }
+  try {
+    const res = await api('/mq/'+encodeURIComponent(topic)+'?count='+count);
+    const el = document.getElementById('mq-con-result');
+    if (!res || !res.count) {
+      if (el) el.innerHTML = '<div class="empty">No messages available</div>';
+      return;
+    }
+    const msgs = res.messages || [];
+    if (el) el.innerHTML = `<div style="margin-top:10px;color:var(--accent2);font-size:12px">${res.count} message(s) consumed</div>`
+      + msgs.map(m=>`<div style="margin-top:6px;padding:8px;background:var(--input);border-radius:6px;font-size:11px;font-family:monospace">
+        <div style="color:var(--muted);margin-bottom:4px">${esc(m.id)} · ${fmtTime(m.created_at)}</div>
+        <pre style="white-space:pre-wrap;word-break:break-all;color:var(--text)">${esc(JSON.stringify(m.payload||{}, null, 2))}</pre>
+      </div>`).join('');
+    renderMQ(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function mqPurge(topic) {
+  try {
+    const res = await api('/mq/'+encodeURIComponent(topic), {method:'DELETE'});
+    toast(`Purged ${res&&res.purged!=null?res.purged:'?'} message(s) from ${topic}`);
+    renderMQ(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
 }
 
 // ── BOOT ────────────────────────────────────────────────────────────────────
