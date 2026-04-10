@@ -693,7 +693,7 @@ async function renderOverview(rid) {
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
     <div class="section" style="margin:0">
       <div class="section-title">Best Route</div>
-      ${(()=>{ const b=bestRouteRes.value; return b ? `<div class="card" style="max-width:320px"><div class="card-label">Best Next Hop</div><div style="font-size:15px;font-weight:600;margin:4px 0">${esc(b.destination)}</div><div class="card-sub">latency ${b.metric?b.metric.latency:"—"}ms · thr ${b.metric?b.metric.throughput:'—'} · ${b.satellite?'🛰 satellite':'terrestrial'}${b.metric&&b.metric.tags&&Object.keys(b.metric.tags).length?' · '+Object.entries(b.metric.tags).map(([k,v])=>k+':'+v).join(', '):''}</div></div>` : `<div class="card-sub">No routes available</div>`; })()}
+      ${bestRouteCard(bestRouteRes.value)}
     </div>
     <div class="section" style="margin:0">
       <div class="section-title">Tenant Metrics</div>
@@ -735,16 +735,17 @@ async function renderOverview(rid) {
   autoRefreshTimer = setTimeout(() => { if(currentPage==='overview' && rid === currentRenderId) renderOverview(rid); }, 5000);
 }
 
-async function bestRouteCard() {
-  try {
-    const b = await api('/routes/best');
-    if (!b) return `<div class="card-sub">No routes available</div>`;
-    return `<div class="card" style="max-width:320px">
-      <div class="card-label">Best Hop</div>
-      <div style="font-size:15px;font-weight:600;margin:4px 0">${esc(b.destination)}</div>
-      <div class="card-sub">latency ${b.metric ? b.metric.latency : '—'}ms · thr ${b.metric ? b.metric.throughput : '—'} · ${b.satellite?'🛰 satellite':'terrestrial'}</div>
-    </div>`;
-  } catch { return `<div class="card-sub">No routes available</div>`; }
+// Render a best-route summary card. Accepts the route object or null/undefined.
+function bestRouteCard(b) {
+  if (!b) return `<div class="card-sub">No routes available</div>`;
+  const tags = (b.metric && b.metric.tags && Object.keys(b.metric.tags).length)
+    ? ' · ' + Object.entries(b.metric.tags).map(([k,v]) => k+':'+v).join(', ')
+    : '';
+  return `<div class="card" style="max-width:320px">
+    <div class="card-label">Best Next Hop</div>
+    <div style="font-size:15px;font-weight:600;margin:4px 0">${esc(b.destination)}</div>
+    <div class="card-sub">latency ${b.metric ? b.metric.latency : '—'}ms · thr ${b.metric ? b.metric.throughput : '—'} · ${b.satellite ? '🛰 satellite' : 'terrestrial'}${tags}</div>
+  </div>`;
 }
 
 function fmt_uptime(s) {
@@ -1581,12 +1582,18 @@ function restartSSE() { startSSE(); }
 function clearFeed() { const f = document.getElementById('event-feed'); if(f) f.innerHTML=''; }
 
 // ── KV STORE ─────────────────────────────────────────────────────────────────
+// Sanitize a KV key to a safe DOM element ID suffix.
+function sanitizeKeyId(key) { return key.replace(/[^a-zA-Z0-9_-]/g, '_'); }
+// Nanoseconds per second (for KV TTL conversion).
+const KV_NS_PER_SEC = 1e9;
+
 async function renderKV(rid) {
   const r = await api('/kv');
   if (rid && rid !== currentRenderId) return;
   const entries = (r.entries && r.entries.length) ? r.entries : [];
   let rows = entries.map(e => {
     const exp = e.expires_at ? `<span class="mono">${esc(e.expires_at.substring(0,19))}</span>` : '<span class="muted">—</span>';
+    const sk = sanitizeKeyId(e.key);
     return `<tr style="cursor:pointer" onclick="kvToggleRow(${JSON.stringify(e.key)})">
       <td class="mono"><strong>${esc(e.key)}</strong></td>
       <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.value)}</td>
@@ -1596,7 +1603,7 @@ async function renderKV(rid) {
         <button class="btn btn-outline btn-sm btn-danger" onclick="kvDelete(${JSON.stringify(e.key)})">✕</button>
       </td>
     </tr>
-    <tr id="kv-row-${esc(e.key.replace(/[^a-zA-Z0-9_-]/g,'_'))}" style="display:none;background:var(--surface)">
+    <tr id="kv-row-${sk}" style="display:none;background:var(--surface)">
       <td colspan="4" style="padding:10px 16px">
         <div style="display:grid;grid-template-columns:1fr auto;gap:12px;align-items:start">
           <div>
@@ -1605,9 +1612,9 @@ async function renderKV(rid) {
           </div>
           <div style="min-width:220px">
             <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Update Value</div>
-            <textarea id="kv-inline-val-${esc(e.key.replace(/[^a-zA-Z0-9_-]/g,'_'))}" style="width:100%;font-family:monospace;font-size:12px;min-height:52px">${esc(e.value)}</textarea>
+            <textarea id="kv-inline-val-${sk}" style="width:100%;font-family:monospace;font-size:12px;min-height:52px">${esc(e.value)}</textarea>
             <div class="form-row" style="margin-top:4px;gap:6px">
-              <input id="kv-inline-ttl-${esc(e.key.replace(/[^a-zA-Z0-9_-]/g,'_'))}" type="number" value="0" min="0" style="width:70px;padding:3px 6px;font-size:12px" placeholder="TTL s">
+              <input id="kv-inline-ttl-${sk}" type="number" value="0" min="0" style="width:70px;padding:3px 6px;font-size:12px" placeholder="TTL s">
               <button class="btn btn-primary btn-sm" onclick="kvInlineUpdate(${JSON.stringify(e.key)})">Save</button>
             </div>
           </div>
@@ -1655,7 +1662,7 @@ async function kvSet() {
   const ttlSec = parseInt(document.getElementById('kv-ttl').value, 10) || 0;
   if (!key) { toast('Key is required', true); return; }
   try {
-    await api('/kv/'+encodeURIComponent(key), {method:'PUT', body: JSON.stringify({value: val, ttl: ttlSec * 1000000000})});
+    await api('/kv/'+encodeURIComponent(key), {method:'PUT', body: JSON.stringify({value: val, ttl: ttlSec * KV_NS_PER_SEC})});
     toast('Key set');
     renderKV(currentRenderId);
   } catch(e) { toast('Error: '+e.message, true); }
@@ -1670,8 +1677,7 @@ async function kvDelete(key) {
 }
 
 function kvToggleRow(key) {
-  const safeKey = key.replace(/[^a-zA-Z0-9_-]/g,'_');
-  const row = document.getElementById('kv-row-'+safeKey);
+  const row = document.getElementById('kv-row-'+sanitizeKeyId(key));
   if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
 }
 
@@ -1697,13 +1703,13 @@ async function kvLookup() {
 }
 
 async function kvInlineUpdate(key) {
-  const safeKey = key.replace(/[^a-zA-Z0-9_-]/g,'_');
-  const valEl = document.getElementById('kv-inline-val-'+safeKey);
-  const ttlEl = document.getElementById('kv-inline-ttl-'+safeKey);
+  const sk = sanitizeKeyId(key);
+  const valEl = document.getElementById('kv-inline-val-'+sk);
+  const ttlEl = document.getElementById('kv-inline-ttl-'+sk);
   const val = valEl ? valEl.value : '';
   const ttlSec = ttlEl ? (parseInt(ttlEl.value,10)||0) : 0;
   try {
-    await api('/kv/'+encodeURIComponent(key), {method:'PUT', body: JSON.stringify({value: val, ttl: ttlSec * 1000000000})});
+    await api('/kv/'+encodeURIComponent(key), {method:'PUT', body: JSON.stringify({value: val, ttl: ttlSec * KV_NS_PER_SEC})});
     toast('Key updated');
     renderKV(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
@@ -2841,7 +2847,7 @@ async function renderStats(rid) {
     agentTenantTable = '<div class="section"><div class="section-title">Agents by Tenant</div>'
       + '<div class="table-wrap"><table><thead><tr><th>Tenant</th><th>Agents</th><th>Share</th></tr></thead><tbody>'
       + tenantEntries.map(([t,n])=>{
-          const pct = ags.total > 0 ? Math.round(n/ags.total*100) : 0;
+          const pct = ags.total > 0 ? Math.round(n / ags.total * 100) : 0;
           return `<tr><td class="mono">${esc(t)}</td><td>${n}</td><td><div class="lat-bar-wrap"><div class="lat-bar" style="width:${pct*2}px"></div><span style="font-size:11px;color:var(--muted)">${pct}%</span></div></td></tr>`;
         }).join('')
       + '</tbody></table></div></div>';
@@ -3056,7 +3062,8 @@ async function mqConsume(topic) {
     if (!res || !res.count) { toast('No messages in topic '+topic, false); return; }
     const msgs = res.messages || [];
     const detail = msgs.map(m => `[${esc(m.id)}] ${esc(JSON.stringify(m.payload||{}))}`).join('\n');
-    toast(`Consumed ${res.count} from "${topic}"${msgs.length ? ': '+detail.substring(0,80) : ''}`);
+    const detailStr = detail.length > 80 ? detail.substring(0, 80) + '…' : detail;
+    toast(`Consumed ${res.count} from "${topic}"${msgs.length ? ': '+detailStr : ''}`);
     renderMQ(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
 }
