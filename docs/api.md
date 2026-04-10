@@ -80,6 +80,56 @@ Returns mesh config, stats, and anomaly state.
 `GET /admin/tenants`
 Returns the list of tenants with per-tenant block/route counts.
 
+## Message Queue
+
+`GET /mq`
+List all topics with pending message counts for the authenticated tenant.
+
+Example response:
+```json
+{"topics":[{"topic":"jobs","tenant":"default","pending":3}],"count":1}
+```
+
+`POST /mq/{topic}`
+Publish a message to `{topic}`. Body: `{"payload":{...}}`.
+
+Example:
+```bash
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"payload":{"task":"summarise","doc":"report.pdf"}}' \
+  http://localhost:8080/mq/jobs
+```
+
+Example response:
+```json
+{"id":"msg-1","topic":"jobs","tenant":"default","payload":{"doc":"report.pdf","task":"summarise"},"created_at":"2026-04-10T08:00:00Z"}
+```
+
+`GET /mq/{topic}?count=N`
+Consume (dequeue) up to `count` messages from `{topic}` (default 1).
+
+Example:
+```bash
+curl -s http://localhost:8080/mq/jobs?count=5
+```
+
+`DELETE /mq/{topic}`
+Purge all pending messages from `{topic}`. Returns `{"purged":N,"topic":"jobs"}`.
+
+## Notification Rules
+
+`GET /admin/notifications`
+List all notification rules.
+
+`POST /admin/notifications`
+Create a notification rule. Body: `{"name":"...","webhook_url":"...","secret":"...","event_types":["block_added"]}`.
+
+`PATCH /admin/notifications/{id}`
+Enable or disable a rule. Body: `{"active": true|false}`.
+
+`DELETE /admin/notifications/{id}`
+Delete a notification rule.
+
 ## Examples
 
 Send a `DataMessage` (Protobuf):

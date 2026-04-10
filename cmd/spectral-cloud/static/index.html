@@ -270,6 +270,10 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
       Notifications
     </a>
+    <a onclick="go('mq')" id="nav-mq">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h11"/><circle cx="19" cy="18" r="3"/><path d="M17 18h-2"/></svg>
+      Message Queue
+    </a>
     <a onclick="go('mesh')" id="nav-mesh">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M12 7v3M12 10L6.5 17.5M12 10l5.5 7.5"/></svg>
       Mesh Peers
@@ -281,6 +285,10 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
     <a onclick="go('topology')" id="nav-topology">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
       Topology
+    </a>
+    <a onclick="go('healthchecks')" id="nav-healthchecks">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      Health Checks
     </a>
   </div>
   <div class="nav-footer">
@@ -342,6 +350,8 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
           <tr><td class="mono">g &nbsp;k</td><td>Go to KV Store</td></tr>
           <tr><td class="mono">g &nbsp;s</td><td>Go to Schedules</td></tr>
           <tr><td class="mono">g &nbsp;n</td><td>Go to Notifications</td></tr>
+          <tr><td class="mono">g &nbsp;q</td><td>Go to Message Queue</td></tr>
+          <tr><td class="mono">g &nbsp;h</td><td>Go to Health Checks</td></tr>
           <tr><td class="mono">g &nbsp;m</td><td>Go to Mesh Peers</td></tr>
           <tr><td class="mono">r</td><td>Refresh current page</td></tr>
           <tr><td class="mono">?</td><td>Show this help</td></tr>
@@ -410,7 +420,7 @@ const PAGE_NAMES = {
   jobs:'Jobs', events:'Events', kv:'KV Store', search:'Search',
   schedules:'Schedules', groups:'Agent Groups', circuit:'Circuit Breaker',
   audit:'Audit Log', admin:'Admin', notifs:'Notifications', mesh:'Mesh Peers',
-  stats:'Analytics', topology:'Topology'
+  stats:'Analytics', topology:'Topology', mq:'Message Queue', healthchecks:'Health Checks'
 };
 function go(page) {
   currentRenderId++;
@@ -604,6 +614,8 @@ async function render(page, rid) {
       case 'mesh':       await renderMesh(rid); break;
       case 'stats':      await renderStats(rid); break;
       case 'topology':   await renderTopology(rid); break;
+      case 'mq':         await renderMQ(rid); break;
+      case 'healthchecks': await renderHealthChecks(rid); break;
     }
   } catch(e) {
     if (rid && rid !== currentRenderId) return;
@@ -666,6 +678,7 @@ async function renderOverview(rid) {
       <button class="btn btn-outline" onclick="go('routes')">＋ Add Route</button>
       <button class="btn btn-outline" onclick="go('agents')">＋ Register Agent</button>
       <button class="btn btn-outline" onclick="go('schedules')">＋ New Schedule</button>
+      <button class="btn btn-outline" onclick="go('mq')">📨 Message Queue</button>
       <button class="btn btn-primary" onclick="quickBackup()">💾 Backup Now</button>
     </div>
   </div>
@@ -680,7 +693,7 @@ async function renderOverview(rid) {
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
     <div class="section" style="margin:0">
       <div class="section-title">Best Route</div>
-      ${(()=>{ const b=bestRouteRes.value; return b ? `<div class="card" style="max-width:320px"><div class="card-label">Best Hop</div><div style="font-size:15px;font-weight:600;margin:4px 0">${esc(b.destination)}</div><div class="card-sub">latency ${b.metric?b.metric.latency:"—"}ms</div></div>` : `<div class="card-sub">No routes available</div>`; })()}
+      ${bestRouteCard(bestRouteRes.value)}
     </div>
     <div class="section" style="margin:0">
       <div class="section-title">Tenant Metrics</div>
@@ -722,16 +735,17 @@ async function renderOverview(rid) {
   autoRefreshTimer = setTimeout(() => { if(currentPage==='overview' && rid === currentRenderId) renderOverview(rid); }, 5000);
 }
 
-async function bestRouteCard() {
-  try {
-    const b = await api('/routes/best');
-    if (!b) return `<div class="card-sub">No routes available</div>`;
-    return `<div class="card" style="max-width:320px">
-      <div class="card-label">Best Hop</div>
-      <div style="font-size:15px;font-weight:600;margin:4px 0">${esc(b.destination)}</div>
-      <div class="card-sub">latency ${b.metric ? b.metric.latency : '—'}ms · thr ${b.metric ? b.metric.throughput : '—'} · ${b.satellite?'🛰 satellite':'terrestrial'}</div>
-    </div>`;
-  } catch { return `<div class="card-sub">No routes available</div>`; }
+// Render a best-route summary card. Accepts the route object or null/undefined.
+function bestRouteCard(b) {
+  if (!b) return `<div class="card-sub">No routes available</div>`;
+  const tags = (b.metric && b.metric.tags && Object.keys(b.metric.tags).length)
+    ? ' · ' + Object.entries(b.metric.tags).map(([k,v]) => k+':'+v).join(', ')
+    : '';
+  return `<div class="card" style="max-width:320px">
+    <div class="card-label">Best Next Hop</div>
+    <div style="font-size:15px;font-weight:600;margin:4px 0">${esc(b.destination)}</div>
+    <div class="card-sub">latency ${b.metric ? b.metric.latency : '—'}ms · thr ${b.metric ? b.metric.throughput : '—'} · ${b.satellite ? '🛰 satellite' : 'terrestrial'}${tags}</div>
+  </div>`;
 }
 
 function fmt_uptime(s) {
@@ -894,8 +908,8 @@ async function renderRoutes(rid) {
   document.getElementById('content').innerHTML = `<div class="section"><div class="table-wrap"><table><thead><tr><th>Destination</th><th>Latency</th><th>Throughput</th><th>Tags</th><th>Expires</th><th></th></tr></thead><tbody>${skeletonRows(6)}</tbody></table></div></div>`;
   const [routesRes, statsRes] = await Promise.allSettled([api('/routes'), api('/routes/stats').catch(()=>null)]);
   if (rid && rid !== currentRenderId) return;
-  const routes = routesRes[0].value || [];
-  const routeStats = statsRes[1]?.value || null;
+  const routes = routesRes.value || [];
+  const routeStats = statsRes.value || null;
 
   const statsCards = routeStats ? `<div class="cards" style="margin-bottom:16px">
     <div class="card accent"><div class="card-label">Total Routes</div><div class="card-value">${routeStats.total}</div></div>
@@ -943,7 +957,23 @@ async function renderRoutes(rid) {
             <td>${r.metric ? r.metric.latency : '—'}ms</td><td>${r.metric ? r.metric.throughput : '—'}</td>
             <td class="mono">${r.tags?Object.entries(r.tags).map(([k,v])=>k+':'+v).join(', '):'—'}</td>
             <td class="mono">${r.expires_at?fmtTime(r.expires_at):'∞'}</td>
-            <td><button class="btn btn-danger btn-sm" onclick="deleteRoute('${esc(r.destination)}')">✕</button></td>
+            <td class="flex">
+              <button class="btn btn-outline btn-sm" onclick="toggleRouteEdit(${JSON.stringify(r.destination)})">✎</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteRoute('${esc(r.destination)}')">✕</button>
+            </td>
+          </tr>
+          <tr id="route-edit-${esc(r.destination.replace(/[^a-zA-Z0-9_-]/g,'_'))}" style="display:none;background:var(--surface)">
+            <td colspan="6" style="padding:10px 16px">
+              <div class="form-row" style="margin:0;flex-wrap:wrap;gap:10px;align-items:flex-end">
+                <div class="form-group"><label>Latency (ms)</label><input id="re-lat-${esc(r.destination.replace(/[^a-zA-Z0-9_-]/g,'_'))}" type="number" value="${r.metric?r.metric.latency:0}" style="width:80px"></div>
+                <div class="form-group"><label>Throughput</label><input id="re-thr-${esc(r.destination.replace(/[^a-zA-Z0-9_-]/g,'_'))}" type="number" value="${r.metric?r.metric.throughput:0}" style="width:80px"></div>
+                <div class="form-group"><label>TTL (s, 0=∞)</label><input id="re-ttl-${esc(r.destination.replace(/[^a-zA-Z0-9_-]/g,'_'))}" type="number" value="0" style="width:80px"></div>
+                <div class="form-group"><label>Satellite</label><select id="re-sat-${esc(r.destination.replace(/[^a-zA-Z0-9_-]/g,'_'))}" style="width:80px"><option value="" ${!r.satellite?'selected':''}>No</option><option value="true" ${r.satellite?'selected':''}>Yes</option></select></div>
+                <div class="form-group"><label>Tags (k:v,…)</label><input id="re-tags-${esc(r.destination.replace(/[^a-zA-Z0-9_-]/g,'_'))}" value="${r.tags?Object.entries(r.tags).map(([k,v])=>k+':'+v).join(','):''}" style="width:140px"></div>
+                <button class="btn btn-primary btn-sm" onclick="updateRoute(${JSON.stringify(r.destination)})">Save</button>
+                <button class="btn btn-outline btn-sm" onclick="toggleRouteEdit(${JSON.stringify(r.destination)})">Cancel</button>
+              </div>
+            </td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -974,6 +1004,15 @@ async function renderRoutes(rid) {
         <button class="btn btn-primary" onclick="batchAddRoutes()">Batch Add</button>
       </div>
     </div>
+    <div class="section">
+      <div class="section-title">Batch Delete</div>
+      <div class="card">
+        <div class="form-group" style="margin-bottom:8px"><label>Destinations (comma-separated or one per line)</label>
+        <textarea id="r-batch-del" placeholder="node-1, node-2, node-3" style="min-height:60px"></textarea></div>
+        <button class="btn btn-danger" onclick="batchDeleteRoutes()">Batch Delete</button>
+        <div id="r-batch-del-result" style="margin-top:8px"></div>
+      </div>
+    </div>
   </div>`;
 }
 
@@ -1000,10 +1039,53 @@ async function batchAddRoutes() {
   } catch(e) { toast('Error: '+e.message, false); }
 }
 
+async function batchDeleteRoutes() {
+  const raw = ((document.getElementById('r-batch-del')||{}).value||'');
+  const destinations = raw.split(/[\n,]/).map(s=>s.trim()).filter(Boolean);
+  if (!destinations.length) { toast('Enter at least one destination', false); return; }
+  const resultEl = document.getElementById('r-batch-del-result');
+  try {
+    const res = await del('/routes/batch', destinations);
+    const msg = `Deleted ${res.deleted} route(s)${res.not_found>0?' ('+res.not_found+' not found)':''}`;
+    if (resultEl) resultEl.innerHTML = `<div class="alert ok">${msg}</div>`;
+    toast(msg);
+    renderRoutes(currentRenderId);
+  } catch(e) {
+    if (resultEl) resultEl.innerHTML = `<div class="alert err">${esc(e.message)}</div>`;
+    toast('Error: '+e.message, false);
+  }
+}
+
 async function deleteRoute(dest) {
   if (!confirm('Delete route ' + dest + '?')) return;
   try { await del('/routes?destination='+encodeURIComponent(dest)); toast('Route deleted'); renderRoutes(currentRenderId); }
   catch(e) { toast('Error: '+e.message, false); }
+}
+
+function toggleRouteEdit(dest) {
+  const sk = dest.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const row = document.getElementById('route-edit-'+sk);
+  if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}
+
+async function updateRoute(dest) {
+  const sk = dest.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const lat = parseInt((document.getElementById('re-lat-'+sk)||{}).value||'0', 10) || 0;
+  const thr = parseInt((document.getElementById('re-thr-'+sk)||{}).value||'0', 10) || 0;
+  const ttl = parseInt((document.getElementById('re-ttl-'+sk)||{}).value||'0', 10) || 0;
+  const sat = ((document.getElementById('re-sat-'+sk)||{}).value||'') === 'true';
+  const tagsRaw = ((document.getElementById('re-tags-'+sk)||{}).value||'').trim();
+  const params = new URLSearchParams({destination: dest, latency: lat, throughput: thr});
+  if (ttl > 0) params.set('ttlSeconds', ttl);
+  if (sat) params.set('satellite', 'true');
+  tagsRaw.split(',').forEach(t => { const [k,v] = t.split(':'); if (k && v) params.append('tag', k.trim()+':'+v.trim()); });
+  try {
+    // delete then re-add with updated values (route system uses upsert semantics)
+    await del('/routes?destination='+encodeURIComponent(dest));
+    await api('/routes?'+params, {method: 'POST'});
+    toast('Route updated');
+    renderRoutes(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
 }
 
 async function applyRouteFilter() {
@@ -1040,8 +1122,8 @@ async function renderAgents(rid) {
   document.getElementById('content').innerHTML = `<div class="section"><div class="table-wrap"><table><thead><tr><th>ID</th><th>Status</th><th>Address</th><th>Capabilities</th><th>Expires</th><th>Actions</th></tr></thead><tbody>${skeletonRows(6)}</tbody></table></div></div>`;
   const [agentsRes, statsRes] = await Promise.allSettled([api('/agents'), api('/agents/stats').catch(()=>null)]);
   if (rid && rid !== currentRenderId) return;
-  const agentsAll = agentsRes[0].value || [];
-  const agentStats = statsRes[1] && statsRes[1].value ? statsRes[1].value : null;
+  const agentsAll = agentsRes.value || [];
+  const agentStats = statsRes.value || null;
   const agents = agentCapFilter ? agentsAll.filter(a => (a.capabilities||[]).includes(agentCapFilter)) : agentsAll;
   const allCaps = [...new Set(agentsAll.flatMap(a => a.capabilities||[]))].sort();
 
@@ -1066,14 +1148,16 @@ async function renderAgents(rid) {
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>ID</th><th>Status</th><th>Address</th><th>Capabilities</th><th>Expires</th><th>Actions</th></tr></thead>
+        <thead><tr><th>ID</th><th>Status</th><th>Address</th><th>Capabilities</th><th>Tags</th><th>Last Seen</th><th>Expires</th><th>Actions</th></tr></thead>
         <tbody>
-          ${agents.length === 0 ? `<tr><td colspan="6">${emptyState('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>', 'No agents registered', 'Register your first agent to start dispatching jobs.', 'Register Agent', "document.getElementById('ag-id')?.focus()")}</td></tr>` :
+          ${agents.length === 0 ? `<tr><td colspan="8">${emptyState('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>', 'No agents registered', 'Register your first agent to start dispatching jobs.', 'Register Agent', "document.getElementById('ag-id')?.focus()")}</td></tr>` :
           agents.map(a=>`<tr>
             <td><strong>${esc(a.id)}</strong></td>
             <td><span class="pill ${esc(a.status)}">${esc(a.status)}</span></td>
             <td class="mono">${esc(a.addr||'—')}</td>
             <td class="mono">${(a.capabilities||[]).join(', ')||'—'}</td>
+            <td class="mono">${a.tags&&Object.keys(a.tags).length?Object.entries(a.tags).map(([k,v])=>`<span class="pill unknown" style="font-size:10px">${esc(k)}:${esc(v)}</span>`).join(' '):'—'}</td>
+            <td class="mono" style="font-size:11px">${a.last_seen?fmtTime(a.last_seen):'—'}</td>
             <td class="mono">${a.expires_at?fmtTime(a.expires_at):'∞'}</td>
             <td class="flex" style="gap:4px;flex-wrap:wrap">
               <select onchange="setAgentStatus('${esc(a.id)}',this.value)" style="width:100px;padding:3px 6px;font-size:11px">
@@ -1088,7 +1172,7 @@ async function renderAgents(rid) {
             </td>
           </tr>
           <tr id="dispatch-row-${esc(a.id)}" style="display:none;background:var(--surface)">
-            <td colspan="6" style="padding:12px">
+            <td colspan="8" style="padding:12px">
               <div class="form-row" style="margin:0">
                 <div class="form-group"><label>Capability</label><input id="disp-cap-${esc(a.id)}" value="${esc((a.capabilities||[])[0]||'')}" style="width:120px"></div>
                 <div class="form-group" style="flex:1"><label>Payload (JSON)</label><input id="disp-pay-${esc(a.id)}" placeholder='{"key":"val"}' style="width:100%"></div>
@@ -1112,6 +1196,7 @@ async function renderAgents(rid) {
       </div>
       <div class="form-row">
         <div class="form-group"><label>Capabilities (comma-sep)</label><input id="ag-caps" placeholder="inference,embeddings" style="min-width:240px"></div>
+        <div class="form-group"><label>Tags (k:v,…)</label><input id="ag-tags" placeholder="region:us,tier:1" style="min-width:200px"></div>
         <button class="btn btn-primary" style="margin-top:18px" onclick="registerAgent()">Register</button>
       </div>
     </div>
@@ -1218,12 +1303,15 @@ async function registerAgent() {
   const id = document.getElementById('ag-id').value.trim();
   if (!id) { toast('ID required', false); return; }
   const caps = document.getElementById('ag-caps').value.split(',').map(s=>s.trim()).filter(Boolean);
+  const tags = {};
+  ((document.getElementById('ag-tags')||{}).value||'').split(',').forEach(t=>{const [k,v]=t.split(':');if(k&&v)tags[k.trim()]=v.trim();});
   try {
     await post('/agents/register', {
       id, addr: document.getElementById('ag-addr').value.trim(),
       status: document.getElementById('ag-status').value,
       ttl_seconds: parseInt(document.getElementById('ag-ttl').value)||300,
-      capabilities: caps
+      capabilities: caps,
+      tags: Object.keys(tags).length ? tags : undefined
     });
     toast('Agent registered'); renderAgents(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
@@ -1242,7 +1330,7 @@ async function heartbeat(id) {
 
 async function deregisterAgent(id) {
   if (!confirm('Deregister '+id+'?')) return;
-  try { await del('/agents?id=${encodeURIComponent(id)}'); toast('Agent removed'); renderAgents(currentRenderId); }
+  try { await del(`/agents?id=${encodeURIComponent(id)}`); toast('Agent removed'); renderAgents(currentRenderId); }
   catch(e) { toast('Error: '+e.message, false); }
 }
 
@@ -1279,14 +1367,38 @@ async function renderJobs(rid) {
             const dur = (j.created_at && j.updated_at && j.status !== 'pending') ?
               Math.round((new Date(j.updated_at) - new Date(j.created_at))/1000)+'s' : '---';
             const canCancel = j.status === 'pending' || j.status === 'running';
-            return `<tr>
+            const canComplete = j.status === 'running';
+            return `<tr style="cursor:pointer" onclick="toggleJobDetail('${esc(j.id)}')">
               <td class="mono"><strong>${esc(j.id)}</strong></td>
               <td><span class="pill ${esc(j.status)}">${esc(j.status)}</span></td>
               <td>${esc(j.capability||'---')}</td>
               <td class="mono">${esc(j.agent_id||'---')}</td>
               <td class="mono">${fmtTime(j.created_at)}</td>
               <td class="mono">${dur}</td>
-              <td>${canCancel?`<button class="btn btn-danger btn-sm" onclick="cancelJob('${esc(j.id)}')">Cancel</button>`:''}</td>
+              <td onclick="event.stopPropagation()" style="white-space:nowrap">
+                ${canCancel?`<button class="btn btn-danger btn-sm" onclick="cancelJob('${esc(j.id)}')">✕ Cancel</button>`:''}
+                ${canComplete?`<button class="btn btn-outline btn-sm" onclick="updateJob('${esc(j.id)}','done','')">✓ Done</button> <button class="btn btn-outline btn-sm" onclick="updateJob('${esc(j.id)}','failed','error')">✗ Fail</button>`:''}
+                ${(!canCancel && !canComplete)?`<button class="btn btn-outline btn-sm" onclick="retryJob('${esc(j.id)}')">↻ Retry</button>`:''}
+              </td>
+            </tr>
+            <tr id="job-detail-${esc(j.id)}" class="detail-row" style="display:none">
+              <td colspan="7">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:4px">
+                  <div>
+                    <div style="font-size:11px;color:var(--muted);margin-bottom:4px;text-transform:uppercase">Payload</div>
+                    <pre style="margin:0">${esc(JSON.stringify(j.payload||{}, null, 2))}</pre>
+                  </div>
+                  <div>
+                    <div style="font-size:11px;color:var(--muted);margin-bottom:4px;text-transform:uppercase">Result / Error</div>
+                    <pre style="margin:0">${esc(j.result||j.error||'—')}</pre>
+                    ${j.status==='running'?`<div style="margin-top:8px;display:flex;gap:6px">
+                      <input id="job-res-${esc(j.id)}" placeholder="result value…" style="flex:1;padding:4px 8px;font-size:12px">
+                      <button class="btn btn-outline btn-sm" onclick="updateJobWithResult('${esc(j.id)}','done')">✓ Mark done</button>
+                      <button class="btn btn-outline btn-sm" style="color:var(--danger)" onclick="updateJobWithResult('${esc(j.id)}','failed')">✗ Mark failed</button>
+                    </div>`:''}
+                  </div>
+                </div>
+              </td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -1304,6 +1416,18 @@ async function renderJobs(rid) {
       <textarea id="job-payload" placeholder='{"prompt":"hello"}'></textarea></div>
       <button class="btn btn-primary" style="margin-top:12px" onclick="submitJob()">Submit Job</button>
     </div>
+  </div>
+  <div class="section">
+    <div class="section-title">Claim Next Pending Job</div>
+    <div class="card">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Agent workers use this to claim the next pending job assigned to them.</div>
+      <div class="form-row">
+        <div class="form-group"><label>Agent ID</label><input id="claim-agent-id" placeholder="edge-01" style="width:160px"></div>
+        <div class="form-group"><label>Capability (optional)</label><input id="claim-capability" placeholder="inference" style="width:140px"></div>
+        <button class="btn btn-outline" style="margin-top:18px" onclick="claimJob()">⬇ Claim Job</button>
+      </div>
+      <div id="claim-result" style="margin-top:10px"></div>
+    </div>
   </div>`;
 
   if (jobAutoRefresh) {
@@ -1319,6 +1443,40 @@ async function cancelJob(id) {
   } catch(e) { toast('Error: '+e.message, false); }
 }
 
+async function retryJob(id) {
+  // Look up the original job to copy its capability, agent_id, and payload
+  try {
+    const allJobs = (await api('/agents/jobs')).jobs || [];
+    const orig = allJobs.find(j => j.id === id);
+    if (!orig) { toast('Job not found', false); return; }
+    const j = await post('/agents/jobs', {capability: orig.capability || '', agent_id: orig.agent_id || '', payload: orig.payload || {}});
+    toast('Retried as job '+j.id);
+    renderJobs(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+function toggleJobDetail(id) {
+  const row = document.getElementById('job-detail-'+id);
+  if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}
+
+async function updateJob(id, status, resultOrError) {
+  try {
+    const body = {status};
+    if (status === 'done') body.result = resultOrError;
+    if (status === 'failed') body.error = resultOrError;
+    await api('/agents/jobs/'+encodeURIComponent(id), {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    toast('Job marked as '+status);
+    renderJobs(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function updateJobWithResult(id, status) {
+  const input = document.getElementById('job-res-'+id);
+  const val = input ? input.value.trim() : '';
+  await updateJob(id, status, val);
+}
+
 async function submitJob() {
   const cap = (document.getElementById('job-cap')||{}).value.trim();
   const agent = (document.getElementById('job-agent')||{}).value.trim();
@@ -1332,6 +1490,33 @@ async function submitJob() {
     toast('Job submitted');
     renderJobs(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function claimJob() {
+  const agentId = ((document.getElementById('claim-agent-id')||{}).value||'').trim();
+  const capability = ((document.getElementById('claim-capability')||{}).value||'').trim();
+  if (!agentId && !capability) { toast('Agent ID or capability required', false); return; }
+  const resultEl = document.getElementById('claim-result');
+  try {
+    let u = '/agents/jobs/claim?';
+    if (agentId) u += 'agent_id='+encodeURIComponent(agentId);
+    if (agentId && capability) u += '&';
+    if (capability) u += 'capability='+encodeURIComponent(capability);
+    const j = await api(u);
+    if (resultEl) resultEl.innerHTML = `
+      <div class="alert ok" style="margin-bottom:8px">✓ Claimed job <span class="mono">${esc(j.id)}</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px">
+        <div><strong>Agent:</strong> <span class="mono">${esc(j.agent_id||'—')}</span></div>
+        <div><strong>Capability:</strong> <span class="mono">${esc(j.capability||'—')}</span></div>
+        <div><strong>Status:</strong> <span class="pill ${esc(j.status)}">${esc(j.status)}</span></div>
+        <div><strong>Created:</strong> <span class="mono">${fmtTime(j.created_at)}</span></div>
+      </div>
+      <div style="margin-top:8px;font-size:11px;color:var(--muted)">Payload:</div>
+      <pre style="margin:4px 0">${esc(JSON.stringify(j.payload||{}, null, 2))}</pre>`;
+    renderJobs(currentRenderId);
+  } catch(e) {
+    if (resultEl) resultEl.innerHTML = `<div class="alert err">No pending job available for this agent/capability.</div>`;
+  }
 }
 
 
@@ -1378,11 +1563,14 @@ async function renderEvents(rid) {
       <table>
         <thead><tr><th>Time</th><th>Type</th><th>Tenant</th><th>Detail</th></tr></thead>
         <tbody>
-          ${(hist.events||[]).slice().reverse().map(ev=>`<tr>
+          ${(hist.events||[]).slice().reverse().map((ev,i)=>`<tr style="cursor:pointer" onclick="toggleEvDetail(${i})">
             <td class="mono">${fmtTime(ev.timestamp)}</td>
             <td><span class="event-type ${esc(ev.type)}">${esc(ev.type)}</span></td>
             <td class="mono">${esc(ev.tenant_id||'—')}</td>
-            <td class="mono">${esc(ev.data ? JSON.stringify(ev.data).substring(0,80) : '')}</td>
+            <td class="mono" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(ev.data ? JSON.stringify(ev.data).substring(0,80) : '')}</td>
+          </tr>
+          <tr id="ev-detail-${i}" style="display:none;background:var(--surface)">
+            <td colspan="4" style="padding:8px 16px"><pre style="margin:0;white-space:pre-wrap;word-break:break-all;font-size:11px">${esc(JSON.stringify(ev.data||{}, null, 2))}</pre></td>
           </tr>`).join('')||'<tr><td colspan="4" class="empty">No history</td></tr>'}
         </tbody>
       </table>
@@ -1399,6 +1587,11 @@ function eventLine(ev) {
     <span class="event-type ${esc(ev.type)}">${esc(ev.type)}</span>
     <span class="event-data">${esc(data)}</span>
   </div>`;
+}
+
+function toggleEvDetail(i) {
+  const row = document.getElementById('ev-detail-'+i);
+  if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
 }
 
 function startSSE() {
@@ -1458,29 +1651,64 @@ function restartSSE() { startSSE(); }
 function clearFeed() { const f = document.getElementById('event-feed'); if(f) f.innerHTML=''; }
 
 // ── KV STORE ─────────────────────────────────────────────────────────────────
+// Sanitize a KV key to a safe DOM element ID suffix.
+function sanitizeKeyId(key) { return key.replace(/[^a-zA-Z0-9_-]/g, '_'); }
+// Nanoseconds per second (for KV TTL conversion).
+const KV_NS_PER_SEC = 1e9;
+
 async function renderKV(rid) {
   const r = await api('/kv');
   if (rid && rid !== currentRenderId) return;
   const entries = (r.entries && r.entries.length) ? r.entries : [];
   let rows = entries.map(e => {
     const exp = e.expires_at ? `<span class="mono">${esc(e.expires_at.substring(0,19))}</span>` : '<span class="muted">—</span>';
-    return `<tr>
-      <td class="mono">${esc(e.key)}</td>
-      <td>${esc(e.value)}</td>
+    const sk = sanitizeKeyId(e.key);
+    return `<tr style="cursor:pointer" onclick="kvToggleRow(${JSON.stringify(e.key)})">
+      <td class="mono"><strong>${esc(e.key)}</strong></td>
+      <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.value)}</td>
       <td>${exp}</td>
-      <td>
-        <button class="btn btn-outline btn-sm btn-danger" onclick="kvDelete(${JSON.stringify(e.key)})">Del</button>
+      <td onclick="event.stopPropagation()">
+        <button class="btn btn-outline btn-sm" onclick="kvInspect(${JSON.stringify(e.key)})">✎</button>
+        <button class="btn btn-outline btn-sm btn-danger" onclick="kvDelete(${JSON.stringify(e.key)})">✕</button>
+      </td>
+    </tr>
+    <tr id="kv-row-${sk}" style="display:none;background:var(--surface)">
+      <td colspan="4" style="padding:10px 16px">
+        <div style="display:grid;grid-template-columns:1fr auto;gap:12px;align-items:start">
+          <div>
+            <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Full Value</div>
+            <pre style="margin:0;white-space:pre-wrap;word-break:break-all">${esc(e.value)}</pre>
+          </div>
+          <div style="min-width:220px">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Update Value</div>
+            <textarea id="kv-inline-val-${sk}" style="width:100%;font-family:monospace;font-size:12px;min-height:52px">${esc(e.value)}</textarea>
+            <div class="form-row" style="margin-top:4px;gap:6px">
+              <input id="kv-inline-ttl-${sk}" type="number" value="0" min="0" style="width:70px;padding:3px 6px;font-size:12px" placeholder="TTL s">
+              <button class="btn btn-primary btn-sm" onclick="kvInlineUpdate(${JSON.stringify(e.key)})">Save</button>
+            </div>
+          </div>
+        </div>
       </td>
     </tr>`;
   }).join('');
   document.getElementById('content').innerHTML = `
     <div class="section">
-      <div class="section-title">Set / Update Key</div>
+      <div class="flex" style="margin-bottom:10px">
+        <div class="section-title" style="margin:0">Set / Update Key</div>
+        <div class="ml-auto">
+          <button class="btn btn-outline btn-sm" onclick="renderKV(currentRenderId)">↻</button>
+        </div>
+      </div>
       <div class="form-row">
         <div class="form-group"><label>Key</label><input id="kv-key" placeholder="config.debug" style="width:200px"></div>
         <div class="form-group"><label>Value</label><input id="kv-val" placeholder="true" style="width:200px"></div>
         <div class="form-group"><label>TTL (s, 0=forever)</label><input id="kv-ttl" type="number" value="0" style="width:100px"></div>
         <div class="form-group"><label>&nbsp;</label><button class="btn btn-primary" onclick="kvSet()">Set</button></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Key Lookup</label><input id="kv-lookup" placeholder="config.debug" style="width:200px"></div>
+        <div class="form-group"><label>&nbsp;</label><button class="btn btn-outline" onclick="kvLookup()">Get</button></div>
+        <div id="kv-lookup-result" style="align-self:center"></div>
       </div>
       <div class="form-row">
         <div class="form-group"><label>Prefix filter</label><input id="kv-prefix" placeholder="cfg:" style="width:160px"></div>
@@ -1493,7 +1721,7 @@ async function renderKV(rid) {
         <tbody>${rows || '<tr><td colspan="4" style="text-align:center;color:var(--muted)">No entries</td></tr>'}</tbody>
       </table>
     </div>
-    <p style="color:var(--muted);font-size:12px">Total: ${r.count}</p>
+    <p style="color:var(--muted);font-size:12px">Total: ${r.count} — Click a row to expand and edit inline.</p>
   `;
 }
 
@@ -1503,7 +1731,7 @@ async function kvSet() {
   const ttlSec = parseInt(document.getElementById('kv-ttl').value, 10) || 0;
   if (!key) { toast('Key is required', true); return; }
   try {
-    await api('/kv/'+encodeURIComponent(key), {method:'PUT', body: JSON.stringify({value: val, ttl: ttlSec * 1000000000})});
+    await api('/kv/'+encodeURIComponent(key), {method:'PUT', body: JSON.stringify({value: val, ttl: ttlSec * KV_NS_PER_SEC})});
     toast('Key set');
     renderKV(currentRenderId);
   } catch(e) { toast('Error: '+e.message, true); }
@@ -1517,17 +1745,59 @@ async function kvDelete(key) {
   } catch(e) { toast('Error: '+e.message, true); }
 }
 
+function kvToggleRow(key) {
+  const row = document.getElementById('kv-row-'+sanitizeKeyId(key));
+  if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}
+
+function kvInspect(key) {
+  kvToggleRow(key);
+}
+
+async function kvLookup() {
+  const key = ((document.getElementById('kv-lookup')||{}).value||'').trim();
+  if (!key) { toast('Key required', false); return; }
+  const el = document.getElementById('kv-lookup-result');
+  try {
+    const e = await api('/kv/'+encodeURIComponent(key));
+    if (el) el.innerHTML = `<span class="pill healthy" style="cursor:default" title="${esc(e.value)}">${esc(key)}: ${esc(e.value.length>30?e.value.substring(0,30)+'…':e.value)}</span>`;
+    // prefill the Set form for easy editing
+    const kIn = document.getElementById('kv-key');
+    const vIn = document.getElementById('kv-val');
+    if (kIn) kIn.value = e.key;
+    if (vIn) vIn.value = e.value;
+  } catch(e2) {
+    if (el) el.innerHTML = `<span class="pill degraded">${esc(key)}: not found</span>`;
+  }
+}
+
+async function kvInlineUpdate(key) {
+  const sk = sanitizeKeyId(key);
+  const valEl = document.getElementById('kv-inline-val-'+sk);
+  const ttlEl = document.getElementById('kv-inline-ttl-'+sk);
+  const val = valEl ? valEl.value : '';
+  const ttlSec = ttlEl ? (parseInt(ttlEl.value,10)||0) : 0;
+  try {
+    await api('/kv/'+encodeURIComponent(key), {method:'PUT', body: JSON.stringify({value: val, ttl: ttlSec * KV_NS_PER_SEC})});
+    toast('Key updated');
+    renderKV(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
 function kvRefreshWithPrefix() {
   const prefix = document.getElementById('kv-prefix').value.trim();
   api('/kv' + (prefix ? '?prefix='+encodeURIComponent(prefix) : '')).then(r => {
     const entries = (r.entries && r.entries.length) ? r.entries : [];
     const rows = entries.map(e => {
       const exp = e.expires_at ? `<span class="mono">${esc(e.expires_at.substring(0,19))}</span>` : '<span class="muted">—</span>';
-      return `<tr>
-        <td class="mono">${esc(e.key)}</td>
-        <td>${esc(e.value)}</td>
+      return `<tr style="cursor:pointer" onclick="kvToggleRow(${JSON.stringify(e.key)})">
+        <td class="mono"><strong>${esc(e.key)}</strong></td>
+        <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.value)}</td>
         <td>${exp}</td>
-        <td><button class="btn btn-outline btn-sm btn-danger" onclick="kvDelete(${JSON.stringify(e.key)})">Del</button></td>
+        <td onclick="event.stopPropagation()">
+          <button class="btn btn-outline btn-sm" onclick="kvInspect(${JSON.stringify(e.key)})">✎</button>
+          <button class="btn btn-outline btn-sm btn-danger" onclick="kvDelete(${JSON.stringify(e.key)})">✕</button>
+        </td>
       </tr>`;
     }).join('');
     const tbody = document.querySelector('.table-wrap tbody');
@@ -1976,7 +2246,7 @@ async function renderSchedules(rid) {
       <table>
         <thead><tr><th>Name</th><th>Cron</th><th>Capability</th><th>Agent</th><th>Enabled</th><th>Last Run</th><th>Next Run</th><th></th></tr></thead>
         <tbody>
-          ${schedules.map(s=>`<tr>
+          ${schedules.map(s=>`<tr style="cursor:pointer" onclick="toggleScheduleDetail('${esc(s.id)}')">
             <td><strong>${esc(s.name)}</strong></td>
             <td class="mono">${esc(s.cron)}</td>
             <td>${esc(s.capability||'—')}</td>
@@ -1984,9 +2254,29 @@ async function renderSchedules(rid) {
             <td><span class="pill ${s.enabled?'healthy':'unknown'}">${s.enabled?'enabled':'disabled'}</span></td>
             <td class="mono">${fmtTime(s.last_run)}</td>
             <td class="mono">${fmtTime(s.next_run)}</td>
-            <td class="flex">
+            <td onclick="event.stopPropagation()" class="flex">
               <button class="btn btn-outline btn-sm" onclick="toggleSchedule('${esc(s.id)}',${!s.enabled})">${s.enabled?'Disable':'Enable'}</button>
               <button class="btn btn-danger btn-sm" onclick="deleteSchedule('${esc(s.id)}')">✕</button>
+            </td>
+          </tr>
+          <tr id="sched-detail-${esc(s.id)}" style="display:none;background:var(--surface)">
+            <td colspan="8" style="padding:10px 16px">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:12px">
+                <div>
+                  <div style="color:var(--muted);margin-bottom:4px;text-transform:uppercase;font-size:11px">Payload</div>
+                  <pre style="margin:0">${esc(JSON.stringify(s.payload||{}, null, 2))}</pre>
+                </div>
+                <div>
+                  <div style="color:var(--muted);margin-bottom:4px;text-transform:uppercase;font-size:11px">Schedule Details</div>
+                  <table style="font-size:11px;border-collapse:collapse;width:100%">
+                    <tr><td style="color:var(--muted);padding:2px 8px 2px 0">ID</td><td class="mono">${esc(s.id)}</td></tr>
+                    <tr><td style="color:var(--muted);padding:2px 8px 2px 0">Tenant</td><td class="mono">${esc(s.tenant||'—')}</td></tr>
+                    <tr><td style="color:var(--muted);padding:2px 8px 2px 0">Created</td><td class="mono">${fmtTime(s.created_at)}</td></tr>
+                    <tr><td style="color:var(--muted);padding:2px 8px 2px 0">Last Run</td><td class="mono">${fmtTime(s.last_run)||'never'}</td></tr>
+                    <tr><td style="color:var(--muted);padding:2px 8px 2px 0">Next Run</td><td class="mono">${fmtTime(s.next_run)||'—'}</td></tr>
+                  </table>
+                </div>
+              </div>
             </td>
           </tr>`).join('')||'<tr><td colspan="8" class="empty">No schedules</td></tr>'}
         </tbody>
@@ -2040,6 +2330,11 @@ async function deleteSchedule(id) {
   catch(e) { toast('Error: '+e.message, false); }
 }
 
+function toggleScheduleDetail(id) {
+  const row = document.getElementById('sched-detail-'+id);
+  if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}
+
 // ── AGENT GROUPS ──────────────────────────────────────────────────────────────
 async function renderGroups(rid) {
   const [groupsRes, agentsRes] = await Promise.allSettled([api('/agent-groups'), api('/agents')]);
@@ -2058,10 +2353,13 @@ async function renderGroups(rid) {
           ${groups.map(g=>`<tr>
             <td class="mono">${esc(g.id)}</td>
             <td><strong>${esc(g.name)}</strong></td>
-            <td class="mono">${(g.members||[]).join(', ')||'—'}</td>
+            <td>
+              ${(g.members||[]).map(m=>`<span style="display:inline-flex;align-items:center;gap:3px;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:11px;font-family:monospace;margin:2px">${esc(m)}<button class="btn btn-danger" style="padding:0 4px;font-size:10px;line-height:1;min-width:auto;border-radius:2px;margin-left:2px" onclick="removeGroupMember('${esc(g.id)}','${esc(m)}')">✕</button></span>`).join('')||'<span style="color:var(--muted)">—</span>'}
+            </td>
             <td class="mono">${fmtTime(g.created_at)}</td>
-            <td class="flex">
+            <td class="flex" style="gap:4px">
               <button class="btn btn-outline btn-sm" onclick="addGroupMember('${esc(g.id)}')">+ Member</button>
+              <button class="btn btn-outline btn-sm" onclick="groupNextMember('${esc(g.id)}')">→ Next</button>
               <button class="btn btn-danger btn-sm" onclick="deleteGroup('${esc(g.id)}')">✕</button>
             </td>
           </tr>`).join('')||'<tr><td colspan="5" class="empty">No groups</td></tr>'}
@@ -2106,6 +2404,24 @@ async function addGroupMember(id) {
   } catch(e) { toast('Error: '+e.message, false); }
 }
 
+async function removeGroupMember(groupId, agentId) {
+  try {
+    await del('/agent-groups/'+encodeURIComponent(groupId)+'/members/'+encodeURIComponent(agentId));
+    toast('Member "'+agentId+'" removed'); renderGroups(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function groupNextMember(groupId) {
+  try {
+    const res = await api('/agent-groups/'+encodeURIComponent(groupId)+'/next');
+    if (res && res.agent_id) {
+      toast('Next agent: '+res.agent_id);
+    } else {
+      toast('No available members', false);
+    }
+  } catch(e) { toast('No available members in group', false); }
+}
+
 // ── CIRCUIT BREAKER ───────────────────────────────────────────────────────────
 async function renderCircuit(rid) {
   const res = await api('/circuit').catch(() => ({breakers:[]}));
@@ -2120,26 +2436,67 @@ async function renderCircuit(rid) {
     ${breakers.length===0?'<div class="empty">No circuit breakers registered</div>':''}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Name</th><th>State</th><th>Failures</th><th>Last Failure</th><th>Reset At</th><th></th></tr></thead>
+        <thead><tr><th>Agent ID</th><th>State</th><th>Failures</th><th>Last Failure</th><th>Reset At</th><th></th></tr></thead>
         <tbody>
           ${breakers.map(b=>`<tr>
-            <td><strong>${esc(b.name)}</strong></td>
+            <td><strong class="mono">${esc(b.name||b.agent_id||'—')}</strong></td>
             <td><span class="pill ${b.state==='closed'?'healthy':b.state==='half-open'?'degraded':'degraded'}">${esc(b.state||'unknown')}</span></td>
             <td>${b.failures||0}</td>
             <td class="mono">${fmtTime(b.last_failure)}</td>
             <td class="mono">${fmtTime(b.reset_at)}</td>
-            <td><button class="btn btn-outline btn-sm" onclick="resetBreaker('${esc(b.name)}')">↺ Reset</button></td>
+            <td class="flex" style="gap:4px">
+              <button class="btn btn-outline btn-sm" onclick="recordCircuit('${esc(b.name||b.agent_id||'')}', true)">✓ Success</button>
+              <button class="btn btn-outline btn-sm" style="color:var(--warn)" onclick="recordCircuit('${esc(b.name||b.agent_id||'')}', false)">✗ Failure</button>
+              <button class="btn btn-outline btn-sm" onclick="resetBreaker('${esc(b.name||b.agent_id||'')}')">↺ Reset</button>
+            </td>
           </tr>`).join('')||'<tr><td colspan="6" class="empty">No circuit breakers</td></tr>'}
         </tbody>
       </table>
     </div>
+  </div>
+  <div class="section">
+    <div class="section-title">Record Event</div>
+    <div class="card">
+      <div class="form-row">
+        <div class="form-group"><label>Agent ID</label><input id="cb-agent-id" placeholder="edge-01" style="width:180px"></div>
+        <div class="form-group"><label>Result</label>
+          <select id="cb-result" style="width:120px">
+            <option value="success">✓ Success</option>
+            <option value="failure">✗ Failure</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" style="margin-top:18px" onclick="recordCircuitForm()">Record</button>
+      </div>
+      <div id="cb-result-msg" style="margin-top:8px"></div>
+    </div>
   </div>`;
 }
 
-async function resetBreaker(name) {
+async function recordCircuit(agentId, success) {
   try {
-    await post('/circuit/reset', {name});
-    toast('Circuit breaker "'+name+'" reset'); renderCircuit(currentRenderId);
+    const b = await post('/circuit/record', {agent_id: agentId, success});
+    toast((success ? '✓ Success' : '✗ Failure') + ' recorded for ' + agentId);
+    renderCircuit(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function recordCircuitForm() {
+  const agentId = ((document.getElementById('cb-agent-id')||{}).value||'').trim();
+  const success = ((document.getElementById('cb-result')||{}).value||'') === 'success';
+  if (!agentId) { toast('Agent ID required', false); return; }
+  try {
+    const b = await post('/circuit/record', {agent_id: agentId, success});
+    const el = document.getElementById('cb-result-msg');
+    if (el) el.innerHTML = `<div class="alert ok">Recorded: ${esc(agentId)} → state <strong>${esc(b.state||'?')}</strong>, failures: ${b.failures||0}</div>`;
+    renderCircuit(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function resetBreaker(agentId) {
+  try {
+    await api('/circuit/reset?agent_id='+encodeURIComponent(agentId), {method:'POST'});
+    toast('Circuit breaker "'+agentId+'" reset');
+    renderCircuit(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
 }
 
@@ -2248,9 +2605,10 @@ async function importRoutesFile(input) {
 async function checkAgentsHealth() {
   try {
     const res = await api('/agents/health');
-    const agents = res.agents || [];
-    const healthy = agents.filter(a=>a.status==='healthy').length;
-    toast('Health: '+healthy+'/'+agents.length+' agents healthy');
+    const results = res.results || [];
+    const healthy = results.filter(r=>r.healthy).length;
+    toast('Health: '+healthy+'/'+results.length+' agents healthy');
+    go('healthchecks');
   } catch(e) { toast('Health check failed: '+e.message, false); }
 }
 
@@ -2308,67 +2666,88 @@ async function sendProtoControl() {
 // ── NOTIFICATIONS PAGE ────────────────────────────────────────────────────────
 async function renderNotifs(rid) {
   const content = document.getElementById('content');
-  if (content) content.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Type</th><th>Target</th><th>Message</th><th>Status</th><th>Sent</th><th>Created</th><th></th></tr></thead><tbody>${skeletonRows(7)}</tbody></table></div>`;
-  const res = await api('/admin/notifications').catch(()=>({notifications:[]}));
+  if (content) content.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Webhook URL</th><th>Events</th><th>Fired</th><th>Created</th><th>Status</th><th></th></tr></thead><tbody>${skeletonRows(4)}</tbody></table></div>`;
+  const res = await api('/admin/notifications').catch(()=>({rules:[]}));
   if (rid && rid !== currentRenderId) return;
-  const notifs = res.notifications || [];
-  document.getElementById('content').innerHTML = `
+  const rules = res.rules || [];
+  const content2 = document.getElementById('content');
+  if (!content2) return;
+  content2.innerHTML = `
   <div class="section">
     <div class="flex" style="margin-bottom:12px">
-      <div class="section-title" style="margin:0">${notifs.length} Notification(s)</div>
+      <div class="section-title" style="margin:0">${rules.length} Notification Rule(s)</div>
       <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="renderNotifs(currentRenderId)">↻</button></div>
     </div>
     <div class="table-wrap" style="margin-bottom:16px">
       <table>
-        <thead><tr><th>Type</th><th>Target</th><th>Message</th><th>Status</th><th>Sent</th><th>Created</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Webhook URL</th><th>Event Types</th><th>Fired</th><th>Created</th><th>Active</th><th></th></tr></thead>
         <tbody>
-          ${notifs.map(n=>`<tr>
-            <td><span class="pill ${n.type==='email'?'healthy':n.type==='slack'?'sat':'unknown'}">${esc(n.type)}</span></td>
-            <td class="mono">${esc(n.target)}</td>
-            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(n.message)}">${esc(n.message)}</td>
-            <td><span class="pill ${n.status==='sent'?'healthy':n.status==='failed'?'degraded':'unknown'}">${esc(n.status||'pending')}</span></td>
-            <td class="mono">${fmtTime(n.sent_at)}</td>
-            <td class="mono">${fmtTime(n.created_at)}</td>
-            <td><button class="btn btn-danger btn-sm" onclick="deleteNotif(${JSON.stringify(n.id)})">✕</button></td>
-          </tr>`).join('')||'<tr><td colspan="7" class="empty">No notifications</td></tr>'}
+          ${rules.length === 0 ? '<tr><td colspan="7" class="empty">No notification rules yet</td></tr>' :
+          rules.map(r=>`<tr>
+            <td><strong>${esc(r.name)}</strong></td>
+            <td class="mono" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.webhook_url)}">${esc(r.webhook_url)}</td>
+            <td class="mono">${(r.event_types&&r.event_types.length)?r.event_types.map(t=>`<span class="pill unknown" style="margin-right:2px">${esc(t)}</span>`).join(''):'<span style="color:var(--muted)">all events</span>'}</td>
+            <td>${r.fired_total||0}</td>
+            <td class="mono">${fmtTime(r.created_at)}</td>
+            <td>
+              <button class="btn btn-sm ${r.active?'btn-primary':'btn-outline'}" onclick="toggleNotifRule(${JSON.stringify(r.id)}, ${!r.active})">
+                ${r.active?'✓ Active':'⏸ Disabled'}
+              </button>
+            </td>
+            <td><button class="btn btn-danger btn-sm" onclick="deleteNotifRule(${JSON.stringify(r.id)})">✕</button></td>
+          </tr>`).join('')}
         </tbody>
       </table>
     </div>
   </div>
   <div class="section">
-    <div class="section-title">Send Notification</div>
+    <div class="section-title">Add Notification Rule</div>
     <div class="card">
       <div class="form-row">
-        <div class="form-group"><label>Type</label>
-          <select id="notif-send-type" style="width:120px">
-            <option value="email">email</option>
-            <option value="webhook">webhook</option>
-            <option value="slack">slack</option>
-          </select>
-        </div>
-        <div class="form-group" style="flex:1"><label>Target</label><input id="notif-send-target" placeholder="user@example.com or webhook URL" style="min-width:240px"></div>
+        <div class="form-group"><label>Rule Name</label><input id="notif-name" placeholder="my-rule" style="width:160px"></div>
+        <div class="form-group" style="flex:1"><label>Webhook URL</label><input id="notif-url" placeholder="https://hooks.example.com/…" style="min-width:280px"></div>
       </div>
-      <div class="form-group" style="margin-bottom:8px"><label>Message</label><textarea id="notif-send-message" placeholder="Notification message…" style="min-height:70px"></textarea></div>
-      <button class="btn btn-primary" onclick="sendNotification()">Send Notification</button>
+      <div class="form-row">
+        <div class="form-group" style="flex:1"><label>Secret (optional HMAC key)</label><input id="notif-secret" type="password" placeholder="optional signing secret" style="min-width:200px"></div>
+        <div class="form-group" style="flex:1"><label>Event Types (comma-separated, blank = all)</label><input id="notif-events" placeholder="block_added,route_added" style="min-width:220px"></div>
+      </div>
+      <button class="btn btn-primary" onclick="addNotifRule()">Add Rule</button>
     </div>
   </div>`;
 }
 
-async function sendNotification() {
-  const type = (document.getElementById('notif-send-type')||{}).value||'email';
-  const target = ((document.getElementById('notif-send-target')||{}).value||'').trim();
-  const message = ((document.getElementById('notif-send-message')||{}).value||'').trim();
-  if (!target || !message) { toast('Target and message required', false); return; }
+async function addNotifRule() {
+  const name = ((document.getElementById('notif-name')||{}).value||'').trim();
+  const url = ((document.getElementById('notif-url')||{}).value||'').trim();
+  const secret = ((document.getElementById('notif-secret')||{}).value||'').trim();
+  const eventsRaw = ((document.getElementById('notif-events')||{}).value||'').trim();
+  if (!name) { toast('Rule name is required', false); return; }
+  if (!url) { toast('Webhook URL is required', false); return; }
+  const event_types = eventsRaw ? eventsRaw.split(',').map(s=>s.trim()).filter(Boolean) : [];
   try {
-    await post('/admin/notifications', {type, target, message});
-    toast('Notification sent'); renderNotifs(currentRenderId);
+    await post('/admin/notifications', {name, webhook_url: url, secret, event_types});
+    toast('Notification rule added');
+    renderNotifs(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
 }
 
-async function deleteNotif(id) {
+async function toggleNotifRule(id, active) {
+  try {
+    await api('/admin/notifications/'+encodeURIComponent(id), {
+      method:'PATCH',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({active})
+    });
+    toast(active ? 'Rule enabled' : 'Rule disabled');
+    renderNotifs(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function deleteNotifRule(id) {
   try {
     await del('/admin/notifications/'+encodeURIComponent(id));
-    toast('Notification deleted'); renderNotifs(currentRenderId);
+    toast('Rule deleted');
+    renderNotifs(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
 }
 
@@ -2448,7 +2827,7 @@ function closeShortcutsModal() {
 (function() {
   let _kbLastKey = '';
   let _kbLastTime = 0;
-  const _kbNavMap = {o:'overview', b:'blockchain', r:'routes', a:'agents', e:'events', k:'kv', s:'schedules', n:'notifs', m:'mesh'};
+  const _kbNavMap = {o:'overview', b:'blockchain', r:'routes', a:'agents', e:'events', k:'kv', s:'schedules', n:'notifs', m:'mesh', q:'mq', h:'healthchecks'};
   document.addEventListener('keydown', function(ev) {
     const tag = (ev.target.tagName||'').toLowerCase();
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
@@ -2517,6 +2896,33 @@ async function renderStats(rid) {
       + barChart(capLabels, capVals, '#a78bfa', 480, 120) + '</div>';
   }
 
+  // by_status breakdown
+  const agentStatusEntries = ags ? Object.entries(ags.by_status||{}) : [];
+  let agentStatusChart = '';
+  if (agentStatusEntries.length > 0) {
+    const statusColors = {healthy:'var(--accent2)', degraded:'var(--warn)', offline:'var(--danger)', unknown:'var(--muted)'};
+    const statusLabels = agentStatusEntries.map(e=>e[0]);
+    const statusVals = agentStatusEntries.map(e=>e[1]);
+    agentStatusChart = '<div class="chart-wrap"><div class="chart-title">Agents by Status</div>'
+      + barChart(statusLabels, statusVals, 'var(--accent)', 340, 100)
+      + '<div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">'
+      + agentStatusEntries.map(([s,n])=>`<span class="pill ${s==='healthy'?'healthy':s==='degraded'?'degraded':'unknown'}">${esc(s)}: ${n}</span>`).join('')
+      + '</div></div>';
+  }
+
+  // by_tenant breakdown
+  const tenantEntries = ags ? Object.entries(ags.by_tenant||{}) : [];
+  let agentTenantTable = '';
+  if (tenantEntries.length > 0) {
+    agentTenantTable = '<div class="section"><div class="section-title">Agents by Tenant</div>'
+      + '<div class="table-wrap"><table><thead><tr><th>Tenant</th><th>Agents</th><th>Share</th></tr></thead><tbody>'
+      + tenantEntries.map(([t,n])=>{
+          const pct = ags.total > 0 ? Math.round(n / ags.total * 100) : 0;
+          return `<tr><td class="mono">${esc(t)}</td><td>${n}</td><td><div class="lat-bar-wrap"><div class="lat-bar" style="width:${pct*2}px"></div><span style="font-size:11px;color:var(--muted)">${pct}%</span></div></td></tr>`;
+        }).join('')
+      + '</tbody></table></div></div>';
+  }
+
   let destTableHtml = '';
   if (rts && rts.destinations && rts.destinations.length > 0) {
     const maxLat = rts.max_latency_ms || 1;
@@ -2530,6 +2936,18 @@ async function renderStats(rid) {
       + rows + '</tbody></table></div></div>';
   }
 
+  // Blockchain stats detail
+  let bcDetailCards = '';
+  if (bcs) {
+    bcDetailCards = '<div class="section"><div class="section-title">Blockchain Details</div><div class="cards">'
+      + '<div class="card"><div class="card-label">Unique Senders</div><div class="card-value">' + bcs.unique_senders + '</div></div>'
+      + '<div class="card"><div class="card-label">Unique Recipients</div><div class="card-value">' + bcs.unique_recipients + '</div></div>'
+      + '<div class="card"><div class="card-label">Avg Tx/Block</div><div class="card-value">' + Number(bcs.avg_tx_per_block||0).toFixed(2) + '</div></div>'
+      + '<div class="card"><div class="card-label">Genesis Block</div><div class="card-value" style="font-size:12px">' + (bcs.genesis_time ? new Date(bcs.genesis_time).toLocaleDateString() : '—') + '</div></div>'
+      + '<div class="card"><div class="card-label">Latest Block</div><div class="card-value" style="font-size:12px">' + (bcs.latest_time ? new Date(bcs.latest_time).toLocaleTimeString() : '—') + '</div></div>'
+      + '</div></div>';
+  }
+
   let sysInfoCard = '';
   if (sys) {
     sysInfoCard = '<div class="section"><div class="section-title">System Info</div><div class="cards">'
@@ -2541,7 +2959,7 @@ async function renderStats(rid) {
   }
 
   const el = document.getElementById('content');
-  if (el) el.innerHTML = statCards + timelineChart + agentCapChart + destTableHtml + sysInfoCard;
+  if (el) el.innerHTML = statCards + timelineChart + agentCapChart + agentStatusChart + agentTenantTable + destTableHtml + bcDetailCards + sysInfoCard;
 }
 
 // ── TOPOLOGY PAGE ─────────────────────────────────────────────────────────────
@@ -2629,6 +3047,178 @@ function topoSelectNode(id, data) {
     });
   }
   panel.innerHTML = html;
+}
+
+// ── MESSAGE QUEUE PAGE ───────────────────────────────────────────────────────
+async function renderMQ(rid) {
+  const content = document.getElementById('content');
+  if (content) content.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Topic</th><th>Tenant</th><th>Pending</th><th></th></tr></thead><tbody>${skeletonRows(4)}</tbody></table></div>`;
+  const res = await api('/mq').catch(()=>({topics:[]}));
+  if (rid && rid !== currentRenderId) return;
+  const topics = res.topics || [];
+  const content2 = document.getElementById('content');
+  if (!content2) return;
+  content2.innerHTML = `
+  <div class="section">
+    <div class="flex" style="margin-bottom:12px">
+      <div class="section-title" style="margin:0">Active Topics (${topics.length})</div>
+      <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="renderMQ(currentRenderId)">↻</button></div>
+    </div>
+    <div class="table-wrap" style="margin-bottom:16px">
+      <table>
+        <thead><tr><th>Topic</th><th>Tenant</th><th>Pending</th><th></th></tr></thead>
+        <tbody>
+          ${topics.length === 0 ? '<tr><td colspan="4" class="empty">No topics with pending messages</td></tr>' :
+          topics.map(t=>`<tr>
+            <td><strong class="mono">${esc(t.topic)}</strong></td>
+            <td class="mono">${esc(t.tenant)}</td>
+            <td><span class="pill ${t.pending>0?'healthy':'unknown'}">${t.pending}</span></td>
+            <td class="flex">
+              <button class="btn btn-outline btn-sm" onclick="mqConsume(${JSON.stringify(t.topic)})">⬇ Consume 1</button>
+              <button class="btn btn-danger btn-sm" onclick="mqPurge(${JSON.stringify(t.topic)})">🗑 Purge</button>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <div class="section">
+      <div class="section-title">Publish Message</div>
+      <div class="card">
+        <div class="form-row">
+          <div class="form-group"><label>Topic</label><input id="mq-pub-topic" placeholder="jobs" style="width:140px"></div>
+        </div>
+        <div class="form-group" style="margin-bottom:8px"><label>Payload (JSON object)</label>
+          <textarea id="mq-pub-payload" placeholder='{"task":"summarise","doc":"file.pdf"}' style="min-height:80px;font-family:monospace;font-size:12px"></textarea>
+        </div>
+        <button class="btn btn-primary" onclick="mqPublish()">Publish</button>
+        <div id="mq-pub-result" style="margin-top:8px"></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">Consume Messages</div>
+      <div class="card">
+        <div class="form-row">
+          <div class="form-group"><label>Topic</label><input id="mq-con-topic" placeholder="jobs" style="width:140px"></div>
+          <div class="form-group"><label>Count</label><input id="mq-con-count" type="number" value="1" min="1" style="width:70px"></div>
+          <button class="btn btn-primary" style="margin-top:18px" onclick="mqConsumeForm()">Consume</button>
+        </div>
+        <div id="mq-con-result"></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function mqPublish() {
+  const topic = ((document.getElementById('mq-pub-topic')||{}).value||'').trim();
+  const payloadStr = ((document.getElementById('mq-pub-payload')||{}).value||'').trim();
+  if (!topic) { toast('Topic is required', false); return; }
+  let payload = {};
+  if (payloadStr) {
+    try { payload = JSON.parse(payloadStr); } catch(e) { toast('Payload must be valid JSON: '+e.message, false); return; }
+  }
+  try {
+    const msg = await post('/mq/'+encodeURIComponent(topic), {payload});
+    const el = document.getElementById('mq-pub-result');
+    if (el) el.innerHTML = `<div class="alert ok">✓ Message published: <span class="mono">${esc(msg.id)}</span></div>`;
+    renderMQ(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function mqConsume(topic) {
+  try {
+    const res = await api('/mq/'+encodeURIComponent(topic)+'?count=1');
+    if (!res || !res.count) { toast('No messages in topic '+topic, false); return; }
+    const msgs = res.messages || [];
+    const detail = msgs.map(m => `[${esc(m.id)}] ${esc(JSON.stringify(m.payload||{}))}`).join('\n');
+    const detailStr = detail.length > 80 ? detail.substring(0, 80) + '…' : detail;
+    toast(`Consumed ${res.count} from "${topic}"${msgs.length ? ': '+detailStr : ''}`);
+    renderMQ(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function mqConsumeForm() {
+  const topic = ((document.getElementById('mq-con-topic')||{}).value||'').trim();
+  const count = parseInt((document.getElementById('mq-con-count')||{}).value||'1', 10) || 1;
+  if (!topic) { toast('Topic is required', false); return; }
+  try {
+    const res = await api('/mq/'+encodeURIComponent(topic)+'?count='+count);
+    const el = document.getElementById('mq-con-result');
+    if (!res || !res.count) {
+      if (el) el.innerHTML = '<div class="empty">No messages available</div>';
+      return;
+    }
+    const msgs = res.messages || [];
+    if (el) el.innerHTML = `<div style="margin-top:10px;color:var(--accent2);font-size:12px">${res.count} message(s) consumed</div>`
+      + msgs.map(m=>`<div style="margin-top:6px;padding:8px;background:var(--input);border-radius:6px;font-size:11px;font-family:monospace">
+        <div style="color:var(--muted);margin-bottom:4px">${esc(m.id)} · ${fmtTime(m.created_at)}</div>
+        <pre style="white-space:pre-wrap;word-break:break-all;color:var(--text)">${esc(JSON.stringify(m.payload||{}, null, 2))}</pre>
+      </div>`).join('');
+    renderMQ(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function mqPurge(topic) {
+  try {
+    const res = await api('/mq/'+encodeURIComponent(topic), {method:'DELETE'});
+    toast(`Purged ${res&&res.purged!=null?res.purged:'?'} message(s) from ${topic}`);
+    renderMQ(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+// ── HEALTH CHECKS PAGE ───────────────────────────────────────────────────────
+async function renderHealthChecks(rid) {
+  const content = document.getElementById('content');
+  if (content) content.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Agent ID</th><th>Address</th><th>Healthy</th><th>HTTP</th><th>Latency</th><th>Error</th><th>Checked</th></tr></thead><tbody>${skeletonRows(5)}</tbody></table></div>`;
+  const res = await api('/agents/health').catch(()=>({results:[], status:'disabled'}));
+  if (rid && rid !== currentRenderId) return;
+  const results = res.results || [];
+  const content2 = document.getElementById('content');
+  if (!content2) return;
+
+  const healthy = results.filter(r=>r.healthy).length;
+  const total = results.length;
+
+  content2.innerHTML = `
+  <div class="cards" style="margin-bottom:16px">
+    <div class="card ${total===0?'':healthy===total?'green':'warn'}">
+      <div class="card-label">Status</div>
+      <div class="card-value">${res.status==='disabled'?'Disabled':(healthy+'/'+total)}</div>
+      <div class="card-sub">${res.status==='disabled'?'No health-check configured':'agents healthy'}</div>
+    </div>
+    <div class="card"><div class="card-label">Healthy</div><div class="card-value" style="color:var(--accent2)">${healthy}</div></div>
+    <div class="card"><div class="card-label">Unhealthy</div><div class="card-value" style="color:var(--danger)">${total-healthy}</div></div>
+    <div class="card"><div class="card-label">Total Checked</div><div class="card-value">${total}</div></div>
+  </div>
+  <div class="section">
+    <div class="flex" style="margin-bottom:12px">
+      <div class="section-title" style="margin:0">Agent Health Results</div>
+      <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="renderHealthChecks(currentRenderId)">↻ Refresh</button></div>
+    </div>
+    ${res.status==='disabled'?'<div class="empty" style="padding:24px">Health checks are disabled. Start Spectral Cloud with <code>HEALTH_CHECK_INTERVAL</code> configured to enable automatic agent pinging.</div>':''}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Agent ID</th><th>Address</th><th>Healthy</th><th>HTTP</th><th>Latency</th><th>Error</th><th>Last Checked</th></tr></thead>
+        <tbody>
+          ${results.length === 0 ? '<tr><td colspan="7" class="empty">No results yet — waiting for first check cycle</td></tr>' :
+          results.sort((a,b)=>(a.healthy===b.healthy?0:a.healthy?1:-1)).map(r=>`<tr>
+            <td><strong class="mono">${esc(r.agent_id)}</strong></td>
+            <td class="mono">${esc(r.addr||'—')}</td>
+            <td><span class="pill ${r.healthy?'healthy':'degraded'}">${r.healthy?'✓ OK':'✗ Fail'}</span></td>
+            <td>${r.http_code||'—'}</td>
+            <td>${r.latency_ms!=null?r.latency_ms+'ms':'—'}</td>
+            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--danger)" title="${esc(r.error||'')}">${esc(r.error||'')}</td>
+            <td class="mono">${fmtTime(r.checked_at)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+
+  autoRefreshTimer = setTimeout(() => {
+    if (currentPage === 'healthchecks' && rid === currentRenderId) renderHealthChecks(rid);
+  }, 10000);
 }
 
 // ── BOOT ────────────────────────────────────────────────────────────────────

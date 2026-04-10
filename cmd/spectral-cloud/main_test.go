@@ -17,6 +17,7 @@ import (
 	"github.com/gdev6145/Spectral_cloud/pkg/jobs"
 	"github.com/gdev6145/Spectral_cloud/pkg/kv"
 	"github.com/gdev6145/Spectral_cloud/pkg/mesh"
+	"github.com/gdev6145/Spectral_cloud/pkg/mq"
 	"github.com/gdev6145/Spectral_cloud/pkg/notify"
 	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
 	"github.com/gdev6145/Spectral_cloud/pkg/scheduler"
@@ -44,7 +45,8 @@ func makeHandler(db *store.Store, counter *prometheus.CounterVec, auth authConfi
 	circuitMgr := circuit.New(5, 30*time.Second)
 	groupMgr := agentgroup.New()
 	sched := scheduler.New(jq)
-	return newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist, auth, 100, 200, 0, 0, tenantLimits{}, status, meshNode, anomalyState, agentReg, corsConfig{}, false, broker, nil, "", jq, nil, kvStore, notifyMgr, circuitMgr, groupMgr, sched)
+	mqQueue := mq.New()
+	return newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist, auth, 100, 200, 0, 0, tenantLimits{}, status, meshNode, anomalyState, agentReg, corsConfig{}, false, broker, nil, "", jq, nil, kvStore, notifyMgr, circuitMgr, groupMgr, sched, mqQueue)
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -1362,7 +1364,7 @@ func TestJobsEndpoints(t *testing.T) {
 	jq := jobs.NewQueue()
 	handler := newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist,
 		authConfig{defaultTenant: "default"}, 100, 200, 0, 0, tenantLimits{}, nil, nil, &meshAnomalyState{},
-		agentReg, corsConfig{}, false, broker, nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq))
+		agentReg, corsConfig{}, false, broker, nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq), mq.New())
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
@@ -1452,7 +1454,7 @@ func TestJobsClaimAndCancel(t *testing.T) {
 	jq := jobs.NewQueue()
 	handler := newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist,
 		authConfig{defaultTenant: "default"}, 100, 200, 0, 0, tenantLimits{}, nil, nil, &meshAnomalyState{},
-		agentReg, corsConfig{}, false, broker, nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq))
+		agentReg, corsConfig{}, false, broker, nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq), mq.New())
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
@@ -1531,7 +1533,7 @@ func TestJobsClaim_NoPendingJobs(t *testing.T) {
 	jq := jobs.NewQueue()
 	handler := newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist,
 		authConfig{defaultTenant: "default"}, 100, 200, 0, 0, tenantLimits{}, nil, nil, &meshAnomalyState{},
-		agent.NewRegistry(), corsConfig{}, false, events.NewBroker(), nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq))
+		agent.NewRegistry(), corsConfig{}, false, events.NewBroker(), nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq), mq.New())
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
@@ -1556,7 +1558,7 @@ func TestJobsAutoDispatch_NoAgent(t *testing.T) {
 	jq := jobs.NewQueue()
 	handler := newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist,
 		authConfig{defaultTenant: "default"}, 100, 200, 0, 0, tenantLimits{}, nil, nil, &meshAnomalyState{},
-		agent.NewRegistry(), corsConfig{}, false, events.NewBroker(), nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq))
+		agent.NewRegistry(), corsConfig{}, false, events.NewBroker(), nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq), mq.New())
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
@@ -1907,5 +1909,183 @@ func TestSchedulerEndpoints(t *testing.T) {
 	defer dr.Body.Close()
 	if dr.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE expected 204, got %d", dr.StatusCode)
+	}
+}
+
+// ── Message Queue endpoint tests ─────────────────────────────────────────────
+
+func TestMQPublishAndConsume(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_mq_pub_req_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// Publish a message.
+	body := `{"payload":{"task":"summarise","doc":"file.txt"}}`
+	resp, err := http.Post(srv.URL+"/mq/jobs", "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	var msg struct {
+		ID    string `json:"id"`
+		Topic string `json:"topic"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil {
+		t.Fatalf("decode msg: %v", err)
+	}
+	if msg.ID == "" {
+		t.Fatal("expected non-empty id")
+	}
+	if msg.Topic != "jobs" {
+		t.Fatalf("expected topic 'jobs', got %q", msg.Topic)
+	}
+
+	// List topics — should show 1 pending.
+	lr, err := http.Get(srv.URL + "/mq")
+	if err != nil {
+		t.Fatalf("list topics: %v", err)
+	}
+	defer lr.Body.Close()
+	if lr.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", lr.StatusCode)
+	}
+	var topicList struct {
+		Count  int `json:"count"`
+		Topics []struct {
+			Topic   string `json:"topic"`
+			Pending int    `json:"pending"`
+		} `json:"topics"`
+	}
+	if err := json.NewDecoder(lr.Body).Decode(&topicList); err != nil {
+		t.Fatalf("decode topics: %v", err)
+	}
+	if topicList.Count != 1 || topicList.Topics[0].Pending != 1 {
+		t.Fatalf("expected 1 topic with 1 pending, got count=%d", topicList.Count)
+	}
+
+	// Consume the message.
+	cr, err := http.Get(srv.URL + "/mq/jobs?count=1")
+	if err != nil {
+		t.Fatalf("consume: %v", err)
+	}
+	defer cr.Body.Close()
+	if cr.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", cr.StatusCode)
+	}
+	var consumed struct {
+		Count    int              `json:"count"`
+		Messages []struct{ ID string `json:"id"` } `json:"messages"`
+	}
+	if err := json.NewDecoder(cr.Body).Decode(&consumed); err != nil {
+		t.Fatalf("decode consumed: %v", err)
+	}
+	if consumed.Count != 1 || consumed.Messages[0].ID != msg.ID {
+		t.Fatalf("expected 1 message with id=%s, got count=%d", msg.ID, consumed.Count)
+	}
+}
+
+func TestMQPurge(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_mq_purge_req_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// Publish two messages.
+	for i := 0; i < 2; i++ {
+		r, _ := http.Post(srv.URL+"/mq/work", "application/json", bytes.NewBufferString(`{"payload":{}}`))
+		_ = r.Body.Close()
+	}
+
+	// Purge.
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/mq/work", nil)
+	resp, _ := http.DefaultClient.Do(req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on purge, got %d", resp.StatusCode)
+	}
+	var result struct{ Purged int `json:"purged"` }
+	json.NewDecoder(resp.Body).Decode(&result)
+	if result.Purged != 2 {
+		t.Fatalf("expected 2 purged, got %d", result.Purged)
+	}
+}
+
+func TestMQConsumeEmpty(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_mq_empty_req_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	resp, _ := http.Get(srv.URL + "/mq/empty-topic")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var result struct{ Count int `json:"count"` }
+	json.NewDecoder(resp.Body).Decode(&result)
+	if result.Count != 0 {
+		t.Fatalf("expected 0 messages, got %d", result.Count)
+	}
+}
+
+func TestNotificationToggle(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_notif_toggle_req_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// Create a notification rule.
+	body := `{"name":"test-rule","webhook_url":"http://example.com/hook","event_types":["block_added"]}`
+	resp, _ := http.Post(srv.URL+"/admin/notifications", "application/json", bytes.NewBufferString(body))
+	var rule struct{ ID string `json:"id"` }
+	json.NewDecoder(resp.Body).Decode(&rule)
+	_ = resp.Body.Close()
+	if rule.ID == "" {
+		t.Fatal("expected non-empty rule id")
+	}
+
+	// Disable the rule via PATCH.
+	patchBody := `{"active":false}`
+	patchReq, _ := http.NewRequest(http.MethodPatch, srv.URL+"/admin/notifications/"+rule.ID, bytes.NewBufferString(patchBody))
+	patchReq.Header.Set("Content-Type", "application/json")
+	pr, _ := http.DefaultClient.Do(patchReq)
+	_ = pr.Body.Close()
+	if pr.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 on PATCH, got %d", pr.StatusCode)
+	}
+
+	// Re-enable the rule.
+	patchBody = `{"active":true}`
+	patchReq2, _ := http.NewRequest(http.MethodPatch, srv.URL+"/admin/notifications/"+rule.ID, bytes.NewBufferString(patchBody))
+	patchReq2.Header.Set("Content-Type", "application/json")
+	pr2, _ := http.DefaultClient.Do(patchReq2)
+	_ = pr2.Body.Close()
+	if pr2.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 on re-enable PATCH, got %d", pr2.StatusCode)
+	}
+
+	// PATCH with unknown id → 404.
+	patchReq3, _ := http.NewRequest(http.MethodPatch, srv.URL+"/admin/notifications/rule-9999", bytes.NewBufferString(`{"active":false}`))
+	patchReq3.Header.Set("Content-Type", "application/json")
+	pr3, _ := http.DefaultClient.Do(patchReq3)
+	_ = pr3.Body.Close()
+	if pr3.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown rule, got %d", pr3.StatusCode)
 	}
 }

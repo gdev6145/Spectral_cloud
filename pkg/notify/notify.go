@@ -64,6 +64,18 @@ func (m *Manager) Add(name, webhookURL, secret string, eventTypes []string) *Rul
 	return r
 }
 
+// SetActive enables or disables a rule by ID. Returns false if not found.
+func (m *Manager) SetActive(id string, active bool) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.rules[id]
+	if !ok {
+		return false
+	}
+	r.Active = active
+	return true
+}
+
 // Delete removes a rule by ID. Returns false if not found.
 func (m *Manager) Delete(id string) bool {
 	m.mu.Lock()
