@@ -33,6 +33,11 @@ Quick links:
 - `GET /admin/status` -> backup/compaction status (admin-only)
 - `GET /admin/mesh` -> mesh config/stats/anomaly state (admin-only)
 - `GET /admin/tenants` -> list tenants and per-tenant counts (admin-only)
+- `GET /mq` -> list message-queue topics with pending counts
+- `POST /mq/{topic}` -> publish a message to topic (body: `{"payload":{...}}`)
+- `GET /mq/{topic}?count=N` -> consume (dequeue) up to N messages from topic
+- `DELETE /mq/{topic}` -> purge all messages from topic
+- `PATCH /admin/notifications/{id}` -> enable/disable a notification rule (`{"active":true|false}`)
 
 If `TENANT_KEYS` or `API_KEY` is set, include `Authorization: Bearer <key>` or `X-API-Key: <key>`.
 Multi-tenant mode uses `TENANT_KEYS=tenant:key` mappings and isolates blockchain/routes by tenant.

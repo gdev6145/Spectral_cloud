@@ -33,6 +33,7 @@ import (
 	"github.com/gdev6145/Spectral_cloud/pkg/circuit"
 	"github.com/gdev6145/Spectral_cloud/pkg/kv"
 	"github.com/gdev6145/Spectral_cloud/pkg/mesh"
+	"github.com/gdev6145/Spectral_cloud/pkg/mq"
 	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
 	"github.com/gdev6145/Spectral_cloud/pkg/notify"
 	"github.com/gdev6145/Spectral_cloud/pkg/routing"
@@ -588,6 +589,8 @@ func main() {
 	sched := scheduler.New(jobQueue)
 	defer sched.StopAll()
 
+	mqQueue := mq.New()
+
 	corsCfg := parseCORSConfig(
 		strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS")),
 		strings.TrimSpace(os.Getenv("CORS_ALLOWED_METHODS")),
@@ -658,7 +661,7 @@ func main() {
 		}
 	}()
 
-	handler := newHandler(tenantMgr, db, maxBodyBytes, requestsTotal, meshPackets, meshRejectRate, meshAnomaly, requestDuration, auth, rateRPS, rateBurst, tenantRateRPS, tenantRateBurst, limits, status, meshNode, anomalyState, agentReg, corsCfg, enableAccessLog, eventBroker, hookDispatcher, blockSigningKey, jobQueue, hcChecker, kvStore, notifyMgr, circuitMgr, groupMgr, sched)
+	handler := newHandler(tenantMgr, db, maxBodyBytes, requestsTotal, meshPackets, meshRejectRate, meshAnomaly, requestDuration, auth, rateRPS, rateBurst, tenantRateRPS, tenantRateBurst, limits, status, meshNode, anomalyState, agentReg, corsCfg, enableAccessLog, eventBroker, hookDispatcher, blockSigningKey, jobQueue, hcChecker, kvStore, notifyMgr, circuitMgr, groupMgr, sched, mqQueue)
 
 	srv := &http.Server{
 		Addr:              ":" + port,
@@ -719,7 +722,7 @@ func main() {
 	}
 }
 
-func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, requestsTotal *prometheus.CounterVec, meshPackets *prometheus.CounterVec, meshRejectRate prometheus.Gauge, meshAnomaly *prometheus.GaugeVec, requestDuration *prometheus.HistogramVec, auth authConfig, rateRPS float64, rateBurst int, tenantRateRPS float64, tenantRateBurst int, limits tenantLimits, status *statusTracker, meshNode *mesh.Node, anomalyState *meshAnomalyState, agentReg *agent.Registry, corsCfg corsConfig, enableAccessLog bool, eventBroker *events.Broker, hookDispatcher *webhook.Dispatcher, blockSigningKey string, jobQueue *jobs.Queue, hcChecker *healthcheck.Checker, kvStore *kv.Store, notifyMgr *notify.Manager, circuitMgr *circuit.Manager, groupMgr *agentgroup.Manager, sched *scheduler.Manager) http.Handler {
+func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, requestsTotal *prometheus.CounterVec, meshPackets *prometheus.CounterVec, meshRejectRate prometheus.Gauge, meshAnomaly *prometheus.GaugeVec, requestDuration *prometheus.HistogramVec, auth authConfig, rateRPS float64, rateBurst int, tenantRateRPS float64, tenantRateBurst int, limits tenantLimits, status *statusTracker, meshNode *mesh.Node, anomalyState *meshAnomalyState, agentReg *agent.Registry, corsCfg corsConfig, enableAccessLog bool, eventBroker *events.Broker, hookDispatcher *webhook.Dispatcher, blockSigningKey string, jobQueue *jobs.Queue, hcChecker *healthcheck.Checker, kvStore *kv.Store, notifyMgr *notify.Manager, circuitMgr *circuit.Manager, groupMgr *agentgroup.Manager, sched *scheduler.Manager, mqQueue *mq.Queue) http.Handler {
 	mux := http.NewServeMux()
 	getState := func(r *http.Request) (*tenantState, string, error) {
 		tenant, ok := tenantFromContext(r.Context())
@@ -2544,6 +2547,20 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
+		case http.MethodPatch:
+			// PATCH /admin/notifications/{id} — toggle active state.
+			var body struct {
+				Active bool `json:"active"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid body")
+				return
+			}
+			if !notifyMgr.SetActive(id, body.Active) {
+				writeError(w, http.StatusNotFound, "rule not found")
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -2803,6 +2820,87 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
+
+	// ── Message Queue endpoints ───────────────────────────────────────────────
+	// GET  /mq              — list topics with pending message counts for tenant
+	// POST /mq/{topic}      — publish a message to topic
+	// GET  /mq/{topic}?count=N — consume (dequeue) up to N messages (default 1)
+	// DELETE /mq/{topic}   — purge all messages from topic
+
+	mux.HandleFunc("/mq", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		topics := mqQueue.Topics(tenant)
+		if topics == nil {
+			topics = []mq.TopicInfo{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"topics": topics, "count": len(topics)})
+	})
+
+	mux.HandleFunc("/mq/", func(w http.ResponseWriter, r *http.Request) {
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		topic := strings.TrimPrefix(r.URL.Path, "/mq/")
+		topic = strings.TrimSuffix(topic, "/")
+		if topic == "" {
+			writeError(w, http.StatusBadRequest, "topic is required")
+			return
+		}
+		switch r.Method {
+		case http.MethodPost:
+			// Publish a message.
+			var body struct {
+				Payload map[string]any `json:"payload"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid body")
+				return
+			}
+			msg, err := mqQueue.Publish(tenant, topic, body.Payload)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{
+					Type:     "mq.published",
+					TenantID: tenant,
+					Timestamp: time.Now().UTC(),
+					Data:     map[string]any{"topic": topic, "msg_id": msg.ID},
+				})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(msg)
+		case http.MethodGet:
+			// Consume messages.
+			count := 1
+			if c, err := strconv.Atoi(r.URL.Query().Get("count")); err == nil && c > 0 {
+				count = c
+			}
+			msgs := mqQueue.Consume(tenant, topic, count)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"messages": msgs, "count": len(msgs)})
+		case http.MethodDelete:
+			// Purge topic.
+			removed := mqQueue.Purge(tenant, topic)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"purged": removed, "topic": topic})
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
