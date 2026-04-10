@@ -286,6 +286,10 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
       Topology
     </a>
+    <a onclick="go('healthchecks')" id="nav-healthchecks">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      Health Checks
+    </a>
   </div>
   <div class="nav-footer">
     <strong id="server-url">localhost</strong>
@@ -347,6 +351,7 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
           <tr><td class="mono">g &nbsp;s</td><td>Go to Schedules</td></tr>
           <tr><td class="mono">g &nbsp;n</td><td>Go to Notifications</td></tr>
           <tr><td class="mono">g &nbsp;q</td><td>Go to Message Queue</td></tr>
+          <tr><td class="mono">g &nbsp;h</td><td>Go to Health Checks</td></tr>
           <tr><td class="mono">g &nbsp;m</td><td>Go to Mesh Peers</td></tr>
           <tr><td class="mono">r</td><td>Refresh current page</td></tr>
           <tr><td class="mono">?</td><td>Show this help</td></tr>
@@ -415,7 +420,7 @@ const PAGE_NAMES = {
   jobs:'Jobs', events:'Events', kv:'KV Store', search:'Search',
   schedules:'Schedules', groups:'Agent Groups', circuit:'Circuit Breaker',
   audit:'Audit Log', admin:'Admin', notifs:'Notifications', mesh:'Mesh Peers',
-  stats:'Analytics', topology:'Topology', mq:'Message Queue'
+  stats:'Analytics', topology:'Topology', mq:'Message Queue', healthchecks:'Health Checks'
 };
 function go(page) {
   currentRenderId++;
@@ -610,6 +615,7 @@ async function render(page, rid) {
       case 'stats':      await renderStats(rid); break;
       case 'topology':   await renderTopology(rid); break;
       case 'mq':         await renderMQ(rid); break;
+      case 'healthchecks': await renderHealthChecks(rid); break;
     }
   } catch(e) {
     if (rid && rid !== currentRenderId) return;
@@ -981,6 +987,15 @@ async function renderRoutes(rid) {
         <button class="btn btn-primary" onclick="batchAddRoutes()">Batch Add</button>
       </div>
     </div>
+    <div class="section">
+      <div class="section-title">Batch Delete</div>
+      <div class="card">
+        <div class="form-group" style="margin-bottom:8px"><label>Destinations (comma-separated or one per line)</label>
+        <textarea id="r-batch-del" placeholder="node-1, node-2, node-3" style="min-height:60px"></textarea></div>
+        <button class="btn btn-danger" onclick="batchDeleteRoutes()">Batch Delete</button>
+        <div id="r-batch-del-result" style="margin-top:8px"></div>
+      </div>
+    </div>
   </div>`;
 }
 
@@ -1005,6 +1020,23 @@ async function batchAddRoutes() {
     const res = await post('/routes/batch', entries);
     toast(`Added ${res.added}/${res.submitted} routes`); renderRoutes(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function batchDeleteRoutes() {
+  const raw = ((document.getElementById('r-batch-del')||{}).value||'');
+  const destinations = raw.split(/[\n,]/).map(s=>s.trim()).filter(Boolean);
+  if (!destinations.length) { toast('Enter at least one destination', false); return; }
+  const resultEl = document.getElementById('r-batch-del-result');
+  try {
+    const res = await del('/routes/batch', destinations);
+    const msg = `Deleted ${res.deleted} route(s)${res.not_found>0?' ('+res.not_found+' not found)':''}`;
+    if (resultEl) resultEl.innerHTML = `<div class="alert ok">${msg}</div>`;
+    toast(msg);
+    renderRoutes(currentRenderId);
+  } catch(e) {
+    if (resultEl) resultEl.innerHTML = `<div class="alert err">${esc(e.message)}</div>`;
+    toast('Error: '+e.message, false);
+  }
 }
 
 async function deleteRoute(dest) {
@@ -1286,14 +1318,37 @@ async function renderJobs(rid) {
             const dur = (j.created_at && j.updated_at && j.status !== 'pending') ?
               Math.round((new Date(j.updated_at) - new Date(j.created_at))/1000)+'s' : '---';
             const canCancel = j.status === 'pending' || j.status === 'running';
-            return `<tr>
+            const canComplete = j.status === 'running';
+            return `<tr style="cursor:pointer" onclick="toggleJobDetail('${esc(j.id)}')">
               <td class="mono"><strong>${esc(j.id)}</strong></td>
               <td><span class="pill ${esc(j.status)}">${esc(j.status)}</span></td>
               <td>${esc(j.capability||'---')}</td>
               <td class="mono">${esc(j.agent_id||'---')}</td>
               <td class="mono">${fmtTime(j.created_at)}</td>
               <td class="mono">${dur}</td>
-              <td>${canCancel?`<button class="btn btn-danger btn-sm" onclick="cancelJob('${esc(j.id)}')">Cancel</button>`:''}</td>
+              <td onclick="event.stopPropagation()" style="white-space:nowrap">
+                ${canCancel?`<button class="btn btn-danger btn-sm" onclick="cancelJob('${esc(j.id)}')">✕ Cancel</button>`:''}
+                ${canComplete?`<button class="btn btn-outline btn-sm" onclick="updateJob('${esc(j.id)}','done','')">✓ Done</button> <button class="btn btn-outline btn-sm" onclick="updateJob('${esc(j.id)}','failed','error')">✗ Fail</button>`:''}
+              </td>
+            </tr>
+            <tr id="job-detail-${esc(j.id)}" class="detail-row" style="display:none">
+              <td colspan="7">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:4px">
+                  <div>
+                    <div style="font-size:11px;color:var(--muted);margin-bottom:4px;text-transform:uppercase">Payload</div>
+                    <pre style="margin:0">${esc(JSON.stringify(j.payload||{}, null, 2))}</pre>
+                  </div>
+                  <div>
+                    <div style="font-size:11px;color:var(--muted);margin-bottom:4px;text-transform:uppercase">Result / Error</div>
+                    <pre style="margin:0">${esc(j.result||j.error||'—')}</pre>
+                    ${j.status==='running'?`<div style="margin-top:8px;display:flex;gap:6px">
+                      <input id="job-res-${esc(j.id)}" placeholder="result value…" style="flex:1;padding:4px 8px;font-size:12px">
+                      <button class="btn btn-outline btn-sm" onclick="updateJobWithResult('${esc(j.id)}','done')">✓ Mark done</button>
+                      <button class="btn btn-outline btn-sm" style="color:var(--danger)" onclick="updateJobWithResult('${esc(j.id)}','failed')">✗ Mark failed</button>
+                    </div>`:''}
+                  </div>
+                </div>
+              </td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -1324,6 +1379,28 @@ async function cancelJob(id) {
     toast('Job cancelled');
     renderJobs(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
+}
+
+function toggleJobDetail(id) {
+  const row = document.getElementById('job-detail-'+id);
+  if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}
+
+async function updateJob(id, status, resultOrError) {
+  try {
+    const body = {status};
+    if (status === 'done') body.result = resultOrError;
+    if (status === 'failed') body.error = resultOrError;
+    await api('/agents/jobs/'+encodeURIComponent(id), {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    toast('Job marked as '+status);
+    renderJobs(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function updateJobWithResult(id, status) {
+  const input = document.getElementById('job-res-'+id);
+  const val = input ? input.value.trim() : '';
+  await updateJob(id, status, val);
 }
 
 async function submitJob() {
@@ -2065,10 +2142,13 @@ async function renderGroups(rid) {
           ${groups.map(g=>`<tr>
             <td class="mono">${esc(g.id)}</td>
             <td><strong>${esc(g.name)}</strong></td>
-            <td class="mono">${(g.members||[]).join(', ')||'—'}</td>
+            <td>
+              ${(g.members||[]).map(m=>`<span style="display:inline-flex;align-items:center;gap:3px;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:11px;font-family:monospace;margin:2px">${esc(m)}<button class="btn btn-danger" style="padding:0 4px;font-size:10px;line-height:1;min-width:auto;border-radius:2px;margin-left:2px" onclick="removeGroupMember('${esc(g.id)}','${esc(m)}')">✕</button></span>`).join('')||'<span style="color:var(--muted)">—</span>'}
+            </td>
             <td class="mono">${fmtTime(g.created_at)}</td>
-            <td class="flex">
+            <td class="flex" style="gap:4px">
               <button class="btn btn-outline btn-sm" onclick="addGroupMember('${esc(g.id)}')">+ Member</button>
+              <button class="btn btn-outline btn-sm" onclick="groupNextMember('${esc(g.id)}')">→ Next</button>
               <button class="btn btn-danger btn-sm" onclick="deleteGroup('${esc(g.id)}')">✕</button>
             </td>
           </tr>`).join('')||'<tr><td colspan="5" class="empty">No groups</td></tr>'}
@@ -2113,6 +2193,24 @@ async function addGroupMember(id) {
   } catch(e) { toast('Error: '+e.message, false); }
 }
 
+async function removeGroupMember(groupId, agentId) {
+  try {
+    await del('/agent-groups/'+encodeURIComponent(groupId)+'/members/'+encodeURIComponent(agentId));
+    toast('Member "'+agentId+'" removed'); renderGroups(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function groupNextMember(groupId) {
+  try {
+    const res = await api('/agent-groups/'+encodeURIComponent(groupId)+'/next');
+    if (res && res.agent_id) {
+      toast('Next agent: '+res.agent_id);
+    } else {
+      toast('No available members', false);
+    }
+  } catch(e) { toast('No available members in group', false); }
+}
+
 // ── CIRCUIT BREAKER ───────────────────────────────────────────────────────────
 async function renderCircuit(rid) {
   const res = await api('/circuit').catch(() => ({breakers:[]}));
@@ -2127,26 +2225,67 @@ async function renderCircuit(rid) {
     ${breakers.length===0?'<div class="empty">No circuit breakers registered</div>':''}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Name</th><th>State</th><th>Failures</th><th>Last Failure</th><th>Reset At</th><th></th></tr></thead>
+        <thead><tr><th>Agent ID</th><th>State</th><th>Failures</th><th>Last Failure</th><th>Reset At</th><th></th></tr></thead>
         <tbody>
           ${breakers.map(b=>`<tr>
-            <td><strong>${esc(b.name)}</strong></td>
+            <td><strong class="mono">${esc(b.name||b.agent_id||'—')}</strong></td>
             <td><span class="pill ${b.state==='closed'?'healthy':b.state==='half-open'?'degraded':'degraded'}">${esc(b.state||'unknown')}</span></td>
             <td>${b.failures||0}</td>
             <td class="mono">${fmtTime(b.last_failure)}</td>
             <td class="mono">${fmtTime(b.reset_at)}</td>
-            <td><button class="btn btn-outline btn-sm" onclick="resetBreaker('${esc(b.name)}')">↺ Reset</button></td>
+            <td class="flex" style="gap:4px">
+              <button class="btn btn-outline btn-sm" onclick="recordCircuit('${esc(b.name||b.agent_id||'')}', true)">✓ Success</button>
+              <button class="btn btn-outline btn-sm" style="color:var(--warn)" onclick="recordCircuit('${esc(b.name||b.agent_id||'')}', false)">✗ Failure</button>
+              <button class="btn btn-outline btn-sm" onclick="resetBreaker('${esc(b.name||b.agent_id||'')}')">↺ Reset</button>
+            </td>
           </tr>`).join('')||'<tr><td colspan="6" class="empty">No circuit breakers</td></tr>'}
         </tbody>
       </table>
     </div>
+  </div>
+  <div class="section">
+    <div class="section-title">Record Event</div>
+    <div class="card">
+      <div class="form-row">
+        <div class="form-group"><label>Agent ID</label><input id="cb-agent-id" placeholder="edge-01" style="width:180px"></div>
+        <div class="form-group"><label>Result</label>
+          <select id="cb-result" style="width:120px">
+            <option value="success">✓ Success</option>
+            <option value="failure">✗ Failure</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" style="margin-top:18px" onclick="recordCircuitForm()">Record</button>
+      </div>
+      <div id="cb-result-msg" style="margin-top:8px"></div>
+    </div>
   </div>`;
 }
 
-async function resetBreaker(name) {
+async function recordCircuit(agentId, success) {
   try {
-    await post('/circuit/reset', {name});
-    toast('Circuit breaker "'+name+'" reset'); renderCircuit(currentRenderId);
+    const b = await post('/circuit/record', {agent_id: agentId, success});
+    toast((success ? '✓ Success' : '✗ Failure') + ' recorded for ' + agentId);
+    renderCircuit(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function recordCircuitForm() {
+  const agentId = ((document.getElementById('cb-agent-id')||{}).value||'').trim();
+  const success = ((document.getElementById('cb-result')||{}).value||'') === 'success';
+  if (!agentId) { toast('Agent ID required', false); return; }
+  try {
+    const b = await post('/circuit/record', {agent_id: agentId, success});
+    const el = document.getElementById('cb-result-msg');
+    if (el) el.innerHTML = `<div class="alert ok">Recorded: ${esc(agentId)} → state <strong>${esc(b.state||'?')}</strong>, failures: ${b.failures||0}</div>`;
+    renderCircuit(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function resetBreaker(agentId) {
+  try {
+    await api('/circuit/reset?agent_id='+encodeURIComponent(agentId), {method:'POST'});
+    toast('Circuit breaker "'+agentId+'" reset');
+    renderCircuit(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
 }
 
@@ -2476,7 +2615,7 @@ function closeShortcutsModal() {
 (function() {
   let _kbLastKey = '';
   let _kbLastTime = 0;
-  const _kbNavMap = {o:'overview', b:'blockchain', r:'routes', a:'agents', e:'events', k:'kv', s:'schedules', n:'notifs', m:'mesh', q:'mq'};
+  const _kbNavMap = {o:'overview', b:'blockchain', r:'routes', a:'agents', e:'events', k:'kv', s:'schedules', n:'notifs', m:'mesh', q:'mq', h:'healthchecks'};
   document.addEventListener('keydown', function(ev) {
     const tag = (ev.target.tagName||'').toLowerCase();
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
@@ -2772,6 +2911,60 @@ async function mqPurge(topic) {
     toast(`Purged ${res&&res.purged!=null?res.purged:'?'} message(s) from ${topic}`);
     renderMQ(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
+}
+
+// ── HEALTH CHECKS PAGE ───────────────────────────────────────────────────────
+async function renderHealthChecks(rid) {
+  const content = document.getElementById('content');
+  if (content) content.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Agent ID</th><th>Address</th><th>Healthy</th><th>HTTP</th><th>Latency</th><th>Error</th><th>Checked</th></tr></thead><tbody>${skeletonRows(5)}</tbody></table></div>`;
+  const res = await api('/agents/health').catch(()=>({results:[], status:'disabled'}));
+  if (rid && rid !== currentRenderId) return;
+  const results = res.results || [];
+  const content2 = document.getElementById('content');
+  if (!content2) return;
+
+  const healthy = results.filter(r=>r.healthy).length;
+  const total = results.length;
+
+  content2.innerHTML = `
+  <div class="cards" style="margin-bottom:16px">
+    <div class="card ${total===0?'':healthy===total?'green':'warn'}">
+      <div class="card-label">Status</div>
+      <div class="card-value">${res.status==='disabled'?'Disabled':(healthy+'/'+total)}</div>
+      <div class="card-sub">${res.status==='disabled'?'No health-check configured':'agents healthy'}</div>
+    </div>
+    <div class="card"><div class="card-label">Healthy</div><div class="card-value" style="color:var(--accent2)">${healthy}</div></div>
+    <div class="card"><div class="card-label">Unhealthy</div><div class="card-value" style="color:var(--danger)">${total-healthy}</div></div>
+    <div class="card"><div class="card-label">Total Checked</div><div class="card-value">${total}</div></div>
+  </div>
+  <div class="section">
+    <div class="flex" style="margin-bottom:12px">
+      <div class="section-title" style="margin:0">Agent Health Results</div>
+      <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="renderHealthChecks(currentRenderId)">↻ Refresh</button></div>
+    </div>
+    ${res.status==='disabled'?'<div class="empty" style="padding:24px">Health checks are disabled. Start Spectral Cloud with <code>HEALTH_CHECK_INTERVAL</code> configured to enable automatic agent pinging.</div>':''}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Agent ID</th><th>Address</th><th>Healthy</th><th>HTTP</th><th>Latency</th><th>Error</th><th>Last Checked</th></tr></thead>
+        <tbody>
+          ${results.length === 0 ? '<tr><td colspan="7" class="empty">No results yet — waiting for first check cycle</td></tr>' :
+          results.sort((a,b)=>(a.healthy===b.healthy?0:a.healthy?1:-1)).map(r=>`<tr>
+            <td><strong class="mono">${esc(r.agent_id)}</strong></td>
+            <td class="mono">${esc(r.addr||'—')}</td>
+            <td><span class="pill ${r.healthy?'healthy':'degraded'}">${r.healthy?'✓ OK':'✗ Fail'}</span></td>
+            <td>${r.http_code||'—'}</td>
+            <td>${r.latency_ms!=null?r.latency_ms+'ms':'—'}</td>
+            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--danger)" title="${esc(r.error||'')}">${esc(r.error||'')}</td>
+            <td class="mono">${fmtTime(r.checked_at)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+
+  autoRefreshTimer = setTimeout(() => {
+    if (currentPage === 'healthchecks' && rid === currentRenderId) renderHealthChecks(rid);
+  }, 10000);
 }
 
 // ── BOOT ────────────────────────────────────────────────────────────────────
