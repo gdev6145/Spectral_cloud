@@ -74,7 +74,9 @@ func TestPeek(t *testing.T) {
 	if q.Count("t", "peek-topic") != 1 {
 		t.Fatal("peek must not consume message")
 	}
-	_ = msg
+	if msg.Topic != "peek-topic" {
+		t.Fatalf("expected topic 'peek-topic', got %q", msg.Topic)
+	}
 }
 
 func TestTopics(t *testing.T) {
