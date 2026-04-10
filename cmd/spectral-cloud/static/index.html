@@ -2865,7 +2865,7 @@ async function mqPublish() {
   if (!topic) { toast('Topic is required', false); return; }
   let payload = {};
   if (payloadStr) {
-    try { payload = JSON.parse(payloadStr); } catch { toast('Payload must be valid JSON', false); return; }
+    try { payload = JSON.parse(payloadStr); } catch(e) { toast('Payload must be valid JSON: '+e.message, false); return; }
   }
   try {
     const msg = await post('/mq/'+encodeURIComponent(topic), {payload});
