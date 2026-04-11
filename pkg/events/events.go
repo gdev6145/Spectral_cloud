@@ -20,6 +20,16 @@ const (
 	EventAgentDeregistered EventType = "agent_deregistered"
 	EventAgentHeartbeat    EventType = "agent_heartbeat"
 	EventMeshAnomaly       EventType = "mesh_anomaly"
+	EventJobCreated        EventType = "job.created"
+	EventJobClaimed        EventType = "job.claimed"
+	EventJobUpdated        EventType = "job.updated"
+	EventJobCompleted      EventType = "job.completed"
+	EventJobFailed         EventType = "job.failed"
+	EventJobCancelled      EventType = "job.cancelled"
+	EventGroupCreated      EventType = "group.created"
+	EventGroupDeleted      EventType = "group.deleted"
+	EventGroupMemberAdded  EventType = "group.member_added"
+	EventGroupMemberRemoved EventType = "group.member_removed"
 )
 
 // Event is the canonical event envelope published through the broker.

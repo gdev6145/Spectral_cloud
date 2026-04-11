@@ -1902,6 +1902,13 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				Priority:   req.Priority,
 				TTLSeconds: req.TTLSeconds,
 			})
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{
+					Type:     events.EventJobCreated,
+					TenantID: tenant,
+					Data:     j,
+				})
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(j)
@@ -1940,6 +1947,13 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			if !ok {
 				writeError(w, http.StatusNoContent, "no pending job available")
 				return
+			}
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{
+					Type:     events.EventJobClaimed,
+					TenantID: tenant,
+					Data:     j,
+				})
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(j)
@@ -1986,6 +2000,27 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				return
 			}
 			j, _ := jobQueue.Get(id)
+			if eventBroker != nil {
+				evType := events.EventJobUpdated
+				switch req.Status {
+				case jobs.StatusDone:
+					evType = events.EventJobCompleted
+				case jobs.StatusFailed:
+					evType = events.EventJobFailed
+				case jobs.StatusCancelled:
+					evType = events.EventJobCancelled
+				case jobs.StatusRunning:
+					evType = events.EventJobClaimed
+				}
+				eventBroker.Publish(events.Event{
+					Type:     evType,
+					TenantID: tenant,
+					Data: map[string]any{
+						"previous_status": existing.Status,
+						"job":             j,
+					},
+				})
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(j)
 
@@ -1998,6 +2033,13 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			if !jobQueue.Cancel(id) {
 				writeError(w, http.StatusNotFound, "job not found or already in terminal state")
 				return
+			}
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{
+					Type:     events.EventJobCancelled,
+					TenantID: tenant,
+					Data:     existing,
+				})
 			}
 			w.WriteHeader(http.StatusNoContent)
 
@@ -2762,6 +2804,13 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{
+					Type:     events.EventGroupCreated,
+					TenantID: tenant,
+					Data:     g,
+				})
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(g)
@@ -2798,9 +2847,21 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(g)
 			case http.MethodDelete:
+				g, ok := groupMgr.Get(tenant, groupID)
+				if !ok {
+					writeError(w, http.StatusNotFound, "group not found")
+					return
+				}
 				if !groupMgr.Delete(tenant, groupID) {
 					writeError(w, http.StatusNotFound, "group not found")
 					return
+				}
+				if eventBroker != nil {
+					eventBroker.Publish(events.Event{
+						Type:     events.EventGroupDeleted,
+						TenantID: tenant,
+						Data:     g,
+					})
 				}
 				w.WriteHeader(http.StatusNoContent)
 			default:
@@ -2827,6 +2888,18 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				return
 			}
 			g, _ := groupMgr.Get(tenant, groupID)
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{
+					Type:     events.EventGroupMemberAdded,
+					TenantID: tenant,
+					Data: map[string]any{
+						"group_id":  groupID,
+						"agent_id":  body.AgentID,
+						"members":   g.Members,
+						"group_name": g.Name,
+					},
+				})
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(g)
 			return
@@ -2841,6 +2914,16 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			if err := groupMgr.RemoveMember(tenant, groupID, agentID); err != nil {
 				writeError(w, http.StatusNotFound, err.Error())
 				return
+			}
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{
+					Type:     events.EventGroupMemberRemoved,
+					TenantID: tenant,
+					Data: map[string]any{
+						"group_id": groupID,
+						"agent_id": agentID,
+					},
+				})
 			}
 			w.WriteHeader(http.StatusNoContent)
 			return

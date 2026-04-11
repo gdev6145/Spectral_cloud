@@ -1052,6 +1052,228 @@ func TestEventHistoryEndpoint(t *testing.T) {
 	}
 }
 
+func TestJobAndGroupEventsHistoryTenantScoped(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_job_group_events", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	tenantKeys, err := auth.NewManagerFromEnv("tenant-a:key-a,tenant-b:key-b")
+	if err != nil {
+		t.Fatalf("tenant key manager: %v", err)
+	}
+	handler := makeHandler(db, counter, authConfig{tenantKeys: tenantKeys, defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/agents/jobs", bytes.NewBufferString(`{"agent_id":"worker-a","capability":"ocr"}`))
+	if err != nil {
+		t.Fatalf("job create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "key-a")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("job create: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	var claimedJob struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&claimedJob); err != nil {
+		t.Fatalf("decode created job: %v", err)
+	}
+	resp.Body.Close()
+
+	req, err = http.NewRequest(http.MethodGet, srv.URL+"/agents/jobs/claim?agent_id=worker-a", nil)
+	if err != nil {
+		t.Fatalf("claim request: %v", err)
+	}
+	req.Header.Set("X-API-Key", "key-a")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("claim job: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	req, err = http.NewRequest(http.MethodPost, srv.URL+"/agents/jobs", bytes.NewBufferString(`{"agent_id":"worker-a","capability":"ocr"}`))
+	if err != nil {
+		t.Fatalf("second job create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "key-a")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("second job create: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	var cancelledJob struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&cancelledJob); err != nil {
+		t.Fatalf("decode second job: %v", err)
+	}
+	resp.Body.Close()
+
+	req, err = http.NewRequest(http.MethodDelete, srv.URL+"/agents/jobs/"+cancelledJob.ID, nil)
+	if err != nil {
+		t.Fatalf("cancel request: %v", err)
+	}
+	req.Header.Set("X-API-Key", "key-a")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("cancel job: %v", err)
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	req, err = http.NewRequest(http.MethodPost, srv.URL+"/agent-groups", bytes.NewBufferString(`{"name":"workers"}`))
+	if err != nil {
+		t.Fatalf("group create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "key-a")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("group create: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	var group struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&group); err != nil {
+		t.Fatalf("decode group: %v", err)
+	}
+	resp.Body.Close()
+
+	req, err = http.NewRequest(http.MethodPost, srv.URL+"/agent-groups/"+group.ID+"/members", bytes.NewBufferString(`{"agent_id":"worker-a"}`))
+	if err != nil {
+		t.Fatalf("add member request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "key-a")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	req, err = http.NewRequest(http.MethodDelete, srv.URL+"/agent-groups/"+group.ID+"/members/worker-a", nil)
+	if err != nil {
+		t.Fatalf("remove member request: %v", err)
+	}
+	req.Header.Set("X-API-Key", "key-a")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("remove member: %v", err)
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	req, err = http.NewRequest(http.MethodDelete, srv.URL+"/agent-groups/"+group.ID, nil)
+	if err != nil {
+		t.Fatalf("delete group request: %v", err)
+	}
+	req.Header.Set("X-API-Key", "key-a")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("delete group: %v", err)
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	req, err = http.NewRequest(http.MethodGet, srv.URL+"/events/history?limit=20", nil)
+	if err != nil {
+		t.Fatalf("history request: %v", err)
+	}
+	req.Header.Set("X-API-Key", "key-a")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var history struct {
+		Count  int `json:"count"`
+		Events []struct {
+			Type     string `json:"type"`
+			TenantID string `json:"tenant_id"`
+		} `json:"events"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&history); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	resp.Body.Close()
+	if history.Count == 0 {
+		t.Fatal("expected tenant-a history entries")
+	}
+	seen := map[string]bool{}
+	for _, ev := range history.Events {
+		if ev.TenantID != "tenant-a" {
+			t.Fatalf("unexpected tenant in history: %+v", ev)
+		}
+		seen[ev.Type] = true
+	}
+	for _, want := range []string{
+		string(events.EventJobCreated),
+		string(events.EventJobClaimed),
+		string(events.EventJobCancelled),
+		string(events.EventGroupCreated),
+		string(events.EventGroupMemberAdded),
+		string(events.EventGroupMemberRemoved),
+		string(events.EventGroupDeleted),
+	} {
+		if !seen[want] {
+			t.Fatalf("expected event type %q in history, got %v", want, seen)
+		}
+	}
+
+	req, err = http.NewRequest(http.MethodGet, srv.URL+"/events/history?limit=10&type="+string(events.EventJobCreated), nil)
+	if err != nil {
+		t.Fatalf("filtered history request: %v", err)
+	}
+	req.Header.Set("X-API-Key", "key-b")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("tenant-b history: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var otherHistory struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&otherHistory); err != nil {
+		t.Fatalf("decode tenant-b history: %v", err)
+	}
+	resp.Body.Close()
+	if otherHistory.Count != 0 {
+		t.Fatalf("expected tenant-b to see 0 matching events, got %d", otherHistory.Count)
+	}
+}
+
 func TestRoutesBatchDeleteEndpoint(t *testing.T) {
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_rdel", Help: "test"}, []string{"path", "method", "code"})
 	tmp := t.TempDir()
