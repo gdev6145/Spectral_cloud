@@ -3145,7 +3145,7 @@ async function createPipeline() {
     const stageName = inputs[0]?.value.trim() || '';
     const cap = inputs[1]?.value.trim() || '';
     const agentId = inputs[2]?.value.trim() || '';
-    if (!cap && !agentId) { toast('Each stage needs a capability or agent ID', false); return; }
+    if (!cap && !agentId) { toast(`Stage ${stages.length + 1}${stageName ? ' ("'+stageName+'")' : ''}: capability or agent ID required`, false); return; }
     stages.push({name: stageName, capability: cap, agent_id: agentId});
   }
   try {
@@ -3219,8 +3219,12 @@ async function loadPipelineRuns(pipelineId) {
 }
 
 async function advancePipelineRun(pipelineId, runId, failed) {
-  const result = failed ? '' : (prompt('Result from this stage (optional):') || '');
-  if (!failed && result === null) return;
+  let result = '';
+  if (!failed) {
+    const input = prompt('Result from this stage (optional):');
+    if (input === null) return; // user cancelled
+    result = input;
+  }
   try {
     const res = await post('/agent-pipelines/'+encodeURIComponent(pipelineId)+'/runs/'+encodeURIComponent(runId)+'/advance', {result, failed});
     const run = res.run || {};
@@ -3254,7 +3258,7 @@ async function renderAI(rid) {
             <div class="form-group">
               <label>Model</label>
               <select id="ai-model">
-                <option value="">claude-3-5-haiku-latest (default)</option>
+                <option value="">server default</option>
                 <option value="claude-3-5-haiku-latest">claude-3-5-haiku-latest</option>
                 <option value="claude-3-5-sonnet-latest">claude-3-5-sonnet-latest</option>
                 <option value="claude-opus-4-5">claude-opus-4-5</option>
@@ -3453,7 +3457,7 @@ async function sendChatMessage() {
   if (!feed) return;
   // Determine or create session ID
   if (!aiChatSessionId) {
-    aiChatSessionId = 'session-'+Date.now();
+    aiChatSessionId = 'session-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     const sel = document.getElementById('ai-session-select');
     if (sel) {
       const opt = document.createElement('option');
@@ -3517,7 +3521,7 @@ async function renderTenant(rid) {
     const pct = limit > 0 ? Math.min(100, Math.round(used/limit*100)) : 0;
     const fillCls = pct >= 100 ? 'over' : pct >= 80 ? 'warn' : '';
     return `<div class="quota-row">
-      <div class="quota-label"><span>${esc(k)}</span><span>${used} / ${limit > 0 ? limit : '∞'}</span></div>
+      <div class="quota-label"><span>${esc(k)}</span><span>${used} / ${limit > 0 ? limit : 'unlimited'}</span></div>
       ${limit > 0 ? `<div class="quota-bar-wrap"><div class="quota-bar-fill ${fillCls}" style="width:${pct}%"></div></div>` : '<div style="font-size:11px;color:var(--muted)">Unlimited</div>'}
     </div>`;
   }).join('');
