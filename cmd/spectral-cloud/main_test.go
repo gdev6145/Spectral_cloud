@@ -1186,6 +1186,68 @@ func TestAgentStatusEndpoint(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestAgentPatchEndpoint(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_agpatch", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	_, _ = http.Post(srv.URL+"/agents/register", "application/json",
+		bytes.NewBufferString(`{"id":"patch-agent","addr":"10.0.0.1:9001","status":"healthy","ttl_seconds":300}`))
+
+	req, err := http.NewRequest(http.MethodPatch, srv.URL+"/agents?id=patch-agent", bytes.NewBufferString(
+		`{"status":"degraded","addr":"10.0.0.2:9002","capabilities":["vision","ocr"],"tags":{"region":"us-east","tier":"edge"}}`,
+	))
+	if err != nil {
+		t.Fatalf("patch request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("patch agent: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var updated struct {
+		ID           string            `json:"id"`
+		Addr         string            `json:"addr"`
+		Status       string            `json:"status"`
+		Capabilities []string          `json:"capabilities"`
+		Tags         map[string]string `json:"tags"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if updated.ID != "patch-agent" || updated.Status != "degraded" || updated.Addr != "10.0.0.2:9002" {
+		t.Fatalf("unexpected patched agent: %+v", updated)
+	}
+	if len(updated.Capabilities) != 2 || updated.Capabilities[0] != "vision" || updated.Tags["region"] != "us-east" {
+		t.Fatalf("expected capabilities and tags to update, got %+v", updated)
+	}
+
+	req, err = http.NewRequest(http.MethodPatch, srv.URL+"/agents?id=patch-agent", bytes.NewBufferString(`{"status":"broken"}`))
+	if err != nil {
+		t.Fatalf("invalid patch request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("invalid patch agent: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
 func TestBlockchainVerifyEndpoint(t *testing.T) {
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_verify", Help: "test"}, []string{"path", "method", "code"})
 	tmp := t.TempDir()
@@ -1723,6 +1785,108 @@ func TestJobsClaimAndCancel(t *testing.T) {
 	}
 }
 
+func TestJobItemEndpointsAreTenantScoped(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_jobs_tenant_scope_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	tenantKeys, err := auth.NewManagerFromEnv("tenant-a:key-a,tenant-b:key-b")
+	if err != nil {
+		t.Fatalf("tenant key manager: %v", err)
+	}
+	handler := makeHandler(db, counter, authConfig{tenantKeys: tenantKeys, defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	postReq, err := http.NewRequest(http.MethodPost, srv.URL+"/agents/jobs", bytes.NewBufferString(`{"agent_id":"worker-a","capability":"ocr"}`))
+	if err != nil {
+		t.Fatalf("post request: %v", err)
+	}
+	postReq.Header.Set("Content-Type", "application/json")
+	postReq.Header.Set("X-API-Key", "key-a")
+	postResp, err := http.DefaultClient.Do(postReq)
+	if err != nil {
+		t.Fatalf("submit job: %v", err)
+	}
+	defer postResp.Body.Close()
+	if postResp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", postResp.StatusCode)
+	}
+	var submitted struct{ ID string `json:"id"` }
+	if err := json.NewDecoder(postResp.Body).Decode(&submitted); err != nil {
+		t.Fatalf("decode submitted job: %v", err)
+	}
+	if submitted.ID == "" {
+		t.Fatal("expected submitted job id")
+	}
+
+	getReq, err := http.NewRequest(http.MethodGet, srv.URL+"/agents/jobs/"+submitted.ID, nil)
+	if err != nil {
+		t.Fatalf("get request: %v", err)
+	}
+	getReq.Header.Set("X-API-Key", "key-b")
+	getResp, err := http.DefaultClient.Do(getReq)
+	if err != nil {
+		t.Fatalf("cross-tenant get: %v", err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", getResp.StatusCode)
+	}
+
+	listReq, err := http.NewRequest(http.MethodGet, srv.URL+"/agents/jobs", nil)
+	if err != nil {
+		t.Fatalf("list request: %v", err)
+	}
+	listReq.Header.Set("X-API-Key", "key-b")
+	listResp, err := http.DefaultClient.Do(listReq)
+	if err != nil {
+		t.Fatalf("cross-tenant list: %v", err)
+	}
+	defer listResp.Body.Close()
+	var listed struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode job list: %v", err)
+	}
+	if listed.Count != 0 {
+		t.Fatalf("expected tenant-b to see 0 jobs, got %d", listed.Count)
+	}
+
+	delReq, err := http.NewRequest(http.MethodDelete, srv.URL+"/agents/jobs/"+submitted.ID, nil)
+	if err != nil {
+		t.Fatalf("delete request: %v", err)
+	}
+	delReq.Header.Set("X-API-Key", "key-b")
+	delResp, err := http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Fatalf("cross-tenant delete: %v", err)
+	}
+	defer delResp.Body.Close()
+	if delResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", delResp.StatusCode)
+	}
+
+	delReq, err = http.NewRequest(http.MethodDelete, srv.URL+"/agents/jobs/"+submitted.ID, nil)
+	if err != nil {
+		t.Fatalf("owner delete request: %v", err)
+	}
+	delReq.Header.Set("X-API-Key", "key-a")
+	delResp, err = http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Fatalf("owner delete: %v", err)
+	}
+	defer delResp.Body.Close()
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", delResp.StatusCode)
+	}
+}
+
 func TestJobsClaim_NoPendingJobs(t *testing.T) {
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_noclaim_req_total", Help: "test"}, []string{"path", "method", "code"})
 	tmp := t.TempDir()
@@ -2073,6 +2237,125 @@ func TestAgentGroupEndpoints(t *testing.T) {
 	defer dr.Body.Close()
 	if dr.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE expected 204, got %d", dr.StatusCode)
+	}
+}
+
+func TestAgentGroupEndpointsAreTenantScoped(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_groups_tenant_scope_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	tenantKeys, err := auth.NewManagerFromEnv("tenant-a:key-a,tenant-b:key-b")
+	if err != nil {
+		t.Fatalf("tenant key manager: %v", err)
+	}
+	handler := makeHandler(db, counter, authConfig{tenantKeys: tenantKeys, defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	createReq, err := http.NewRequest(http.MethodPost, srv.URL+"/agent-groups", bytes.NewBufferString(`{"name":"workers"}`))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	createReq.Header.Set("Content-Type", "application/json")
+	createReq.Header.Set("X-API-Key", "key-a")
+	createResp, err := http.DefaultClient.Do(createReq)
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", createResp.StatusCode)
+	}
+	var group struct {
+		ID     string `json:"id"`
+		Tenant string `json:"tenant"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&group); err != nil {
+		t.Fatalf("decode group: %v", err)
+	}
+	if group.ID == "" || group.Tenant != "tenant-a" {
+		t.Fatalf("unexpected group: %+v", group)
+	}
+
+	getReq, err := http.NewRequest(http.MethodGet, srv.URL+"/agent-groups/"+group.ID, nil)
+	if err != nil {
+		t.Fatalf("get request: %v", err)
+	}
+	getReq.Header.Set("X-API-Key", "key-a")
+	getResp, err := http.DefaultClient.Do(getReq)
+	if err != nil {
+		t.Fatalf("get group as owner: %v", err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", getResp.StatusCode)
+	}
+
+	getReq, err = http.NewRequest(http.MethodGet, srv.URL+"/agent-groups/"+group.ID, nil)
+	if err != nil {
+		t.Fatalf("cross-tenant get request: %v", err)
+	}
+	getReq.Header.Set("X-API-Key", "key-b")
+	getResp, err = http.DefaultClient.Do(getReq)
+	if err != nil {
+		t.Fatalf("cross-tenant get group: %v", err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", getResp.StatusCode)
+	}
+
+	listReq, err := http.NewRequest(http.MethodGet, srv.URL+"/agent-groups", nil)
+	if err != nil {
+		t.Fatalf("list request: %v", err)
+	}
+	listReq.Header.Set("X-API-Key", "key-b")
+	listResp, err := http.DefaultClient.Do(listReq)
+	if err != nil {
+		t.Fatalf("cross-tenant list groups: %v", err)
+	}
+	defer listResp.Body.Close()
+	var listed struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode group list: %v", err)
+	}
+	if listed.Count != 0 {
+		t.Fatalf("expected tenant-b to see 0 groups, got %d", listed.Count)
+	}
+
+	delReq, err := http.NewRequest(http.MethodDelete, srv.URL+"/agent-groups/"+group.ID, nil)
+	if err != nil {
+		t.Fatalf("cross-tenant delete request: %v", err)
+	}
+	delReq.Header.Set("X-API-Key", "key-b")
+	delResp, err := http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Fatalf("cross-tenant delete group: %v", err)
+	}
+	defer delResp.Body.Close()
+	if delResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", delResp.StatusCode)
+	}
+
+	delReq, err = http.NewRequest(http.MethodDelete, srv.URL+"/agent-groups/"+group.ID, nil)
+	if err != nil {
+		t.Fatalf("owner delete request: %v", err)
+	}
+	delReq.Header.Set("X-API-Key", "key-a")
+	delResp, err = http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Fatalf("owner delete group: %v", err)
+	}
+	defer delResp.Body.Close()
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", delResp.StatusCode)
 	}
 }
 
