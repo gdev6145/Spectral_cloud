@@ -207,6 +207,48 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
 .lat-bar-wrap { display: flex; align-items: center; gap: 8px; }
 .lat-bar { height: 6px; border-radius: 3px; background: var(--accent2); min-width: 2px; }
 
+/* ── PIPELINE STAGES ─────────────────────────────────────────────────────── */
+.pipeline-stages { display: flex; align-items: center; gap: 0; flex-wrap: wrap; }
+.stage-node { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.stage-dot { width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; flex-shrink: 0; }
+.stage-dot.done    { background: rgba(0,212,170,.18); color: var(--accent2); border: 2px solid var(--accent2); }
+.stage-dot.active  { background: rgba(108,99,255,.18); color: var(--accent); border: 2px solid var(--accent); animation: pulseglow 1.5s infinite; }
+.stage-dot.pending { background: rgba(100,116,139,.12); color: var(--muted); border: 2px solid var(--border); }
+.stage-dot.failed  { background: rgba(224,82,82,.15); color: var(--danger); border: 2px solid var(--danger); }
+.stage-lbl { font-size: 9px; color: var(--muted); max-width: 50px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stage-connector { height: 2px; flex: 1; min-width: 16px; background: var(--border); margin-bottom: 12px; }
+.stage-connector.done { background: var(--accent2); }
+
+/* ── AI CHAT ─────────────────────────────────────────────────────────────── */
+.chat-wrap { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.chat-messages { flex: 1; min-height: 280px; max-height: 380px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 12px; background: var(--input); }
+.chat-msg { padding: 8px 12px; border-radius: 8px; font-size: 13px; max-width: 88%; white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+.chat-msg.user      { background: rgba(108,99,255,.15); color: var(--text); border: 1px solid rgba(108,99,255,.25); align-self: flex-end; }
+.chat-msg.assistant { background: var(--card); color: var(--text); border: 1px solid var(--border); align-self: flex-start; }
+.chat-msg.system    { background: rgba(245,166,35,.08); color: var(--warn); border: 1px solid rgba(245,166,35,.18); align-self: center; font-size: 11px; font-style: italic; }
+.chat-input-row { display: flex; gap: 8px; padding: 10px; background: var(--card); border-top: 1px solid var(--border); }
+.chat-input-row textarea { flex: 1; min-height: 38px; max-height: 120px; resize: vertical; border-radius: 6px; padding: 6px 10px; font-size: 13px; }
+.chat-typing { color: var(--muted); font-style: italic; font-size: 12px; padding: 4px 12px; }
+
+/* ── USAGE / QUOTA ───────────────────────────────────────────────────────── */
+.quota-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.quota-label { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+.quota-bar-wrap { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.quota-bar-fill { height: 100%; border-radius: 3px; background: var(--accent2); transition: width .4s ease; }
+.quota-bar-fill.warn { background: var(--warn); }
+.quota-bar-fill.over { background: var(--danger); }
+
+/* ── PLAN BADGES ─────────────────────────────────────────────────────────── */
+.plan-badge { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+.plan-free       { background: rgba(100,116,139,.15); color: var(--muted); }
+.plan-pro        { background: rgba(108,99,255,.2); color: var(--accent); }
+.plan-enterprise { background: rgba(251,191,36,.15); color: #f59e0b; }
+
+/* ── AI STREAMING ────────────────────────────────────────────────────────── */
+.ai-result-box { background: var(--input); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; min-height: 60px; max-height: 400px; overflow-y: auto; }
+.ai-cursor { display: inline-block; width: 2px; height: 1em; background: var(--accent); animation: blink 0.9s step-start infinite; vertical-align: text-bottom; }
+@keyframes blink { 50% { opacity: 0; } }
+
 </style>
 </head>
 <body>
@@ -286,6 +328,18 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
       Topology
     </a>
+    <a onclick="go('pipelines')" id="nav-pipelines">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/><line x1="7" y1="12" x2="10" y2="12"/><line x1="14" y1="12" x2="17" y2="12"/></svg>
+      Pipelines
+    </a>
+    <a onclick="go('ai')" id="nav-ai">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+      AI Panel
+    </a>
+    <a onclick="go('tenant')" id="nav-tenant">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      My Tenant
+    </a>
   </div>
   <div class="nav-footer">
     <strong id="server-url">localhost</strong>
@@ -348,6 +402,9 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
           <tr><td class="mono">g &nbsp;s</td><td>Go to Schedules</td></tr>
           <tr><td class="mono">g &nbsp;n</td><td>Go to Notifications</td></tr>
           <tr><td class="mono">g &nbsp;m</td><td>Go to Mesh Peers</td></tr>
+          <tr><td class="mono">g &nbsp;p</td><td>Go to Pipelines</td></tr>
+          <tr><td class="mono">g &nbsp;i</td><td>Go to AI Panel</td></tr>
+          <tr><td class="mono">g &nbsp;t</td><td>Go to My Tenant</td></tr>
           <tr><td class="mono">r</td><td>Refresh current page</td></tr>
           <tr><td class="mono">?</td><td>Show this help</td></tr>
           <tr><td class="mono">Esc</td><td>Close any modal</td></tr>
@@ -416,7 +473,8 @@ const PAGE_NAMES = {
   jobs:'Jobs', events:'Events', kv:'KV Store', search:'Search',
   schedules:'Schedules', groups:'Agent Groups', circuit:'Circuit Breaker',
   audit:'Audit Log', admin:'Admin', notifs:'Notifications', mesh:'Mesh Peers',
-  stats:'Analytics', topology:'Topology'
+  stats:'Analytics', topology:'Topology', pipelines:'Pipelines',
+  ai:'AI Panel', tenant:'My Tenant'
 };
 function go(page) {
   currentRenderId++;
@@ -687,6 +745,9 @@ async function render(page, rid) {
       case 'mesh':       await renderMesh(rid); break;
       case 'stats':      await renderStats(rid); break;
       case 'topology':   await renderTopology(rid); break;
+      case 'pipelines':  await renderPipelines(rid); break;
+      case 'ai':         await renderAI(rid); break;
+      case 'tenant':     await renderTenant(rid); break;
     }
   } catch(e) {
     if (rid && rid !== currentRenderId) return;
@@ -697,11 +758,12 @@ async function render(page, rid) {
 
 // ── OVERVIEW ─────────────────────────────────────────────────────────────────
 async function renderOverview(rid, identityPromise) {
-  const [health, status, height, routesList, agentsList, histRes, metricsRes, bestRouteRes, meshPeersRes, tsRes, whoamiRes] = await Promise.allSettled([
+  const [health, status, height, routesList, agentsList, histRes, metricsRes, bestRouteRes, meshPeersRes, tsRes, whoamiRes, pipelinesRes] = await Promise.allSettled([
     api('/health'), api('/admin/status'), api('/blockchain/height'),
     api('/routes'), api('/agents'), api('/events/history?limit=8'), api('/metrics/json'),
     api('/routes/best').catch(() => null), api('/mesh/peers').catch(() => ({peers:[]})),
-    api('/metrics/timeseries?n=30').catch(() => []), identityPromise || updateSessionIdentity()
+    api('/metrics/timeseries?n=30').catch(() => []), identityPromise || updateSessionIdentity(),
+    api('/agent-pipelines').catch(() => ({pipelines:[]}))
   ]);
   if (rid && rid !== currentRenderId) return;
   const h = health.value||{};
@@ -719,6 +781,8 @@ async function renderOverview(rid, identityPromise) {
     blockHistory.push(Number(blockCount));
     if (blockHistory.length > 20) blockHistory.shift();
   }
+
+  const pipelinesCount = ((pipelinesRes.status === 'fulfilled' ? pipelinesRes.value : null) || {}).pipelines?.length ?? null;
 
   // update sidebar health dot
   const healthDot = document.getElementById('health-dot');
@@ -759,6 +823,7 @@ async function renderOverview(rid, identityPromise) {
     <div class="card"><div class="card-label">Agents</div><div class="card-value">${agents.length}</div><div class="card-sub">registered</div></div>
     <div class="card green"><div class="card-label">Mesh Peers</div><div class="card-value">${meshPeers.length}</div><div class="card-sub">connected</div></div>
     <div class="card"><div class="card-label">Uptime</div><div class="card-value" style="font-size:20px">${st.uptime_seconds!==undefined?fmt_uptime(st.uptime_seconds):'—'}</div><div class="card-sub">${esc(st.now?new Date(st.now).toLocaleDateString():'')}</div></div>
+    ${pipelinesCount !== null ? `<div class="card" style="cursor:pointer" onclick="go('pipelines')"><div class="card-label">Pipelines</div><div class="card-value">${pipelinesCount}</div><div class="card-sub">configured</div></div>` : ''}
   </div>
   ${chartHtml}
   <div class="section" style="margin-bottom:16px">
@@ -767,6 +832,8 @@ async function renderOverview(rid, identityPromise) {
       <button class="btn btn-outline" onclick="go('routes')">＋ Add Route</button>
       <button class="btn btn-outline" onclick="go('agents')">＋ Register Agent</button>
       <button class="btn btn-outline" onclick="go('schedules')">＋ New Schedule</button>
+      <button class="btn btn-outline" onclick="go('pipelines')">⬡ Pipelines</button>
+      <button class="btn btn-outline" onclick="go('ai')">✦ AI Panel</button>
       <button class="btn btn-primary" onclick="quickBackup()">💾 Backup Now</button>
     </div>
   </div>
@@ -1893,9 +1960,10 @@ async function doSearch() {
 async function renderAdmin(rid, identityPromise) {
   const content = document.getElementById('content');
   if (content) content.innerHTML = skeletonCards(4) + `<div class="table-wrap"><table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>${skeletonRows(2,5)}</tbody></table></div>`;
-  const [statusRes, tenantsRes, backupsRes, verifyRes, meshRes, sysInfoRes, whoamiRes] = await Promise.allSettled([
+  const [statusRes, tenantsRes, backupsRes, verifyRes, meshRes, sysInfoRes, whoamiRes, usageRes] = await Promise.allSettled([
     api('/admin/status'), api('/admin/tenants'), api('/admin/backup/list'), api('/blockchain/verify'), api('/admin/mesh'),
-    api('/system/info').catch(()=>null), identityPromise || updateSessionIdentity()
+    api('/system/info').catch(()=>null), identityPromise || updateSessionIdentity(),
+    api('/admin/usage').catch(()=>null)
   ]);
   if (rid && rid !== currentRenderId) return;
   const st = statusRes.value||{};
@@ -1905,6 +1973,7 @@ async function renderAdmin(rid, identityPromise) {
   const mesh = meshRes.value||{status:'unknown'};
   const sysInfo = sysInfoRes.value || null;
   const who = whoamiRes.status === 'fulfilled' ? whoamiRes.value : (sessionIdentity || normalizeIdentity(null));
+  const usageData = usageRes.status === 'fulfilled' ? usageRes.value : null;
 
   const sysInfoHtml = sysInfo ? `<div class="section" style="margin-bottom:16px">
     <div class="section-title">System Info</div>
@@ -2003,6 +2072,43 @@ async function renderAdmin(rid, identityPromise) {
       </div>
     </div>
     <div>
+      ${usageData ? `<div class="section">
+        <div class="section-title">Usage & Plans (${usageData.date||'today'})</div>
+        <div class="table-wrap" style="margin-bottom:12px">
+          <table>
+            <thead><tr><th>Tenant</th><th>Plan</th><th>Live Agents</th><th>Actions</th></tr></thead>
+            <tbody>
+              ${(usageData.tenants||[]).map(r=>{
+                const usage = r.usage_today || {};
+                const quota = r.quota || {};
+                const planCls = r.plan === 'enterprise' ? 'plan-enterprise' : r.plan === 'pro' ? 'plan-pro' : 'plan-free';
+                const usageRows = Object.entries(usage).filter(([,v])=>v>0).map(([k,v])=>{
+                  const lim = quota[k] || 0;
+                  const pct = lim > 0 ? Math.min(100, Math.round(v/lim*100)) : 0;
+                  const fillCls = pct >= 100 ? 'over' : pct >= 80 ? 'warn' : '';
+                  return `<div class="quota-row" style="margin-bottom:6px">
+                    <div class="quota-label"><span>${esc(k)}</span><span>${v}${lim>0?'/'+lim:''}</span></div>
+                    ${lim>0?`<div class="quota-bar-wrap"><div class="quota-bar-fill ${fillCls}" style="width:${pct}%"></div></div>`:''}
+                  </div>`;
+                }).join('');
+                return `<tr>
+                  <td><strong>${esc(r.tenant_id)}</strong>${usageRows?`<div style="margin-top:6px">${usageRows}</div>`:''}</td>
+                  <td><span class="plan-badge ${planCls}">${esc(r.plan||'free')}</span></td>
+                  <td>${r.agents_live}</td>
+                  <td>
+                    <select onchange="changeTenantPlan('${esc(r.tenant_id)}',this.value)" style="width:100px;padding:3px 6px;font-size:11px">
+                      <option value="">change…</option>
+                      <option value="free">free</option>
+                      <option value="pro">pro</option>
+                      <option value="enterprise">enterprise</option>
+                    </select>
+                  </td>
+                </tr>`;
+              }).join('')||'<tr><td colspan="4" class="empty">No data</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>` : ''}
       <div class="section">
         <div class="section-title">Tenants</div>
         <div class="table-wrap" style="margin-bottom:12px">
@@ -2232,6 +2338,14 @@ async function deleteTenant(name) {
   if (!confirm('Delete tenant "'+name+'" and all its data?')) return;
   try { await del('/admin/tenants?name='+encodeURIComponent(name)); toast('Tenant deleted'); renderAdmin(currentRenderId); }
   catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function changeTenantPlan(tenant, plan) {
+  if (!plan) return;
+  try {
+    await api('/admin/tenants/'+encodeURIComponent(tenant)+'/plan', {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({plan})});
+    toast(`${tenant} → ${plan}`); renderAdmin(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
 }
 
 function saveApiKey() {
@@ -2743,7 +2857,7 @@ function closeShortcutsModal() {
 (function() {
   let _kbLastKey = '';
   let _kbLastTime = 0;
-  const _kbNavMap = {o:'overview', b:'blockchain', r:'routes', a:'agents', e:'events', k:'kv', s:'schedules', n:'notifs', m:'mesh'};
+  const _kbNavMap = {o:'overview', b:'blockchain', r:'routes', a:'agents', e:'events', k:'kv', s:'schedules', n:'notifs', m:'mesh', p:'pipelines', i:'ai', t:'tenant'};
   document.addEventListener('keydown', function(ev) {
     const tag = (ev.target.tagName||'').toLowerCase();
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
@@ -2924,6 +3038,571 @@ function topoSelectNode(id, data) {
     });
   }
   panel.innerHTML = html;
+}
+
+// ── PIPELINES PAGE ────────────────────────────────────────────────────────────
+let activePipelineId = null;
+
+function stagesDots(stages, currentStage, status) {
+  if (!stages || !stages.length) return '';
+  return stages.map((s, i) => {
+    let cls = 'pending';
+    if (status === 'done') cls = 'done';
+    else if (status === 'failed') { cls = i < currentStage ? 'done' : i === currentStage ? 'failed' : 'pending'; }
+    else { cls = i < currentStage ? 'done' : i === currentStage ? 'active' : 'pending'; }
+    return `<div class="stage-node">
+      <div class="stage-dot ${cls}">${i+1}</div>
+      <div class="stage-lbl">${esc((s.name||s.capability||s.agent_id||'stage').substring(0,10))}</div>
+    </div>${i < stages.length-1 ? `<div class="stage-connector ${i < currentStage || status==='done' ? 'done' : ''}"></div>` : ''}`;
+  }).join('');
+}
+
+async function renderPipelines(rid) {
+  document.getElementById('content').innerHTML = `<div class="section"><div class="table-wrap"><table><thead><tr><th>Name</th><th>Stages</th><th>ID</th><th>Created</th><th></th></tr></thead><tbody>${skeletonRows(5)}</tbody></table></div></div>`;
+  const res = await api('/agent-pipelines').catch(()=>({pipelines:[]}));
+  if (rid && rid !== currentRenderId) return;
+  const pipelines = (res.pipelines || []);
+  document.getElementById('content').innerHTML = `
+  <div class="section">
+    <div class="flex" style="margin-bottom:12px">
+      <div class="section-title" style="margin:0">${pipelines.length} Pipeline(s)</div>
+      <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="renderPipelines(currentRenderId)">↻</button></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Stages</th><th>ID</th><th>Created</th><th></th></tr></thead>
+        <tbody>
+          ${pipelines.length === 0 ? `<tr><td colspan="5">${emptyState('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/><line x1="7" y1="12" x2="10" y2="12"/><line x1="14" y1="12" x2="17" y2="12"/></svg>', 'No pipelines', 'Create your first pipeline to orchestrate multi-stage agent workflows.', 'Create Pipeline', "document.getElementById('pipe-name')?.focus()")}</td></tr>` :
+          pipelines.map(p => `<tr>
+            <td><strong style="cursor:pointer;color:var(--accent)" onclick="loadPipelineRuns('${esc(p.id)}')">${esc(p.name)}</strong></td>
+            <td><div class="pipeline-stages">${stagesDots(p.stages, 0, '')}</div></td>
+            <td class="mono">${esc(p.id)}</td>
+            <td class="mono">${fmtTime(p.created_at)}</td>
+            <td class="flex" style="gap:4px">
+              <button class="btn btn-primary btn-sm" onclick="startPipelineRun('${esc(p.id)}')">▶ Run</button>
+              <button class="btn btn-outline btn-sm" onclick="loadPipelineRuns('${esc(p.id)}')">Runs</button>
+              <button class="btn btn-danger btn-sm" onclick="deletePipeline('${esc(p.id)}')">✕</button>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div id="pipeline-runs-section"></div>
+  <div class="section">
+    <div class="section-title">Create Pipeline</div>
+    <div class="card">
+      <div class="form-row">
+        <div class="form-group"><label>Pipeline Name</label><input id="pipe-name" placeholder="data-processing"></div>
+      </div>
+      <div id="pipe-stages-builder">
+        <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Stages</div>
+        <div id="pipe-stages-list">
+          <div class="stage-row form-row" style="margin-bottom:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px;gap:8px">
+            <div class="form-group" style="margin:0"><label>Stage Name</label><input placeholder="ingest" style="width:100px"></div>
+            <div class="form-group" style="margin:0"><label>Capability</label><input placeholder="inference" style="width:110px"></div>
+            <div class="form-group" style="margin:0"><label>Agent ID (opt)</label><input placeholder="" style="width:100px"></div>
+            <button class="btn btn-outline btn-sm btn-danger" style="margin-top:18px" onclick="removePipelineStage(this)">✕</button>
+          </div>
+        </div>
+        <button class="btn btn-outline btn-sm" onclick="addPipelineStage()" style="margin-top:4px">+ Add Stage</button>
+      </div>
+      <div style="margin-top:12px">
+        <button class="btn btn-primary" onclick="createPipeline()">Create Pipeline</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function addPipelineStage() {
+  const list = document.getElementById('pipe-stages-list');
+  if (!list) return;
+  const div = document.createElement('div');
+  div.className = 'stage-row form-row';
+  div.style.cssText = 'margin-bottom:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px;gap:8px';
+  div.innerHTML = `
+    <div class="form-group" style="margin:0"><label>Stage Name</label><input placeholder="process" style="width:100px"></div>
+    <div class="form-group" style="margin:0"><label>Capability</label><input placeholder="transform" style="width:110px"></div>
+    <div class="form-group" style="margin:0"><label>Agent ID (opt)</label><input placeholder="" style="width:100px"></div>
+    <button class="btn btn-outline btn-sm btn-danger" style="margin-top:18px" onclick="removePipelineStage(this)">✕</button>`;
+  list.appendChild(div);
+}
+
+function removePipelineStage(btn) {
+  const row = btn.closest('.stage-row');
+  const list = document.getElementById('pipe-stages-list');
+  if (row && list && list.children.length > 1) row.remove();
+  else toast('At least one stage is required', false);
+}
+
+async function createPipeline() {
+  const name = (document.getElementById('pipe-name')||{}).value.trim();
+  if (!name) { toast('Name required', false); return; }
+  const rows = document.querySelectorAll('#pipe-stages-list .stage-row');
+  const stages = [];
+  for (const row of rows) {
+    const inputs = row.querySelectorAll('input');
+    const stageName = inputs[0]?.value.trim() || '';
+    const cap = inputs[1]?.value.trim() || '';
+    const agentId = inputs[2]?.value.trim() || '';
+    if (!cap && !agentId) { toast('Each stage needs a capability or agent ID', false); return; }
+    stages.push({name: stageName, capability: cap, agent_id: agentId});
+  }
+  try {
+    await post('/agent-pipelines', {name, stages});
+    toast('Pipeline created'); renderPipelines(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function deletePipeline(id) {
+  if (!confirm('Delete pipeline?')) return;
+  try {
+    await del('/agent-pipelines/'+encodeURIComponent(id));
+    toast('Pipeline deleted'); renderPipelines(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function startPipelineRun(pipelineId) {
+  const inputStr = prompt('Initial input (JSON, or leave blank):', '{}');
+  if (inputStr === null) return;
+  let input = {};
+  try { if (inputStr.trim()) input = JSON.parse(inputStr); } catch { toast('Invalid JSON', false); return; }
+  try {
+    const res = await post('/agent-pipelines/'+encodeURIComponent(pipelineId)+'/runs', {input});
+    toast('Run started: '+(res.run?.id||'?'));
+    loadPipelineRuns(pipelineId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function loadPipelineRuns(pipelineId) {
+  activePipelineId = pipelineId;
+  const el = document.getElementById('pipeline-runs-section');
+  if (!el) return;
+  el.innerHTML = `<div class="section"><div class="section-title">Runs for ${esc(pipelineId)}</div><div class="table-wrap"><table><thead><tr><th>Run ID</th><th>Status</th><th>Stage</th><th>Progress</th><th>Created</th><th></th></tr></thead><tbody>${skeletonRows(6)}</tbody></table></div></div>`;
+  try {
+    const [runsRes, pipeRes] = await Promise.allSettled([
+      api('/agent-pipelines/'+encodeURIComponent(pipelineId)+'/runs'),
+      api('/agent-pipelines/'+encodeURIComponent(pipelineId))
+    ]);
+    const runs = (runsRes.value||{}).runs || [];
+    const pipe = pipeRes.value || {};
+    el.innerHTML = `<div class="section">
+      <div class="flex" style="margin-bottom:10px">
+        <div class="section-title" style="margin:0">Runs for <strong>${esc(pipe.name||pipelineId)}</strong> (${runs.length})</div>
+        <div class="ml-auto flex" style="gap:6px">
+          <button class="btn btn-primary btn-sm" onclick="startPipelineRun('${esc(pipelineId)}')">▶ New Run</button>
+          <button class="btn btn-outline btn-sm" onclick="loadPipelineRuns('${esc(pipelineId)}')">↻</button>
+          <button class="btn btn-outline btn-sm" onclick="document.getElementById('pipeline-runs-section').innerHTML=''">✕ Close</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Run ID</th><th>Status</th><th>Stage</th><th>Progress</th><th>Created</th><th></th></tr></thead>
+          <tbody>
+            ${runs.length === 0 ? '<tr><td colspan="6" class="empty">No runs yet</td></tr>' :
+            runs.slice().reverse().map(r=>`<tr>
+              <td class="mono">${esc(r.id)}</td>
+              <td><span class="pill ${r.status==='done'?'healthy':r.status==='failed'?'degraded':'unknown'}">${esc(r.status)}</span></td>
+              <td>${r.current_stage + 1} / ${(pipe.stages||[]).length||'?'}</td>
+              <td><div class="pipeline-stages">${stagesDots(pipe.stages||[], r.current_stage, r.status)}</div></td>
+              <td class="mono">${fmtTime(r.created_at)}</td>
+              <td>${r.status==='running'?`<button class="btn btn-outline btn-sm" onclick="advancePipelineRun('${esc(pipelineId)}','${esc(r.id)}',false)">→ Advance</button> <button class="btn btn-danger btn-sm" onclick="advancePipelineRun('${esc(pipelineId)}','${esc(r.id)}',true)">✗ Fail</button>`:''}
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  } catch(e) {
+    if (el) el.innerHTML = `<div class="alert err">${esc(e.message)}</div>`;
+  }
+}
+
+async function advancePipelineRun(pipelineId, runId, failed) {
+  const result = failed ? '' : (prompt('Result from this stage (optional):') || '');
+  if (!failed && result === null) return;
+  try {
+    const res = await post('/agent-pipelines/'+encodeURIComponent(pipelineId)+'/runs/'+encodeURIComponent(runId)+'/advance', {result, failed});
+    const run = res.run || {};
+    if (run.status === 'done') toast('Run completed successfully!');
+    else if (run.status === 'failed') toast('Run marked as failed', false);
+    else toast('Advanced to stage '+(run.current_stage+1));
+    loadPipelineRuns(pipelineId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+// ── AI PANEL PAGE ─────────────────────────────────────────────────────────────
+let aiChatSessionId = null;
+
+async function renderAI(rid) {
+  if (rid && rid !== currentRenderId) return;
+  document.getElementById('content').innerHTML = `
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <div>
+      <div class="section">
+        <div class="section-title">AI Inference</div>
+        <div class="card">
+          <div class="form-group" style="margin-bottom:8px">
+            <label>System Prompt (optional)</label>
+            <input id="ai-system" placeholder="You are a helpful assistant…">
+          </div>
+          <div class="form-group" style="margin-bottom:8px">
+            <label>Prompt</label>
+            <textarea id="ai-prompt" placeholder="Ask anything…" style="min-height:80px"></textarea>
+          </div>
+          <div class="form-row" style="margin-bottom:8px">
+            <div class="form-group">
+              <label>Model</label>
+              <select id="ai-model">
+                <option value="">claude-3-5-haiku-latest (default)</option>
+                <option value="claude-3-5-haiku-latest">claude-3-5-haiku-latest</option>
+                <option value="claude-3-5-sonnet-latest">claude-3-5-sonnet-latest</option>
+                <option value="claude-opus-4-5">claude-opus-4-5</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Max Tokens</label>
+              <input id="ai-max-tokens" type="number" value="1024" style="width:90px">
+            </div>
+          </div>
+          <div class="flex" style="gap:8px;margin-bottom:10px">
+            <button class="btn btn-primary" onclick="runAIInfer()">⚡ Infer</button>
+            <button class="btn btn-outline" onclick="runAIStream()">▶ Stream</button>
+            <button class="btn btn-outline" onclick="runAIAsync()">⬡ Async (Agent)</button>
+          </div>
+          <div id="ai-infer-result" class="ai-result-box" style="min-height:48px;display:none"></div>
+        </div>
+      </div>
+      <div class="section">
+        <div class="section-title">Cluster Analysis</div>
+        <div class="card">
+          <div class="form-group" style="margin-bottom:8px">
+            <label>Focus (optional)</label>
+            <input id="ai-analyze-focus" placeholder="agent health, routing performance…">
+          </div>
+          <button class="btn btn-primary" onclick="runAIAnalyze()">🔍 Analyze Cluster</button>
+          <div id="ai-analyze-result" class="ai-result-box" style="margin-top:10px;display:none"></div>
+        </div>
+      </div>
+      <div class="section">
+        <div class="section-title">AI Agents</div>
+        <div id="ai-agents-list" style="margin-top:4px"><button class="btn btn-outline btn-sm" onclick="loadAIAgents()">Load Inference Agents</button></div>
+      </div>
+    </div>
+    <div>
+      <div class="section">
+        <div class="section-title">AI Chat Session</div>
+        <div class="card" style="padding:0;overflow:hidden">
+          <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:12px;color:var(--muted)">Session:</span>
+            <select id="ai-session-select" style="width:160px;padding:3px 8px;font-size:12px" onchange="selectChatSession(this.value)">
+              <option value="">— new session —</option>
+            </select>
+            <button class="btn btn-outline btn-sm" onclick="loadChatSessions()">↻</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteChatSession()">✕ Delete</button>
+          </div>
+          <div class="chat-wrap">
+            <div class="chat-messages" id="ai-chat-messages">
+              <div class="chat-msg system">Start a new message below to begin chatting.</div>
+            </div>
+            <div class="chat-input-row">
+              <textarea id="ai-chat-input" placeholder="Type a message… (Shift+Enter = newline)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChatMessage();}"></textarea>
+              <button class="btn btn-primary" onclick="sendChatMessage()" style="align-self:flex-end">Send</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+  loadChatSessions();
+}
+
+async function runAIInfer() {
+  const prompt = (document.getElementById('ai-prompt')||{}).value.trim();
+  if (!prompt) { toast('Prompt required', false); return; }
+  const el = document.getElementById('ai-infer-result');
+  if (el) { el.style.display = 'block'; el.textContent = 'Thinking…'; }
+  try {
+    const res = await post('/ai/infer', {
+      prompt,
+      system: (document.getElementById('ai-system')||{}).value.trim() || undefined,
+      model: (document.getElementById('ai-model')||{}).value || undefined,
+      max_tokens: parseInt((document.getElementById('ai-max-tokens')||{}).value) || 1024
+    });
+    if (el) el.textContent = res.content || res.result || JSON.stringify(res, null, 2);
+  } catch(e) {
+    if (el) el.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function runAIStream() {
+  const prompt = (document.getElementById('ai-prompt')||{}).value.trim();
+  if (!prompt) { toast('Prompt required', false); return; }
+  const el = document.getElementById('ai-infer-result');
+  if (el) { el.style.display = 'block'; el.innerHTML = '<span class="ai-cursor"></span>'; }
+  const headers = {};
+  if (apiKey) headers['X-API-Key'] = apiKey;
+  try {
+    const resp = await fetch(API + '/ai/infer?stream=true', {
+      method: 'POST',
+      headers: {...headers, 'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        prompt,
+        system: (document.getElementById('ai-system')||{}).value.trim() || undefined,
+        model: (document.getElementById('ai-model')||{}).value || undefined,
+        max_tokens: parseInt((document.getElementById('ai-max-tokens')||{}).value) || 1024
+      })
+    });
+    if (!resp.ok) { const e = await resp.json().catch(()=>({error:resp.statusText})); throw new Error(e.error||resp.statusText); }
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '', text = '';
+    if (el) el.innerHTML = '';
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        try {
+          const chunk = JSON.parse(line.slice(5).trim());
+          if (chunk.type === 'text' && chunk.text) { text += chunk.text; if (el) el.textContent = text; }
+          if (chunk.type === 'stop' || chunk.type === 'error') break;
+        } catch {}
+      }
+    }
+  } catch(e) { if (el) el.textContent = 'Stream error: '+e.message; }
+}
+
+async function runAIAsync() {
+  const prompt = (document.getElementById('ai-prompt')||{}).value.trim();
+  if (!prompt) { toast('Prompt required', false); return; }
+  try {
+    const res = await post('/ai/infer?mode=async', {prompt});
+    toast('Async job submitted: '+(res.id||'?'));
+    const el = document.getElementById('ai-infer-result');
+    if (el) { el.style.display='block'; el.textContent = 'Job submitted: '+JSON.stringify(res, null, 2); }
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function runAIAnalyze() {
+  const focus = (document.getElementById('ai-analyze-focus')||{}).value.trim();
+  const el = document.getElementById('ai-analyze-result');
+  if (el) { el.style.display='block'; el.textContent = 'Analyzing cluster…'; }
+  try {
+    const res = await post('/ai/analyze', focus ? {focus} : {});
+    if (el) el.textContent = res.analysis || res.content || JSON.stringify(res, null, 2);
+  } catch(e) {
+    if (el) el.textContent = 'Error: '+e.message;
+  }
+}
+
+async function loadAIAgents() {
+  const el = document.getElementById('ai-agents-list');
+  if (!el) return;
+  try {
+    const res = await api('/ai/agents');
+    const agents = res.agents || [];
+    if (!agents.length) { el.innerHTML = '<div class="empty">No inference agents registered</div>'; return; }
+    el.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Agent</th><th>Status</th><th>Capabilities</th></tr></thead><tbody>'
+      + agents.map(a=>`<tr><td class="mono"><strong>${esc(a.id)}</strong></td><td><span class="pill ${esc(a.status)}">${esc(a.status)}</span></td><td class="mono">${(a.capabilities||[]).join(', ')||'—'}</td></tr>`).join('')
+      + '</tbody></table></div>';
+  } catch(e) { el.innerHTML = `<div class="alert err">${esc(e.message)}</div>`; }
+}
+
+async function loadChatSessions() {
+  try {
+    const res = await api('/ai/sessions');
+    const sessions = res.sessions || [];
+    const sel = document.getElementById('ai-session-select');
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">— new session —</option>';
+    sessions.forEach(id => {
+      const opt = document.createElement('option');
+      opt.value = id; opt.textContent = id;
+      if (id === cur || id === aiChatSessionId) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    if (aiChatSessionId && sessions.includes(aiChatSessionId)) sel.value = aiChatSessionId;
+  } catch { /* sessions endpoint may not be available */ }
+}
+
+async function selectChatSession(id) {
+  aiChatSessionId = id || null;
+  const feed = document.getElementById('ai-chat-messages');
+  if (!feed) return;
+  if (!id) { feed.innerHTML = '<div class="chat-msg system">Start a new message below to begin chatting.</div>'; return; }
+  feed.innerHTML = '<div class="chat-msg system">Loading history…</div>';
+  try {
+    const res = await api('/ai/chat/'+encodeURIComponent(id));
+    const msgs = res.messages || [];
+    feed.innerHTML = msgs.length ? msgs.map(m => `<div class="chat-msg ${esc(m.role)}">${esc(m.content)}</div>`).join('') : '<div class="chat-msg system">No messages yet.</div>';
+    feed.scrollTop = feed.scrollHeight;
+  } catch(e) { feed.innerHTML = `<div class="chat-msg system">Error: ${esc(e.message)}</div>`; }
+}
+
+async function sendChatMessage() {
+  const ta = document.getElementById('ai-chat-input');
+  const msg = ta ? ta.value.trim() : '';
+  if (!msg) return;
+  if (ta) ta.value = '';
+  const feed = document.getElementById('ai-chat-messages');
+  if (!feed) return;
+  // Determine or create session ID
+  if (!aiChatSessionId) {
+    aiChatSessionId = 'session-'+Date.now();
+    const sel = document.getElementById('ai-session-select');
+    if (sel) {
+      const opt = document.createElement('option');
+      opt.value = aiChatSessionId; opt.textContent = aiChatSessionId; opt.selected = true;
+      sel.appendChild(opt);
+    }
+  }
+  // Append user message immediately
+  const userDiv = document.createElement('div');
+  userDiv.className = 'chat-msg user'; userDiv.textContent = msg;
+  feed.appendChild(userDiv);
+  const typingDiv = document.createElement('div');
+  typingDiv.className = 'chat-typing'; typingDiv.textContent = '✦ thinking…';
+  feed.appendChild(typingDiv);
+  feed.scrollTop = feed.scrollHeight;
+  try {
+    const res = await post('/ai/chat/'+encodeURIComponent(aiChatSessionId), {message: msg});
+    typingDiv.remove();
+    const reply = res.reply || res.content || JSON.stringify(res);
+    const replyDiv = document.createElement('div');
+    replyDiv.className = 'chat-msg assistant'; replyDiv.textContent = reply;
+    feed.appendChild(replyDiv);
+    feed.scrollTop = feed.scrollHeight;
+  } catch(e) {
+    typingDiv.remove();
+    const errDiv = document.createElement('div');
+    errDiv.className = 'chat-msg system'; errDiv.textContent = 'Error: '+e.message;
+    feed.appendChild(errDiv);
+    feed.scrollTop = feed.scrollHeight;
+  }
+}
+
+async function deleteChatSession() {
+  const id = aiChatSessionId || (document.getElementById('ai-session-select')||{}).value;
+  if (!id) { toast('No session selected', false); return; }
+  if (!confirm('Delete chat session "'+id+'"?')) return;
+  try {
+    await del('/ai/chat/'+encodeURIComponent(id));
+    toast('Session deleted'); aiChatSessionId = null; renderAI(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+// ── TENANT PROFILE PAGE ───────────────────────────────────────────────────────
+async function renderTenant(rid) {
+  if (rid && rid !== currentRenderId) return;
+  document.getElementById('content').innerHTML = skeletonCards(3);
+  const [profileRes, keysRes] = await Promise.allSettled([
+    api('/tenant/me').catch(()=>null), api('/tenant/keys').catch(()=>null)
+  ]);
+  if (rid && rid !== currentRenderId) return;
+  const profile = (profileRes.value||{}).profile || {};
+  const usage = (profileRes.value||{}).usage || {};
+  const agents = (profileRes.value||{}).agents || 0;
+  const keys = (keysRes.value||{}).keys || [];
+  const plan = profile.plan || 'free';
+  const planCls = plan === 'enterprise' ? 'plan-enterprise' : plan === 'pro' ? 'plan-pro' : 'plan-free';
+  const quota = profile.quota || {};
+
+  const quotaRows = Object.entries(quota).filter(([k])=>k!=='reset_at').map(([k, limit]) => {
+    const used = usage[k] || 0;
+    const pct = limit > 0 ? Math.min(100, Math.round(used/limit*100)) : 0;
+    const fillCls = pct >= 100 ? 'over' : pct >= 80 ? 'warn' : '';
+    return `<div class="quota-row">
+      <div class="quota-label"><span>${esc(k)}</span><span>${used} / ${limit > 0 ? limit : '∞'}</span></div>
+      ${limit > 0 ? `<div class="quota-bar-wrap"><div class="quota-bar-fill ${fillCls}" style="width:${pct}%"></div></div>` : '<div style="font-size:11px;color:var(--muted)">Unlimited</div>'}
+    </div>`;
+  }).join('');
+
+  document.getElementById('content').innerHTML = `
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <div>
+      <div class="section">
+        <div class="section-title">Tenant Profile</div>
+        <div class="cards" style="margin-bottom:16px">
+          <div class="card accent"><div class="card-label">Tenant ID</div><div class="card-value" style="font-size:15px;font-family:monospace">${esc(profile.tenant_id||'—')}</div></div>
+          <div class="card"><div class="card-label">Plan</div><div class="card-value" style="font-size:18px"><span class="plan-badge ${planCls}">${esc(plan)}</span></div></div>
+          <div class="card green"><div class="card-label">Live Agents</div><div class="card-value">${agents}</div></div>
+        </div>
+        <div class="card">
+          <div class="form-row">
+            <div class="form-group"><label>Display Name</label><input id="tenant-name" value="${esc(profile.name||'')}" placeholder="My Team"></div>
+            <div class="form-group"><label>Email</label><input id="tenant-email" type="email" value="${esc(profile.email||'')}" placeholder="ops@example.com"></div>
+            <button class="btn btn-primary" style="margin-top:18px" onclick="updateTenantProfile()">Save</button>
+          </div>
+        </div>
+      </div>
+      <div class="section">
+        <div class="section-title">Usage Today</div>
+        ${Object.keys(usage).length ? `<div class="card">${quotaRows || '<div class="empty">No usage recorded today</div>'}</div>` : '<div class="card-sub">No usage data available</div>'}
+      </div>
+    </div>
+    <div>
+      <div class="section">
+        <div class="section-title">API Sub-Keys (${keys.length})</div>
+        <div class="table-wrap" style="margin-bottom:12px">
+          <table>
+            <thead><tr><th>Name</th><th>ID</th><th>Created</th><th></th></tr></thead>
+            <tbody id="tenant-keys-body">
+              ${keys.length === 0 ? '<tr><td colspan="4" class="empty">No sub-keys</td></tr>' :
+              keys.map(k=>`<tr>
+                <td>${esc(k.name||'—')}</td>
+                <td class="mono">${esc(k.id||'—')}</td>
+                <td class="mono">${fmtTime(k.created_at)}</td>
+                <td><button class="btn btn-danger btn-sm" onclick="revokeSubKey('${esc(k.id)}')">Revoke</button></td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div class="card">
+          <div class="form-row">
+            <div class="form-group"><label>Key Name</label><input id="new-key-name" placeholder="ci-pipeline"></div>
+            <button class="btn btn-primary" style="margin-top:18px" onclick="createSubKey()">+ Generate Key</button>
+          </div>
+          <div id="new-key-display" style="margin-top:8px"></div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function updateTenantProfile() {
+  const name = (document.getElementById('tenant-name')||{}).value.trim();
+  const email = (document.getElementById('tenant-email')||{}).value.trim();
+  try {
+    await api('/tenant/me', {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name, email})});
+    toast('Profile updated'); renderTenant(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function createSubKey() {
+  const name = (document.getElementById('new-key-name')||{}).value.trim();
+  try {
+    const sk = await post('/tenant/keys', {name});
+    const el = document.getElementById('new-key-display');
+    if (el) el.innerHTML = `<div class="alert ok" style="margin-bottom:0">
+      <strong>Key created — copy it now, it won't be shown again:</strong><br>
+      <span class="mono" style="user-select:all;font-size:13px;color:var(--accent2)">${esc(sk.secret||sk.key||JSON.stringify(sk))}</span>
+    </div>`;
+    toast('Sub-key created');
+    renderTenant(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function revokeSubKey(id) {
+  if (!confirm('Revoke key "'+id+'"?')) return;
+  try {
+    await del('/tenant/keys/'+encodeURIComponent(id));
+    toast('Key revoked'); renderTenant(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
 }
 
 // ── BOOT ────────────────────────────────────────────────────────────────────
