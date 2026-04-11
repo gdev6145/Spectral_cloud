@@ -29,6 +29,13 @@ go run ./cmd/spectral-agent -server http://localhost:8080 -api-key <tenant-or-ap
 
 Use a tenant-scoped key when the control plane is running in multi-tenant mode so the agent binds to the intended tenant.
 
+To launch the bundled multi-agent demo supervisor, build `spectral-agent` first or run it in an environment with `go` on `PATH`, then set `SPECTRAL_API_KEY` when the server requires auth:
+
+```bash
+cd /root/Spectral_cloud
+SPECTRAL_API_KEY=<tenant-or-api-key> ./cmd/spectral-agent/supervisor.sh http://localhost:8080 default
+```
+
 **Core Endpoints**
 - `GET /` -> basic banner
 - `GET /health` -> JSON health
