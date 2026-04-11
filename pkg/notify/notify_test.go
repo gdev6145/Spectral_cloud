@@ -10,57 +10,69 @@ import (
 	"github.com/gdev6145/Spectral_cloud/pkg/events"
 )
 
+const testTenant = "t1"
+
 func TestAddList(t *testing.T) {
 	m := New()
-	r := m.Add("tenant-a", "rule1", "http://example.com", "secret", []string{"agent.registered"})
-	if r.ID == "" || r.Name != "rule1" || r.Tenant != "tenant-a" {
+	r := m.Add(testTenant, "rule1", "http://example.com", "secret", []string{"agent.registered"})
+	if r.ID == "" || r.Name != "rule1" || r.Tenant != testTenant {
 		t.Errorf("unexpected rule: %+v", r)
 	}
-	rules := m.List("tenant-a")
+	rules := m.List(testTenant)
 	if len(rules) != 1 {
 		t.Fatalf("expected 1 rule, got %d", len(rules))
 	}
-	if other := m.List("tenant-b"); len(other) != 0 {
-		t.Fatalf("expected tenant-b to see 0 rules, got %d", len(other))
+	if other := m.List("other"); len(other) != 0 {
+		t.Errorf("expected 0 for other tenant, got %d", len(other))
 	}
 }
 
 func TestDelete(t *testing.T) {
 	m := New()
-	r := m.Add("tenant-a", "r", "http://x.com", "", nil)
-	if !m.Delete("tenant-a", r.ID) {
+	r := m.Add(testTenant, "r", "http://x.com", "", nil)
+	if !m.Delete(testTenant, r.ID) {
 		t.Fatal("expected true")
 	}
-	if m.Delete("tenant-a", r.ID) {
+	if m.Delete(testTenant, r.ID) {
 		t.Fatal("expected false on second delete")
 	}
-	if len(m.List("tenant-a")) != 0 {
+	if len(m.List(testTenant)) != 0 {
 		t.Fatal("expected empty list after delete")
+	}
+	r2 := m.Add(testTenant, "r2", "http://x.com", "", nil)
+	if m.Delete("other", r2.ID) {
+		t.Fatal("wrong tenant should not be able to delete")
 	}
 }
 
 func TestMatches(t *testing.T) {
 	m := New()
-	r := m.Add("tenant-a", "r", "http://x.com", "", []string{"agent.registered"})
-	ev1 := events.Event{Type: "agent.registered", TenantID: "tenant-a"}
-	ev2 := events.Event{Type: "other.event", TenantID: "tenant-a"}
+	r := m.Add(testTenant, "r", "http://x.com", "", []string{"agent.registered"})
+	ev1 := events.Event{Type: "agent.registered", TenantID: testTenant}
+	ev2 := events.Event{Type: "other.event", TenantID: testTenant}
 	if !m.matches(r, ev1) {
 		t.Error("expected match")
 	}
 	if m.matches(r, ev2) {
 		t.Error("expected no match")
 	}
-	if m.matches(r, events.Event{Type: "agent.registered", TenantID: "tenant-b"}) {
-		t.Error("expected no match for wrong tenant")
-	}
 }
 
 func TestMatchesAllEvents(t *testing.T) {
 	m := New()
-	r := m.Add("tenant-a", "r", "http://x.com", "", nil) // empty = all
-	ev := events.Event{Type: "anything", TenantID: "tenant-a"}
+	r := m.Add(testTenant, "r", "http://x.com", "", nil)
+	ev := events.Event{Type: "anything", TenantID: testTenant}
 	if !m.matches(r, ev) {
 		t.Error("expected match for empty event types")
+	}
+}
+
+func TestMatchesTenantIsolation(t *testing.T) {
+	m := New()
+	r := m.Add(testTenant, "r", "http://x.com", "", nil)
+	evOther := events.Event{Type: "anything", TenantID: "other"}
+	if m.matches(r, evOther) {
+		t.Error("rule should not match event from different tenant")
 	}
 }
 
@@ -74,8 +86,8 @@ func TestFireWebhook(t *testing.T) {
 	defer ts.Close()
 
 	m := New()
-	r := m.Add("tenant-a", "webhook-test", ts.URL, "", []string{"test.event"})
-	ev := events.Event{Type: "test.event", TenantID: "tenant-a", Timestamp: time.Now().UTC()}
+	r := m.Add(testTenant, "webhook-test", ts.URL, "", []string{"test.event"})
+	ev := events.Event{Type: "test.event", TenantID: testTenant, Timestamp: time.Now().UTC()}
 	m.fire(r, ev)
 
 	select {
@@ -84,7 +96,7 @@ func TestFireWebhook(t *testing.T) {
 		t.Fatal("webhook not received")
 	}
 
-	rules := m.List("tenant-a")
+	rules := m.List(testTenant)
 	if rules[0].FiredTotal != 1 {
 		t.Errorf("expected FiredTotal=1, got %d", rules[0].FiredTotal)
 	}
@@ -99,14 +111,14 @@ func TestStartDispatch(t *testing.T) {
 
 	broker := events.NewBroker()
 	m := New()
-	m.Add("t1", "dispatch-test", ts.URL, "", []string{"ping"})
+	m.Add(testTenant, "dispatch-test", ts.URL, "", []string{"ping"})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	m.Start(ctx, broker)
 
-	time.Sleep(10 * time.Millisecond) // let goroutine subscribe
-	broker.Publish(events.Event{Type: "ping", TenantID: "t1", Timestamp: time.Now().UTC()})
+	time.Sleep(10 * time.Millisecond)
+	broker.Publish(events.Event{Type: "ping", TenantID: testTenant, Timestamp: time.Now().UTC()})
 
 	select {
 	case <-received:
@@ -116,73 +128,70 @@ func TestStartDispatch(t *testing.T) {
 }
 
 func TestFireWebhook_WithHMAC(t *testing.T) {
-sigCh := make(chan string, 1)
- ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
- sigCh <- r.Header.Get("X-Spectral-Signature")
- w.WriteHeader(http.StatusOK)
- }))
-defer ts.Close()
+	sigCh := make(chan string, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sigCh <- r.Header.Get("X-Spectral-Signature")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
 
-m := New()
- r := m.Add("t1", "hmac-test", ts.URL, "my-secret", []string{"test.event"})
-ev := events.Event{Type: "test.event", TenantID: "t1", Timestamp: time.Now().UTC()}
-m.fire(r, ev)
+	m := New()
+	r := m.Add(testTenant, "hmac-test", ts.URL, "my-secret", []string{"test.event"})
+	ev := events.Event{Type: "test.event", TenantID: testTenant, Timestamp: time.Now().UTC()}
+	m.fire(r, ev)
 
-select {
-case sig := <-sigCh:
-if len(sig) == 0 {
-t.Fatal("expected HMAC signature header")
-}
-if sig[:7] != "sha256=" {
-t.Fatalf("expected sha256= prefix, got %q", sig)
-}
-case <-time.After(2 * time.Second):
-t.Fatal("webhook not received")
-}
+	select {
+	case sig := <-sigCh:
+		if len(sig) == 0 {
+			t.Fatal("expected HMAC signature header")
+		}
+		if sig[:7] != "sha256=" {
+			t.Fatalf("expected sha256= prefix, got %q", sig)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("webhook not received")
+	}
 }
 
 func TestFireWebhook_BadURL(t *testing.T) {
- m := New()
- r := m.Add("t", "bad-url", "http://invalid-host-that-does-not-exist.xyz", "", nil)
- ev := events.Event{Type: "test", TenantID: "t", Timestamp: time.Now().UTC()}
-// Should not panic — error is silently discarded
-m.fire(r, ev)
-time.Sleep(200 * time.Millisecond)
+	m := New()
+	r := m.Add(testTenant, "bad-url", "http://invalid-host-that-does-not-exist.xyz", "", nil)
+	ev := events.Event{Type: "test", TenantID: testTenant, Timestamp: time.Now().UTC()}
+	m.fire(r, ev)
+	time.Sleep(200 * time.Millisecond)
 }
 
 func TestDispatch_InactiveRule(t *testing.T) {
-called := false
-ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-called = true
-}))
- defer ts.Close()
+	called := false
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer ts.Close()
 
- m := New()
- r := m.Add("t", "inactive", ts.URL, "", []string{"test.event"})
-// Deactivate rule
-m.mu.Lock()
-m.rules[r.ID].Active = false
-m.mu.Unlock()
+	m := New()
+	r := m.Add(testTenant, "inactive", ts.URL, "", []string{"test.event"})
+	m.mu.Lock()
+	m.rules[r.ID].Active = false
+	m.mu.Unlock()
 
- m.dispatch(events.Event{Type: "test.event", TenantID: "t"})
-time.Sleep(100 * time.Millisecond)
-if called {
-t.Fatal("inactive rule should not fire")
-}
+	m.dispatch(events.Event{Type: "test.event", TenantID: testTenant})
+	time.Sleep(100 * time.Millisecond)
+	if called {
+		t.Fatal("inactive rule should not fire")
+	}
 }
 
 func TestStart_NilBroker(t *testing.T) {
-m := New()
-// Should return immediately without panic
-m.Start(context.Background(), nil)
+	m := New()
+	m.Start(context.Background(), nil)
 }
 
 func TestStart_ContextCancel(t *testing.T) {
-broker := events.NewBroker()
-m := New()
-ctx, cancel := context.WithCancel(context.Background())
-m.Start(ctx, broker)
-time.Sleep(10 * time.Millisecond)
-cancel() // should cause goroutine to exit cleanly
-time.Sleep(50 * time.Millisecond)
+	broker := events.NewBroker()
+	m := New()
+	ctx, cancel := context.WithCancel(context.Background())
+	m.Start(ctx, broker)
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+	time.Sleep(50 * time.Millisecond)
 }
