@@ -229,7 +229,7 @@ Example request:
 ```
 
 `POST /routes/resolve/batch`
-Resolves multiple edge route requests in one call. Each item can supply the same fields used by `GET /routes/resolve` (`region`, `site`, `max_scope`, `explain`, `alternatives`, `max_latency`, `min_throughput`, `satellite`, `tags`, `satellite_penalty`) plus an optional `id` echoed back in the result. The endpoint always returns a batch result list; each item includes its own `status`.
+Resolves multiple edge route requests in one call. Each item can supply the same fields used by `GET /routes/resolve` (`region`, `site`, `max_scope`, `explain`, `alternatives`, `max_latency`, `min_throughput`, `satellite`, `tags`, `satellite_penalty`) plus an optional `id` echoed back in the result. The request body may also include `defaults` to apply shared resolver settings across all items. The endpoint always returns a batch result list; each item includes its own `status`, and the top-level response includes a `summary` of ok/not_found/invalid counts.
 
 `GET /routes/filter`
 Returns all routes matching the provided criteria. Supports `max_latency`, `min_throughput`, `satellite`, and repeated `tag=key:value` parameters that must all match.

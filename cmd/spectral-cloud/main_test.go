@@ -1377,6 +1377,7 @@ func TestRoutesResolveBatchEndpoint(t *testing.T) {
 	}
 	var result struct {
 		Count   int              `json:"count"`
+		Summary map[string]any   `json:"summary"`
 		Results []map[string]any `json:"results"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -1384,6 +1385,9 @@ func TestRoutesResolveBatchEndpoint(t *testing.T) {
 	}
 	if result.Count != 3 || len(result.Results) != 3 {
 		t.Fatalf("unexpected batch result count: %+v", result)
+	}
+	if result.Summary["ok"].(float64) != 1 || result.Summary["not_found"].(float64) != 1 || result.Summary["invalid"].(float64) != 1 {
+		t.Fatalf("unexpected batch summary: %+v", result.Summary)
 	}
 	if result.Results[0]["id"] != "premium-west" || result.Results[0]["status"].(float64) != 200 || result.Results[0]["scope"] != "region" {
 		t.Fatalf("unexpected first batch result: %+v", result.Results[0])
@@ -1418,6 +1422,43 @@ func TestRoutesResolveBatchEndpoint(t *testing.T) {
 	}
 	if result.Results[2]["error"] != "max_scope must be one of: site, region, global" {
 		t.Fatalf("unexpected third batch error: %+v", result.Results[2])
+	}
+
+	defaultsBody := `{"defaults":{"region":"us-west","tags":{"tier":"premium"},"alternatives":2,"explain":true},"requests":[{"id":"defaults-hit"},{"id":"defaults-miss","site":"missing","max_scope":"site"}]}`
+	resp, err = http.Post(srv.URL+"/routes/resolve/batch", "application/json", bytes.NewBufferString(defaultsBody))
+	if err != nil {
+		t.Fatalf("batch resolve with defaults: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var defaultsResult struct {
+		Count   int              `json:"count"`
+		Summary map[string]any   `json:"summary"`
+		Results []map[string]any `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&defaultsResult); err != nil {
+		t.Fatalf("decode batch resolve defaults: %v", err)
+	}
+	if defaultsResult.Count != 2 || len(defaultsResult.Results) != 2 {
+		t.Fatalf("unexpected defaults batch count: %+v", defaultsResult)
+	}
+	if defaultsResult.Summary["ok"].(float64) != 1 || defaultsResult.Summary["not_found"].(float64) != 1 {
+		t.Fatalf("unexpected defaults batch summary: %+v", defaultsResult.Summary)
+	}
+	if defaultsResult.Results[0]["id"] != "defaults-hit" || defaultsResult.Results[0]["scope"] != "region" {
+		t.Fatalf("unexpected defaults batch hit: %+v", defaultsResult.Results[0])
+	}
+	defaultsAlternatives, ok := defaultsResult.Results[0]["alternatives"].([]any)
+	if !ok || len(defaultsAlternatives) != 1 {
+		t.Fatalf("expected inherited alternatives on defaults batch hit, got %+v", defaultsResult.Results[0]["alternatives"])
+	}
+	if _, ok := defaultsResult.Results[0]["explanation"].(map[string]any); !ok {
+		t.Fatalf("expected inherited explanation on defaults batch hit, got %+v", defaultsResult.Results[0]["explanation"])
+	}
+	if defaultsResult.Results[1]["id"] != "defaults-miss" || defaultsResult.Results[1]["status"].(float64) != 404 {
+		t.Fatalf("unexpected defaults batch miss: %+v", defaultsResult.Results[1])
 	}
 }
 

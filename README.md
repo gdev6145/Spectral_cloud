@@ -62,7 +62,7 @@ SPECTRAL_API_KEY=<tenant-or-api-key> ./cmd/spectral-agent/supervisor.sh http://l
 - `GET /routes/stats?tag=region:us-west` -> aggregate route metrics for a filtered edge subset, including per-region and per-site summaries
 - `GET /routes/topology?tag=region:us-west&tag=site:edge-a` -> group a filtered edge subset by region/site and expose the best route per grouping
 - `GET /routes/resolve?region=us-west&site=edge-a&tag=tier:premium&max_scope=region&explain=true&alternatives=2` -> resolve the nearest edge route with caller-limited fallback, optional diagnostics, and ranked backup routes
-- `POST /routes/resolve/batch` -> resolve many edge route requests in one call with per-item status, diagnostics, and alternatives
+- `POST /routes/resolve/batch` -> resolve many edge route requests in one call with shared defaults, per-item status, diagnostics, alternatives, and batch summary counts
 - `GET /routes/filter?tag=region:us-west&tag=site:edge-a` -> filter routes by multiple tag dimensions
 - `POST /proto/data` -> protobuf `DataMessage` request, returns protobuf `Ack`
 - `POST /proto/control` -> protobuf `ControlMessage` request, returns protobuf `Ack`

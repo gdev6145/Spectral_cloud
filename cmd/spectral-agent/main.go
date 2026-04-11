@@ -860,6 +860,598 @@ func init() {
 		})
 		return string(b), ""
 	},
+	// ── inference capability ──────────────────────────────────────────────────
+	// inference — send payload["prompt"] to Claude and return the response text.
+	// Optional payload fields: model, system, max_tokens.
+	// Requires ANTHROPIC_API_KEY to be set in the agent's environment.
+	"inference": func(p map[string]any) (string, string) {
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		if apiKey == "" {
+			return "", "ANTHROPIC_API_KEY is not set"
+		}
+		prompt, _ := p["prompt"].(string)
+		if prompt == "" {
+			return "", "payload.prompt is required"
+		}
+		model, _ := p["model"].(string)
+		system, _ := p["system"].(string)
+		maxTokens := 0
+		if v, ok := p["max_tokens"].(float64); ok {
+			maxTokens = int(v)
+		}
+
+		// Build and send the Anthropic Messages API request inline so the
+		// agent binary has no additional dependencies.
+		type msg struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}
+		type reqBody struct {
+			Model     string `json:"model"`
+			MaxTokens int    `json:"max_tokens"`
+			System    string `json:"system,omitempty"`
+			Messages  []msg  `json:"messages"`
+		}
+		if model == "" {
+			model = "claude-haiku-4-5-20251001"
+		}
+		if maxTokens <= 0 {
+			maxTokens = 1024
+		}
+		body, _ := json.Marshal(reqBody{
+			Model:     model,
+			MaxTokens: maxTokens,
+			System:    system,
+			Messages:  []msg{{Role: "user", Content: prompt}},
+		})
+
+		req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+		if err != nil {
+			return "", fmt.Sprintf("inference: build request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+
+		client := &http.Client{Timeout: 120 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", fmt.Sprintf("inference: http: %v", err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+
+		var ar struct {
+			Model   string `json:"model"`
+			Usage   struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			Error *struct {
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(raw, &ar); err != nil {
+			return "", fmt.Sprintf("inference: decode response: %v", err)
+		}
+		if ar.Error != nil {
+			return "", fmt.Sprintf("inference: anthropic error (%s): %s", ar.Error.Type, ar.Error.Message)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Sprintf("inference: unexpected status %d", resp.StatusCode)
+		}
+
+		var text string
+		for _, block := range ar.Content {
+			if block.Type == "text" {
+				text += block.Text
+			}
+		}
+		out, _ := json.Marshal(map[string]any{
+			"model":         ar.Model,
+			"content":       text,
+			"input_tokens":  ar.Usage.InputTokens,
+			"output_tokens": ar.Usage.OutputTokens,
+		})
+		return string(out), ""
+	},
+
+	// ── inference-batch capability ────────────────────────────────────────────
+	// inference-batch — run multiple prompts concurrently against Claude.
+	// Payload: {"prompts": ["p1","p2",...], "model": "...", "system": "...", "max_tokens": N}
+	// Result:  {"results":[{"index":0,"content":"...","error":"..."},...]}
+	"inference-batch": func(p map[string]any) (string, string) {
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		if apiKey == "" {
+			return "", "ANTHROPIC_API_KEY is not set"
+		}
+		rawPrompts, _ := p["prompts"].([]any)
+		if len(rawPrompts) == 0 {
+			return "", "payload.prompts (array) is required"
+		}
+		model, _ := p["model"].(string)
+		if model == "" {
+			model = "claude-haiku-4-5-20251001"
+		}
+		system, _ := p["system"].(string)
+		maxTokens := 1024
+		if v, ok := p["max_tokens"].(float64); ok && int(v) > 0 {
+			maxTokens = int(v)
+		}
+
+		type result struct {
+			Index   int    `json:"index"`
+			Content string `json:"content,omitempty"`
+			Error   string `json:"error,omitempty"`
+		}
+
+		type inferResult struct {
+			idx     int
+			content string
+			errMsg  string
+		}
+
+		resultCh := make(chan inferResult, len(rawPrompts))
+		var wg sync.WaitGroup
+
+		callClaude := func(idx int, prompt string) {
+			defer wg.Done()
+			type msg struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			}
+			type reqBody struct {
+				Model     string `json:"model"`
+				MaxTokens int    `json:"max_tokens"`
+				System    string `json:"system,omitempty"`
+				Messages  []msg  `json:"messages"`
+			}
+			body, _ := json.Marshal(reqBody{
+				Model: model, MaxTokens: maxTokens, System: system,
+				Messages: []msg{{Role: "user", Content: prompt}},
+			})
+			req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+			if err != nil {
+				resultCh <- inferResult{idx: idx, errMsg: err.Error()}
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("x-api-key", apiKey)
+			req.Header.Set("anthropic-version", "2023-06-01")
+
+			client := &http.Client{Timeout: 120 * time.Second}
+			resp, err := client.Do(req)
+			if err != nil {
+				resultCh <- inferResult{idx: idx, errMsg: err.Error()}
+				return
+			}
+			defer resp.Body.Close()
+			raw, _ := io.ReadAll(resp.Body)
+
+			var ar struct {
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+				Error *struct{ Message string `json:"message"` } `json:"error"`
+			}
+			if err := json.Unmarshal(raw, &ar); err != nil {
+				resultCh <- inferResult{idx: idx, errMsg: fmt.Sprintf("decode: %v", err)}
+				return
+			}
+			if ar.Error != nil {
+				resultCh <- inferResult{idx: idx, errMsg: ar.Error.Message}
+				return
+			}
+			var text string
+			for _, block := range ar.Content {
+				if block.Type == "text" {
+					text += block.Text
+				}
+			}
+			resultCh <- inferResult{idx: idx, content: text}
+		}
+
+		for i, raw := range rawPrompts {
+			prompt, _ := raw.(string)
+			if prompt == "" {
+				continue
+			}
+			wg.Add(1)
+			go callClaude(i, prompt)
+		}
+		wg.Wait()
+		close(resultCh)
+
+		results := make([]result, len(rawPrompts))
+		for r := range resultCh {
+			results[r.idx] = result{Index: r.idx, Content: r.content, Error: r.errMsg}
+		}
+		out, _ := json.Marshal(map[string]any{"results": results})
+		return string(out), ""
+	},
+
+	// ── inference-code capability ─────────────────────────────────────────────
+	// inference-code — code-specialised inference. Behaves exactly like
+	// "inference" but ships a hardened coding system prompt by default so
+	// callers don't need to craft one.
+	// Payload: {"prompt":"...", "language":"go", "model":"...", "max_tokens":N}
+	"inference-code": func(p map[string]any) (string, string) {
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		if apiKey == "" {
+			return "", "ANTHROPIC_API_KEY is not set"
+		}
+		prompt, _ := p["prompt"].(string)
+		if prompt == "" {
+			return "", "payload.prompt is required"
+		}
+		lang, _ := p["language"].(string)
+		model, _ := p["model"].(string)
+		if model == "" {
+			model = "claude-sonnet-4-6"
+		}
+		maxTokens := 4096
+		if v, ok := p["max_tokens"].(float64); ok && int(v) > 0 {
+			maxTokens = int(v)
+		}
+		systemLines := []string{
+			"You are an expert software engineer. Produce correct, idiomatic, production-ready code.",
+			"Return only code and inline comments — no prose unless the user specifically asks for explanation.",
+		}
+		if lang != "" {
+			systemLines = append(systemLines, "Preferred language: "+lang+".")
+		}
+		systemPrompt := strings.Join(systemLines, " ")
+
+		type msg struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}
+		type reqBody struct {
+			Model     string `json:"model"`
+			MaxTokens int    `json:"max_tokens"`
+			System    string `json:"system,omitempty"`
+			Messages  []msg  `json:"messages"`
+		}
+		body, _ := json.Marshal(reqBody{
+			Model: model, MaxTokens: maxTokens, System: systemPrompt,
+			Messages: []msg{{Role: "user", Content: prompt}},
+		})
+		req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+		if err != nil {
+			return "", fmt.Sprintf("inference-code: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+
+		client := &http.Client{Timeout: 120 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", fmt.Sprintf("inference-code: http: %v", err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+
+		var ar struct {
+			Model   string `json:"model"`
+			Usage   struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			Error *struct{ Message string `json:"message"` } `json:"error"`
+		}
+		if err := json.Unmarshal(raw, &ar); err != nil {
+			return "", fmt.Sprintf("inference-code: decode: %v", err)
+		}
+		if ar.Error != nil {
+			return "", "inference-code: " + ar.Error.Message
+		}
+		var text string
+		for _, block := range ar.Content {
+			if block.Type == "text" {
+				text += block.Text
+			}
+		}
+		out, _ := json.Marshal(map[string]any{
+			"model":         ar.Model,
+			"content":       text,
+			"language":      lang,
+			"input_tokens":  ar.Usage.InputTokens,
+			"output_tokens": ar.Usage.OutputTokens,
+		})
+		return string(out), ""
+	},
+
+	// ── inference-vision capability ───────────────────────────────────────────
+	// inference-vision — multimodal inference with image understanding.
+	// Payload: {"prompt":"...", "image_base64":"<base64>", "media_type":"image/png",
+	//           "model":"...", "max_tokens":N}
+	// media_type defaults to "image/jpeg".
+	"inference-vision": func(p map[string]any) (string, string) {
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		if apiKey == "" {
+			return "", "ANTHROPIC_API_KEY is not set"
+		}
+		prompt, _ := p["prompt"].(string)
+		if prompt == "" {
+			return "", "payload.prompt is required"
+		}
+		imageB64, _ := p["image_base64"].(string)
+		if imageB64 == "" {
+			return "", "payload.image_base64 is required"
+		}
+		mediaType, _ := p["media_type"].(string)
+		if mediaType == "" {
+			mediaType = "image/jpeg"
+		}
+		model, _ := p["model"].(string)
+		if model == "" {
+			model = "claude-sonnet-4-6"
+		}
+		maxTokens := 1024
+		if v, ok := p["max_tokens"].(float64); ok && int(v) > 0 {
+			maxTokens = int(v)
+		}
+
+		// Build a multimodal message with image + text content blocks.
+		type imageSource struct {
+			Type      string `json:"type"`
+			MediaType string `json:"media_type"`
+			Data      string `json:"data"`
+		}
+		type contentBlock struct {
+			Type   string       `json:"type"`
+			Source *imageSource `json:"source,omitempty"`
+			Text   string       `json:"text,omitempty"`
+		}
+		type visionMsg struct {
+			Role    string         `json:"role"`
+			Content []contentBlock `json:"content"`
+		}
+		type reqBody struct {
+			Model     string      `json:"model"`
+			MaxTokens int         `json:"max_tokens"`
+			Messages  []visionMsg `json:"messages"`
+		}
+		body, _ := json.Marshal(reqBody{
+			Model:     model,
+			MaxTokens: maxTokens,
+			Messages: []visionMsg{{
+				Role: "user",
+				Content: []contentBlock{
+					{Type: "image", Source: &imageSource{Type: "base64", MediaType: mediaType, Data: imageB64}},
+					{Type: "text", Text: prompt},
+				},
+			}},
+		})
+		req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+		if err != nil {
+			return "", fmt.Sprintf("inference-vision: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+
+		client := &http.Client{Timeout: 120 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", fmt.Sprintf("inference-vision: http: %v", err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+
+		var ar struct {
+			Model   string `json:"model"`
+			Usage   struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			Error *struct{ Message string `json:"message"` } `json:"error"`
+		}
+		if err := json.Unmarshal(raw, &ar); err != nil {
+			return "", fmt.Sprintf("inference-vision: decode: %v", err)
+		}
+		if ar.Error != nil {
+			return "", "inference-vision: " + ar.Error.Message
+		}
+		var text string
+		for _, block := range ar.Content {
+			if block.Type == "text" {
+				text += block.Text
+			}
+		}
+		out, _ := json.Marshal(map[string]any{
+			"model":         ar.Model,
+			"content":       text,
+			"input_tokens":  ar.Usage.InputTokens,
+			"output_tokens": ar.Usage.OutputTokens,
+		})
+		return string(out), ""
+	},
+
+	// ── inference-rag capability ──────────────────────────────────────────────
+	// inference-rag — retrieval-augmented generation.
+	// Fetches context documents from the Spectral Cloud KV store (or an inline
+	// list) and prepends them to the prompt before calling Claude.
+	//
+	// Payload:
+	//   prompt        string   — the user question (required)
+	//   server        string   — control-plane base URL (default: SPECTRAL_SERVER env)
+	//   api_key       string   — API key (default: SPECTRAL_API_KEY env)
+	//   tenant        string   — tenant ID (default: SPECTRAL_TENANT env or "default")
+	//   kv_prefix     string   — KV key prefix to fetch context from (e.g. "docs/")
+	//   context_docs  []string — inline context strings (used if kv_prefix empty)
+	//   model         string   — Claude model override
+	//   max_tokens    int      — max tokens override
+	"inference-rag": func(p map[string]any) (string, string) {
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		if apiKey == "" {
+			return "", "ANTHROPIC_API_KEY is not set"
+		}
+		prompt, _ := p["prompt"].(string)
+		if prompt == "" {
+			return "", "payload.prompt is required"
+		}
+		model, _ := p["model"].(string)
+		if model == "" {
+			model = "claude-haiku-4-5-20251001"
+		}
+		maxTokens := 2048
+		if v, ok := p["max_tokens"].(float64); ok && int(v) > 0 {
+			maxTokens = int(v)
+		}
+
+		// Collect context documents.
+		var contextDocs []string
+
+		// 1. Inline docs from payload.
+		if raw, ok := p["context_docs"].([]any); ok {
+			for _, d := range raw {
+				if s, ok := d.(string); ok && s != "" {
+					contextDocs = append(contextDocs, s)
+				}
+			}
+		}
+
+		// 2. Fetch from KV store via control-plane API.
+		kvPrefix, _ := p["kv_prefix"].(string)
+		if kvPrefix != "" {
+			serverURL := os.Getenv("SPECTRAL_SERVER")
+			if s, ok := p["server"].(string); ok && s != "" {
+				serverURL = s
+			}
+			if serverURL == "" {
+				serverURL = "http://localhost:8080"
+			}
+			tenant := os.Getenv("SPECTRAL_TENANT")
+			if t, ok := p["tenant"].(string); ok && t != "" {
+				tenant = t
+			}
+			if tenant == "" {
+				tenant = "default"
+			}
+			spectralKey := os.Getenv("SPECTRAL_API_KEY")
+			if k, ok := p["api_key"].(string); ok && k != "" {
+				spectralKey = k
+			}
+
+			kvURL := fmt.Sprintf("%s/kv?prefix=%s", strings.TrimRight(serverURL, "/"), url.QueryEscape(kvPrefix))
+			req, _ := http.NewRequest(http.MethodGet, kvURL, nil)
+			if spectralKey != "" {
+				req.Header.Set("X-API-Key", spectralKey)
+			}
+			if tenant != "" {
+				req.Header.Set("X-Tenant-ID", tenant)
+			}
+			client := &http.Client{Timeout: 10 * time.Second}
+			resp, err := client.Do(req)
+			if err == nil {
+				defer resp.Body.Close()
+				var kvResp struct {
+					Entries []struct {
+						Key   string `json:"key"`
+						Value string `json:"value"`
+					} `json:"entries"`
+				}
+				if err := json.NewDecoder(resp.Body).Decode(&kvResp); err == nil {
+					for _, e := range kvResp.Entries {
+						contextDocs = append(contextDocs, fmt.Sprintf("[%s]\n%s", e.Key, e.Value))
+					}
+				}
+			}
+		}
+
+		// Build the RAG prompt.
+		var ragPrompt strings.Builder
+		if len(contextDocs) > 0 {
+			ragPrompt.WriteString("Use the following context documents to answer the question. If the answer is not in the documents, say so.\n\n")
+			for i, doc := range contextDocs {
+				fmt.Fprintf(&ragPrompt, "--- Document %d ---\n%s\n\n", i+1, doc)
+			}
+			ragPrompt.WriteString("--- Question ---\n")
+		}
+		ragPrompt.WriteString(prompt)
+
+		type msg struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}
+		type reqBody struct {
+			Model     string `json:"model"`
+			MaxTokens int    `json:"max_tokens"`
+			System    string `json:"system,omitempty"`
+			Messages  []msg  `json:"messages"`
+		}
+		body, _ := json.Marshal(reqBody{
+			Model:     model,
+			MaxTokens: maxTokens,
+			System:    "You are a helpful assistant that answers questions based on provided context documents.",
+			Messages:  []msg{{Role: "user", Content: ragPrompt.String()}},
+		})
+		req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+		if err != nil {
+			return "", fmt.Sprintf("inference-rag: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+
+		httpClient := &http.Client{Timeout: 120 * time.Second}
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return "", fmt.Sprintf("inference-rag: http: %v", err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+
+		var ar struct {
+			Model   string `json:"model"`
+			Usage   struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			Error *struct{ Message string `json:"message"` } `json:"error"`
+		}
+		if err := json.Unmarshal(raw, &ar); err != nil {
+			return "", fmt.Sprintf("inference-rag: decode: %v", err)
+		}
+		if ar.Error != nil {
+			return "", "inference-rag: " + ar.Error.Message
+		}
+		var text string
+		for _, block := range ar.Content {
+			if block.Type == "text" {
+				text += block.Text
+			}
+		}
+		out, _ := json.Marshal(map[string]any{
+			"model":          ar.Model,
+			"content":        text,
+			"context_count":  len(contextDocs),
+			"input_tokens":   ar.Usage.InputTokens,
+			"output_tokens":  ar.Usage.OutputTokens,
+		})
+		return string(out), ""
+	},
+
 	} // end map literal
 } // end init()
 

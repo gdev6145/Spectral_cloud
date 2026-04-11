@@ -1007,6 +1007,33 @@ async function renderRoutes(rid) {
     <div class="card"><div class="card-label">Min / Max</div><div class="card-value" style="font-size:16px">${routeStats.min_latency_ms}ms / ${routeStats.max_latency_ms}ms</div></div>
   </div>` : '';
 
+  const renderRouteBuckets = function(title, buckets) {
+    const entries = Object.entries(buckets || {}).sort((a, b) => {
+      const aCount = Number((a[1] || {}).count || 0);
+      const bCount = Number((b[1] || {}).count || 0);
+      if (bCount !== aCount) return bCount - aCount;
+      return String(a[0]).localeCompare(String(b[0]));
+    });
+    if (!entries.length) return '';
+    return `<div class="section" style="margin:0">
+      <div class="section-title">${esc(title)}</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Routes</th><th>Satellite</th><th>Avg Latency</th><th>Destinations</th></tr></thead>
+          <tbody>
+            ${entries.map(([name, bucket]) => `<tr>
+              <td><strong>${esc(name)}</strong></td>
+              <td>${bucket.count || 0}</td>
+              <td>${bucket.satellite || 0}</td>
+              <td>${Number(bucket.avg_latency_ms || 0).toFixed(1)}ms</td>
+              <td class="mono">${esc(((bucket.destinations || []).slice(0, 3)).join(', ') || '—')}${(bucket.destinations || []).length > 3 ? ` <span style="color:var(--muted)">+${bucket.destinations.length - 3}</span>` : ''}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  };
+
   // Latency heatmap
   const heatmapHtml = routes.length > 0 ? `<div class="section" style="margin-bottom:16px">
     <div class="section-title">Latency Heatmap</div>
@@ -1015,21 +1042,27 @@ async function renderRoutes(rid) {
       const [bg, fg] = lat <= 10 ? ['#166534','#4ade80'] : lat <= 50 ? ['#713f12','#fbbf24'] : lat <= 200 ? ['#7c2d12','#fb923c'] : ['#7f1d1d','#f87171'];
       return `<div class="heatmap-cell" style="background:${bg}20;color:${fg};border:1px solid ${bg}40">${esc(r.destination)}<br><small>${lat}ms</small></div>`;
     }).join('')}</div></div>` : '';
+  const breakdownHtml = routeStats ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+    ${renderRouteBuckets('By Region', routeStats.by_region)}
+    ${renderRouteBuckets('By Site', routeStats.by_site)}
+  </div>` : '';
 
   document.getElementById('content').innerHTML = `
   ${statsCards}
   ${heatmapHtml}
+  ${breakdownHtml}
   <div class="section">
     <div class="section-title">Route Resolver</div>
     <div class="card">
       <div class="form-row">
         <div class="form-group"><label>Region</label><input id="rr-region" placeholder="us-west"></div>
         <div class="form-group"><label>Site</label><input id="rr-site" placeholder="edge-a"></div>
+        <div class="form-group"><label>Max Scope</label><select id="rr-scope" style="width:140px"><option value="">Global fallback</option><option value="site">Site only</option><option value="region">Up to region</option><option value="global">Up to global</option></select></div>
         <div class="form-group"><label>Max Latency (ms)</label><input id="rr-max-lat" type="number" placeholder="50" style="width:100px"></div>
         <div class="form-group"><label>Min Throughput</label><input id="rr-min-thr" type="number" placeholder="100" style="width:100px"></div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label>Tag (k:v)</label><input id="rr-tag" placeholder="region:us-west"></div>
+        <div class="form-group"><label>Tags (k:v,…)</label><input id="rr-tag" placeholder="region:us-west,tier:premium"></div>
         <div class="form-group"><label>Satellite</label><select id="rr-sat" style="width:110px"><option value="">Any</option><option value="false">Prefer terrestrial</option><option value="true">Satellite only</option></select></div>
         <div class="form-group"><label>Satellite Penalty</label><input id="rr-penalty" type="number" placeholder="25" style="width:100px"></div>
         <div class="form-group"><label>Alternatives</label><input id="rr-alts" type="number" value="2" min="0" max="10" style="width:90px"></div>
@@ -1039,6 +1072,15 @@ async function renderRoutes(rid) {
         <label class="flex" style="font-size:12px;color:var(--muted)"><input id="rr-explain" type="checkbox" checked style="min-width:auto"> Include fallback explanation</label>
       </div>
       <div id="route-resolve-result" style="margin-top:12px"></div>
+    </div>
+  </div>
+  <div class="section">
+    <div class="section-title">Batch Resolve (JSON)</div>
+    <div class="card">
+      <div class="form-group" style="margin-bottom:8px"><label>Batch request body</label>
+      <textarea id="rr-batch" placeholder='{"defaults":{"region":"us-west","tags":{"tier":"premium"},"alternatives":2},"requests":[{"id":"edge-b","site":"edge-b"},{"id":"edge-c","site":"edge-c","max_scope":"site"}]}'></textarea></div>
+      <button class="btn btn-primary" onclick="batchResolveRoutes()">Resolve Batch</button>
+      <div id="route-resolve-batch-result" style="margin-top:12px"></div>
     </div>
   </div>
   <div class="section">
@@ -1054,7 +1096,7 @@ async function renderRoutes(rid) {
       <div class="form-group"><label>Max Latency (ms)</label><input id="rf-lat" type="number" placeholder="100" style="width:100px"></div>
       <div class="form-group"><label>Min Throughput</label><input id="rf-thr" type="number" placeholder="10" style="width:100px"></div>
       <div class="form-group"><label>Satellite</label><select id="rf-sat" style="width:90px"><option value="">All</option><option value="true">Yes</option><option value="false">No</option></select></div>
-      <div class="form-group"><label>Tag (k:v)</label><input id="rf-tag" placeholder="region:us" style="width:120px"></div>
+      <div class="form-group"><label>Tags (k:v,…)</label><input id="rf-tag" placeholder="region:us,site:edge-a" style="width:180px"></div>
       <div class="form-group"><label>&nbsp;</label><button class="btn btn-outline btn-sm" onclick="applyRouteFilter()">Filter</button></div>
       <div class="form-group"><label>&nbsp;</label><button class="btn btn-outline btn-sm" onclick="renderRoutes(currentRenderId)">Clear</button></div>
     </div>
@@ -1131,17 +1173,25 @@ async function deleteRoute(dest) {
   catch(e) { toast('Error: '+e.message, false); }
 }
 
+function parseTagValues(raw) {
+  return (raw || '').split(',').map(s => s.trim()).filter(Boolean);
+}
+
+function appendTagParams(params, raw) {
+  parseTagValues(raw).forEach(tag => params.append('tag', tag));
+}
+
 async function applyRouteFilter() {
   const lat = (document.getElementById('rf-lat') || {}).value;
   const thr = (document.getElementById('rf-thr') || {}).value;
   const sat = (document.getElementById('rf-sat') || {}).value;
   const tag = (document.getElementById('rf-tag') || {}).value.trim();
-  let u = '/routes/filter?';
-  if (lat) u += 'max_latency='+encodeURIComponent(lat)+'&';
-  if (thr) u += 'min_throughput='+encodeURIComponent(thr)+'&';
-  if (sat) u += 'satellite='+encodeURIComponent(sat)+'&';
-  if (tag) u += 'tag='+encodeURIComponent(tag)+'&';
-  u = u.replace(/[&?]$/, '');
+  const params = new URLSearchParams();
+  if (lat) params.set('max_latency', lat);
+  if (thr) params.set('min_throughput', thr);
+  if (sat) params.set('satellite', sat);
+  appendTagParams(params, tag);
+  const u = '/routes/filter' + (params.toString() ? '?' + params.toString() : '');
   try {
     const r = await api(u);
     const routes = r.routes || [];
@@ -1162,6 +1212,7 @@ async function applyRouteFilter() {
 async function resolveRoute() {
   const region = (document.getElementById('rr-region') || {}).value.trim();
   const site = (document.getElementById('rr-site') || {}).value.trim();
+  const scope = (document.getElementById('rr-scope') || {}).value;
   const maxLat = (document.getElementById('rr-max-lat') || {}).value.trim();
   const minThr = (document.getElementById('rr-min-thr') || {}).value.trim();
   const sat = (document.getElementById('rr-sat') || {}).value;
@@ -1175,10 +1226,11 @@ async function resolveRoute() {
   const params = new URLSearchParams();
   if (region) params.set('region', region);
   if (site) params.set('site', site);
+  if (scope) params.set('max_scope', scope);
   if (maxLat) params.set('max_latency', maxLat);
   if (minThr) params.set('min_throughput', minThr);
   if (sat) params.set('satellite', sat);
-  if (tag) params.append('tag', tag);
+  appendTagParams(params, tag);
   if (penalty) params.set('satellite_penalty', penalty);
   if (alts) params.set('alternatives', alts);
   if (explain) params.set('explain', 'true');
@@ -1229,6 +1281,41 @@ async function resolveRoute() {
           </table>
         </div>
       </div>` : ''}`;
+  } catch(e) {
+    if (resultEl) resultEl.innerHTML = `<div class="alert err">${esc(e.message)}</div>`;
+  }
+}
+
+async function batchResolveRoutes() {
+  const resultEl = document.getElementById('route-resolve-batch-result');
+  if (resultEl) resultEl.innerHTML = '<div class="card-sub">Resolving batch…</div>';
+  try {
+    const body = JSON.parse((document.getElementById('rr-batch') || {}).value || '{}');
+    const res = await post('/routes/resolve/batch', body);
+    const results = Array.isArray(res.results) ? res.results : [];
+    const summary = res.summary || {};
+    if (!resultEl) return;
+    resultEl.innerHTML = `
+      <div class="cards" style="margin-bottom:12px">
+        <div class="card accent"><div class="card-label">Requests</div><div class="card-value">${esc(res.count ?? results.length)}</div></div>
+        <div class="card"><div class="card-label">OK</div><div class="card-value">${esc(summary.ok ?? 0)}</div></div>
+        <div class="card"><div class="card-label">Not Found</div><div class="card-value">${esc(summary.not_found ?? 0)}</div></div>
+        <div class="card"><div class="card-label">Invalid</div><div class="card-value">${esc(summary.invalid ?? 0)}</div></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Status</th><th>Scope</th><th>Route</th><th>Error</th></tr></thead>
+          <tbody>
+            ${results.map(item => `<tr>
+              <td>${esc(item.id || `#${item.index ?? '—'}`)}</td>
+              <td>${esc(item.status ?? '—')}</td>
+              <td>${esc(item.scope || '—')}</td>
+              <td>${esc(item.route && item.route.destination ? item.route.destination : '—')}</td>
+              <td>${esc(item.error || '—')}</td>
+            </tr>`).join('') || '<tr><td colspan="5" class="empty">No batch results</td></tr>'}
+          </tbody>
+        </table>
+      </div>`;
   } catch(e) {
     if (resultEl) resultEl.innerHTML = `<div class="alert err">${esc(e.message)}</div>`;
   }

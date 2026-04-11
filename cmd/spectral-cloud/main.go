@@ -33,6 +33,7 @@ import (
 	"github.com/gdev6145/Spectral_cloud/pkg/healthcheck"
 	"github.com/gdev6145/Spectral_cloud/pkg/jobs"
 	"github.com/gdev6145/Spectral_cloud/pkg/kv"
+	"github.com/gdev6145/Spectral_cloud/pkg/ai"
 	"github.com/gdev6145/Spectral_cloud/pkg/mesh"
 	"github.com/gdev6145/Spectral_cloud/pkg/notify"
 	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
@@ -1376,8 +1377,95 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		Tags             map[string]string `json:"tags,omitempty"`
 		SatellitePenalty *int              `json:"satellite_penalty,omitempty"`
 	}
+	type resolveRequestInput struct {
+		ID               string            `json:"id,omitempty"`
+		Region           *string           `json:"region,omitempty"`
+		Site             *string           `json:"site,omitempty"`
+		MaxScope         *string           `json:"max_scope,omitempty"`
+		Explain          *bool             `json:"explain,omitempty"`
+		Alternatives     *int              `json:"alternatives,omitempty"`
+		MaxLatency       *int              `json:"max_latency,omitempty"`
+		MinThroughput    *int              `json:"min_throughput,omitempty"`
+		Satellite        *bool             `json:"satellite,omitempty"`
+		Tags             map[string]string `json:"tags,omitempty"`
+		SatellitePenalty *int              `json:"satellite_penalty,omitempty"`
+	}
+	type resolveBatchBody struct {
+		Defaults *resolveRequestInput  `json:"defaults,omitempty"`
+		Requests []resolveRequestInput `json:"requests"`
+	}
 
 	scopeRank := map[string]int{"site": 1, "region": 2, "global": 3}
+	mergeResolveRequest := func(defaults *resolveRequestInput, item resolveRequestInput) resolveRequest {
+		merged := resolveRequest{ID: strings.TrimSpace(item.ID)}
+		if defaults != nil {
+			if defaults.Region != nil {
+				merged.Region = strings.TrimSpace(*defaults.Region)
+			}
+			if defaults.Site != nil {
+				merged.Site = strings.TrimSpace(*defaults.Site)
+			}
+			if defaults.MaxScope != nil {
+				merged.MaxScope = strings.TrimSpace(*defaults.MaxScope)
+			}
+			if defaults.Explain != nil {
+				merged.Explain = *defaults.Explain
+			}
+			if defaults.Alternatives != nil {
+				merged.Alternatives = *defaults.Alternatives
+			}
+			if defaults.MaxLatency != nil {
+				merged.MaxLatency = *defaults.MaxLatency
+			}
+			if defaults.MinThroughput != nil {
+				merged.MinThroughput = *defaults.MinThroughput
+			}
+			if defaults.Satellite != nil {
+				sat := *defaults.Satellite
+				merged.Satellite = &sat
+			}
+			if len(defaults.Tags) > 0 {
+				merged.Tags = cloneStringMap(defaults.Tags)
+			}
+			if defaults.SatellitePenalty != nil {
+				penalty := *defaults.SatellitePenalty
+				merged.SatellitePenalty = &penalty
+			}
+		}
+		if item.Region != nil {
+			merged.Region = strings.TrimSpace(*item.Region)
+		}
+		if item.Site != nil {
+			merged.Site = strings.TrimSpace(*item.Site)
+		}
+		if item.MaxScope != nil {
+			merged.MaxScope = strings.TrimSpace(*item.MaxScope)
+		}
+		if item.Explain != nil {
+			merged.Explain = *item.Explain
+		}
+		if item.Alternatives != nil {
+			merged.Alternatives = *item.Alternatives
+		}
+		if item.MaxLatency != nil {
+			merged.MaxLatency = *item.MaxLatency
+		}
+		if item.MinThroughput != nil {
+			merged.MinThroughput = *item.MinThroughput
+		}
+		if item.Satellite != nil {
+			sat := *item.Satellite
+			merged.Satellite = &sat
+		}
+		if item.Tags != nil {
+			merged.Tags = cloneStringMap(item.Tags)
+		}
+		if item.SatellitePenalty != nil {
+			penalty := *item.SatellitePenalty
+			merged.SatellitePenalty = &penalty
+		}
+		return merged
+	}
 	resolveRoute := func(routes []routing.Route, req resolveRequest) (int, map[string]any) {
 		region := strings.TrimSpace(req.Region)
 		site := strings.TrimSpace(req.Site)
@@ -1592,9 +1680,7 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			writeError(w, http.StatusInternalServerError, "failed to load tenant")
 			return
 		}
-		var body struct {
-			Requests []resolveRequest `json:"requests"`
-		}
+		var body resolveBatchBody
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid body")
 			return
@@ -1605,17 +1691,35 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 		routes := state.router.ListRoutes()
 		results := make([]map[string]any, 0, len(body.Requests))
+		summary := map[string]int{
+			"ok":        0,
+			"not_found": 0,
+			"invalid":   0,
+		}
 		for i, req := range body.Requests {
-			status, result := resolveRoute(routes, req)
+			merged := mergeResolveRequest(body.Defaults, req)
+			status, result := resolveRoute(routes, merged)
 			result["status"] = status
 			result["index"] = i
-			if strings.TrimSpace(req.ID) != "" {
-				result["id"] = strings.TrimSpace(req.ID)
+			if merged.ID != "" {
+				result["id"] = merged.ID
+			}
+			switch status {
+			case http.StatusOK:
+				summary["ok"]++
+			case http.StatusNotFound:
+				summary["not_found"]++
+			default:
+				summary["invalid"]++
 			}
 			results = append(results, result)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"count": len(results), "results": results})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"count":   len(results),
+			"summary": summary,
+			"results": results,
+		})
 	})
 
 	mux.HandleFunc("/blockchain", func(w http.ResponseWriter, r *http.Request) {
@@ -3756,6 +3860,960 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 	})
 
+	// ── AI inference ──────────────────────────────────────────────────────────
+	// POST /ai/infer         — run an inference request.
+	//   mode=direct (default): call Claude API synchronously; returns result inline.
+	//   mode=async:            dispatch an "inference" job to the best available
+	//                          agent and return the job record immediately.
+	//   stream=true:           proxy Claude's SSE stream to the caller (direct only).
+	// GET  /ai/agents        — list agents that advertise the "inference" capability.
+	// POST /ai/chat/{id}     — send a user message to a persistent chat session.
+	// GET  /ai/chat/{id}     — retrieve chat session history.
+	// DELETE /ai/chat/{id}   — delete a chat session.
+	// POST /ai/analyze       — ask Claude to analyze live cluster health.
+	{
+		aiClient := ai.New(os.Getenv("ANTHROPIC_API_KEY"))
+
+		mux.HandleFunc("/ai/infer", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			_, tenant, err := getState(r)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load tenant")
+				return
+			}
+
+			var req struct {
+				Prompt    string `json:"prompt"`
+				Model     string `json:"model,omitempty"`
+				System    string `json:"system,omitempty"`
+				MaxTokens int    `json:"max_tokens,omitempty"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+			if strings.TrimSpace(req.Prompt) == "" {
+				writeError(w, http.StatusBadRequest, "prompt is required")
+				return
+			}
+
+			mode := r.URL.Query().Get("mode")
+			if mode == "" {
+				mode = "direct"
+			}
+			streamMode := r.URL.Query().Get("stream") == "true"
+
+			// Streaming direct inference — SSE.
+			if streamMode && mode == "direct" {
+				if os.Getenv("ANTHROPIC_API_KEY") == "" {
+					writeError(w, http.StatusServiceUnavailable, "ANTHROPIC_API_KEY not configured")
+					return
+				}
+				flusher, ok := w.(http.Flusher)
+				if !ok {
+					writeError(w, http.StatusInternalServerError, "streaming not supported")
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				w.Header().Set("X-Accel-Buffering", "no")
+
+				ch := aiClient.Stream(r.Context(), ai.StreamRequest{
+					Messages:  []ai.Message{{Role: "user", Content: req.Prompt}},
+					Model:     req.Model,
+					System:    req.System,
+					MaxTokens: req.MaxTokens,
+				})
+				for chunk := range ch {
+					data, _ := json.Marshal(chunk)
+					fmt.Fprintf(w, "data: %s\n\n", data)
+					flusher.Flush()
+					if chunk.Type == "stop" || chunk.Type == "error" {
+						return
+					}
+				}
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+
+			switch mode {
+			case "direct":
+				if os.Getenv("ANTHROPIC_API_KEY") == "" {
+					writeError(w, http.StatusServiceUnavailable, "ANTHROPIC_API_KEY not configured")
+					return
+				}
+				result, inferErr := aiClient.Infer(r.Context(), ai.InferRequest{
+					Prompt:    req.Prompt,
+					Model:     req.Model,
+					System:    req.System,
+					MaxTokens: req.MaxTokens,
+				})
+				if inferErr != nil {
+					writeError(w, http.StatusBadGateway, inferErr.Error())
+					return
+				}
+				_ = json.NewEncoder(w).Encode(result)
+
+			case "async":
+				if jobQueue == nil {
+					writeError(w, http.StatusServiceUnavailable, "job queue unavailable")
+					return
+				}
+				best, ok := agentReg.FindBest(tenant, "inference")
+				if !ok {
+					writeError(w, http.StatusServiceUnavailable, "no healthy inference agent available")
+					return
+				}
+				payload := map[string]any{
+					"prompt":     req.Prompt,
+					"model":      req.Model,
+					"system":     req.System,
+					"max_tokens": req.MaxTokens,
+				}
+				j := jobQueue.Submit(tenant, best.ID, "inference", payload)
+				if eventBroker != nil {
+					eventBroker.Publish(events.Event{
+						Type:     events.EventJobCreated,
+						TenantID: tenant,
+						Data:     j,
+					})
+				}
+				w.WriteHeader(http.StatusAccepted)
+				_ = json.NewEncoder(w).Encode(j)
+
+			default:
+				writeError(w, http.StatusBadRequest, "mode must be direct or async")
+			}
+		})
+
+		mux.HandleFunc("/ai/agents", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			_, tenant, err := getState(r)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load tenant")
+				return
+			}
+			list := agentReg.ListByCapability(tenant, "inference")
+			if list == nil {
+				list = []agent.Agent{}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"count": len(list), "agents": list})
+		})
+
+		// POST /ai/infer?stream=true — SSE streaming inference (direct mode only).
+		// Handled by the same /ai/infer route above; stream=true is detected there.
+		// The handler below is a no-op placeholder — streaming is inline above.
+
+		// ── chat sessions ─────────────────────────────────────────────────────
+		// Sessions are stored in the KV store as JSON arrays of {role,content}
+		// messages under the key "ai_chat_<id>". They expire after 24 hours of
+		// inactivity (reset on every message).
+		const chatTTL = 24 * time.Hour
+		const chatPrefix = "ai_chat_"
+
+		mux.HandleFunc("/ai/chat/", func(w http.ResponseWriter, r *http.Request) {
+			if kvStore == nil {
+				writeError(w, http.StatusServiceUnavailable, "kv store unavailable")
+				return
+			}
+			if os.Getenv("ANTHROPIC_API_KEY") == "" {
+				writeError(w, http.StatusServiceUnavailable, "ANTHROPIC_API_KEY not configured")
+				return
+			}
+			_, tenant, err := getState(r)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load tenant")
+				return
+			}
+			rest := strings.TrimPrefix(r.URL.Path, "/ai/chat/")
+			if rest == "" {
+				writeError(w, http.StatusBadRequest, "session id is required")
+				return
+			}
+
+			// GET /ai/chat/{id}/summary — condense session history.
+			if strings.HasSuffix(rest, "/summary") {
+				if r.Method != http.MethodGet {
+					writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+					return
+				}
+				if os.Getenv("ANTHROPIC_API_KEY") == "" {
+					writeError(w, http.StatusServiceUnavailable, "ANTHROPIC_API_KEY not configured")
+					return
+				}
+				sid := strings.TrimSuffix(rest, "/summary")
+				entry, ok := kvStore.Get(tenant, chatPrefix+sid)
+				if !ok {
+					writeError(w, http.StatusNotFound, "session not found")
+					return
+				}
+				var msgs []ai.Message
+				if err := json.Unmarshal([]byte(entry.Value), &msgs); err != nil {
+					writeError(w, http.StatusInternalServerError, "corrupt session")
+					return
+				}
+				if len(msgs) == 0 {
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]any{"session_id": sid, "summary": ""})
+					return
+				}
+				var transcript strings.Builder
+				for _, m := range msgs {
+					fmt.Fprintf(&transcript, "%s: %s\n\n", strings.ToUpper(m.Role), m.Content)
+				}
+				result, inferErr := aiClient.Infer(r.Context(), ai.InferRequest{
+					Prompt:      "Summarise this conversation in 2–4 sentences, capturing the key points and outcomes:\n\n" + transcript.String(),
+					System:      "You are a concise summariser. Write in third person.",
+					CacheSystem: true,
+				})
+				if inferErr != nil {
+					writeError(w, http.StatusBadGateway, inferErr.Error())
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"session_id":    sid,
+					"summary":       result.Content,
+					"turns":         len(msgs) / 2,
+					"model":         result.Model,
+					"input_tokens":  result.InputTokens,
+					"output_tokens": result.OutputTokens,
+				})
+				return
+			}
+
+			sessionID := rest
+			kvKey := chatPrefix + sessionID
+
+			loadHistory := func() ([]ai.Message, error) {
+				entry, ok := kvStore.Get(tenant, kvKey)
+				if !ok {
+					return []ai.Message{}, nil
+				}
+				var msgs []ai.Message
+				if err := json.Unmarshal([]byte(entry.Value), &msgs); err != nil {
+					return nil, err
+				}
+				return msgs, nil
+			}
+
+			saveHistory := func(msgs []ai.Message) error {
+				data, err := json.Marshal(msgs)
+				if err != nil {
+					return err
+				}
+				kvStore.Set(tenant, kvKey, string(data), chatTTL)
+				return nil
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			switch r.Method {
+			case http.MethodGet:
+				history, err := loadHistory()
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to load session")
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"session_id": sessionID,
+					"messages":   history,
+					"count":      len(history),
+				})
+
+			case http.MethodPost:
+				var req struct {
+					Message   string `json:"message"`
+					System    string `json:"system,omitempty"`
+					Model     string `json:"model,omitempty"`
+					MaxTokens int    `json:"max_tokens,omitempty"`
+				}
+				if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
+					writeError(w, http.StatusBadRequest, "invalid request body")
+					return
+				}
+				if strings.TrimSpace(req.Message) == "" {
+					writeError(w, http.StatusBadRequest, "message is required")
+					return
+				}
+				history, err := loadHistory()
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to load session")
+					return
+				}
+				history = append(history, ai.Message{Role: "user", Content: req.Message})
+
+				result, inferErr := aiClient.InferMultiTurn(r.Context(), history, req.System, req.Model, req.MaxTokens)
+				if inferErr != nil {
+					writeError(w, http.StatusBadGateway, inferErr.Error())
+					return
+				}
+				history = append(history, ai.Message{Role: "assistant", Content: result.Content})
+				if err := saveHistory(history); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to save session")
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"session_id":    sessionID,
+					"reply":         result.Content,
+					"model":         result.Model,
+					"input_tokens":  result.InputTokens,
+					"output_tokens": result.OutputTokens,
+					"turn":          len(history) / 2,
+				})
+
+			case http.MethodDelete:
+				kvStore.Delete(tenant, kvKey)
+				w.WriteHeader(http.StatusNoContent)
+
+			default:
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
+		})
+
+		// ── cluster analysis ──────────────────────────────────────────────────
+		// POST /ai/analyze — gather live cluster state and ask Claude to analyse it.
+		// Optional body: {"question": "...", "system": "...", "model": "..."}
+		mux.HandleFunc("/ai/analyze", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			if os.Getenv("ANTHROPIC_API_KEY") == "" {
+				writeError(w, http.StatusServiceUnavailable, "ANTHROPIC_API_KEY not configured")
+				return
+			}
+			state, tenant, err := getState(r)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load tenant")
+				return
+			}
+
+			var req struct {
+				Question  string `json:"question,omitempty"`
+				System    string `json:"system,omitempty"`
+				Model     string `json:"model,omitempty"`
+				MaxTokens int    `json:"max_tokens,omitempty"`
+			}
+			// Body is optional — ignore decode errors.
+			_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req)
+
+			// Gather snapshot of cluster state.
+			agents := agentReg.List(tenant)
+			byCap := map[string]int{}
+			byStatus := map[string]int{}
+			for _, a := range agents {
+				byStatus[string(a.Status)]++
+				for _, c := range a.Capabilities {
+					byCap[c]++
+				}
+			}
+			routes := state.router.ListRoutes()
+			var jobStats map[jobs.Status]int
+			if jobQueue != nil {
+				jobStats = jobQueue.CountByStatus(tenant)
+			}
+
+			snapshot, _ := json.Marshal(map[string]any{
+				"tenant":        tenant,
+				"agents_total":  len(agents),
+				"agents_status": byStatus,
+				"capabilities":  byCap,
+				"routes_total":  len(routes),
+				"jobs":          jobStats,
+			})
+
+			question := req.Question
+			if question == "" {
+				question = "Analyse the cluster health and highlight any concerns or recommendations."
+			}
+			systemPrompt := req.System
+			if systemPrompt == "" {
+				systemPrompt = "You are a Spectral Cloud operations assistant. You receive a JSON snapshot of the cluster state and provide a concise, actionable analysis."
+			}
+
+			prompt := fmt.Sprintf("Cluster snapshot:\n```json\n%s\n```\n\n%s", string(snapshot), question)
+
+			result, inferErr := aiClient.Infer(r.Context(), ai.InferRequest{
+				Prompt:    prompt,
+				Model:     req.Model,
+				System:    systemPrompt,
+				MaxTokens: req.MaxTokens,
+			})
+			if inferErr != nil {
+				writeError(w, http.StatusBadGateway, inferErr.Error())
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"analysis":      result.Content,
+				"model":         result.Model,
+				"input_tokens":  result.InputTokens,
+				"output_tokens": result.OutputTokens,
+				"snapshot":      json.RawMessage(snapshot),
+			})
+		})
+
+		// ── smart routing ─────────────────────────────────────────────────────
+		// POST /ai/route — describe a task in natural language; Claude picks the
+		// best matching agent capability and submits a job automatically.
+		// Body: {"task":"...", "payload":{...}, "model":"...", "max_tokens":N}
+		mux.HandleFunc("/ai/route", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			if os.Getenv("ANTHROPIC_API_KEY") == "" {
+				writeError(w, http.StatusServiceUnavailable, "ANTHROPIC_API_KEY not configured")
+				return
+			}
+			if jobQueue == nil {
+				writeError(w, http.StatusServiceUnavailable, "job queue unavailable")
+				return
+			}
+			_, tenant, err := getState(r)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load tenant")
+				return
+			}
+			var req struct {
+				Task      string         `json:"task"`
+				Payload   map[string]any `json:"payload,omitempty"`
+				Model     string         `json:"model,omitempty"`
+				MaxTokens int            `json:"max_tokens,omitempty"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+			if strings.TrimSpace(req.Task) == "" {
+				writeError(w, http.StatusBadRequest, "task is required")
+				return
+			}
+
+			// Collect unique capabilities from live agents.
+			agents := agentReg.List(tenant)
+			capSet := map[string]struct{}{}
+			for _, a := range agents {
+				for _, c := range a.Capabilities {
+					capSet[c] = struct{}{}
+				}
+			}
+			if len(capSet) == 0 {
+				writeError(w, http.StatusServiceUnavailable, "no agents registered for this tenant")
+				return
+			}
+			capList := make([]string, 0, len(capSet))
+			for c := range capSet {
+				capList = append(capList, c)
+			}
+			sort.Strings(capList)
+
+			routePrompt := fmt.Sprintf(
+				"Available agent capabilities: %s\n\nTask: %s\n\nReply with ONLY the single capability name from the list above that best matches this task. No explanation.",
+				strings.Join(capList, ", "), req.Task,
+			)
+			result, inferErr := aiClient.Infer(r.Context(), ai.InferRequest{
+				Prompt:    routePrompt,
+				Model:     req.Model,
+				System:    "You are a job router. Select the single best capability for the given task.",
+				MaxTokens: 32,
+			})
+			if inferErr != nil {
+				writeError(w, http.StatusBadGateway, inferErr.Error())
+				return
+			}
+			chosen := strings.TrimSpace(strings.ToLower(result.Content))
+			// Validate Claude picked a real capability.
+			if _, ok := capSet[chosen]; !ok {
+				writeError(w, http.StatusBadGateway, fmt.Sprintf("model chose unknown capability %q", chosen))
+				return
+			}
+			best, ok := agentReg.FindBest(tenant, chosen)
+			if !ok {
+				writeError(w, http.StatusServiceUnavailable, "no healthy agent available for capability: "+chosen)
+				return
+			}
+			payload := req.Payload
+			if payload == nil {
+				payload = map[string]any{"task": req.Task}
+			}
+			j := jobQueue.Submit(tenant, best.ID, chosen, payload)
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{
+					Type:     events.EventJobCreated,
+					TenantID: tenant,
+					Data:     j,
+				})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"chosen_capability": chosen,
+				"agent_id":          best.ID,
+				"job":               j,
+				"routing_model":     result.Model,
+			})
+		})
+
+		// ── structured extraction ─────────────────────────────────────────────
+		// POST /ai/extract — extract structured JSON from text using Claude.
+		// Body: {"text":"...", "schema":"describe the fields to extract", "model":"...", "max_tokens":N}
+		mux.HandleFunc("/ai/extract", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			if os.Getenv("ANTHROPIC_API_KEY") == "" {
+				writeError(w, http.StatusServiceUnavailable, "ANTHROPIC_API_KEY not configured")
+				return
+			}
+			var req struct {
+				Text      string `json:"text"`
+				Schema    string `json:"schema"`
+				Model     string `json:"model,omitempty"`
+				MaxTokens int    `json:"max_tokens,omitempty"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+			if strings.TrimSpace(req.Text) == "" {
+				writeError(w, http.StatusBadRequest, "text is required")
+				return
+			}
+			if strings.TrimSpace(req.Schema) == "" {
+				writeError(w, http.StatusBadRequest, "schema is required")
+				return
+			}
+			prompt := fmt.Sprintf(
+				"Extract structured data from the text below. Return ONLY valid JSON matching this schema:\n%s\n\nText:\n%s",
+				req.Schema, req.Text,
+			)
+			result, inferErr := aiClient.Infer(r.Context(), ai.InferRequest{
+				Prompt:    prompt,
+				Model:     req.Model,
+				System:    "You are a data extraction engine. Return only valid JSON, no markdown, no explanation.",
+				MaxTokens: req.MaxTokens,
+			})
+			if inferErr != nil {
+				writeError(w, http.StatusBadGateway, inferErr.Error())
+				return
+			}
+			// Try to parse Claude's output as JSON.
+			var extracted any
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.Unmarshal([]byte(result.Content), &extracted); err != nil {
+				// Return raw string if not valid JSON.
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"raw":           result.Content,
+					"parsed":        nil,
+					"model":         result.Model,
+					"input_tokens":  result.InputTokens,
+					"output_tokens": result.OutputTokens,
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"extracted":     extracted,
+				"model":         result.Model,
+				"input_tokens":  result.InputTokens,
+				"output_tokens": result.OutputTokens,
+			})
+		})
+
+		// ── chat session index ────────────────────────────────────────────────
+		// GET /ai/sessions — list active chat session IDs for this tenant.
+		mux.HandleFunc("/ai/sessions", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			if kvStore == nil {
+				writeError(w, http.StatusServiceUnavailable, "kv store unavailable")
+				return
+			}
+			_, tenant, err := getState(r)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load tenant")
+				return
+			}
+			entries := kvStore.List(tenant, chatPrefix)
+			type sessionSummary struct {
+				SessionID string `json:"session_id"`
+				Turns     int    `json:"turns"`
+				UpdatedAt string `json:"updated_at"`
+			}
+			summaries := make([]sessionSummary, 0, len(entries))
+			for _, e := range entries {
+				sessionID := strings.TrimPrefix(e.Key, chatPrefix)
+				var msgs []ai.Message
+				turns := 0
+				if err := json.Unmarshal([]byte(e.Value), &msgs); err == nil {
+					turns = len(msgs) / 2
+				}
+				summaries = append(summaries, sessionSummary{
+					SessionID: sessionID,
+					Turns:     turns,
+					UpdatedAt: e.UpdatedAt.UTC().Format(time.RFC3339),
+				})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"count": len(summaries), "sessions": summaries})
+		})
+
+		// ── prompt templates ──────────────────────────────────────────────────
+		// Templates are named prompt skeletons stored in KV.
+		// A template has: system, prompt (with {{var}} placeholders), model, max_tokens.
+		// GET    /ai/templates           — list all templates
+		// POST   /ai/templates           — create/update a template (body: template JSON)
+		// GET    /ai/templates/{name}    — fetch a template
+		// DELETE /ai/templates/{name}    — delete a template
+		// POST   /ai/templates/{name}/run — render vars and call Claude
+		const tmplPrefix = "ai_tmpl_"
+
+		mux.HandleFunc("/ai/templates", func(w http.ResponseWriter, r *http.Request) {
+			if kvStore == nil {
+				writeError(w, http.StatusServiceUnavailable, "kv store unavailable")
+				return
+			}
+			_, tenant, err := getState(r)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load tenant")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			switch r.Method {
+			case http.MethodGet:
+				entries := kvStore.List(tenant, tmplPrefix)
+				type tmplMeta struct {
+					Name      string `json:"name"`
+					UpdatedAt string `json:"updated_at"`
+				}
+				metas := make([]tmplMeta, 0, len(entries))
+				for _, e := range entries {
+					metas = append(metas, tmplMeta{
+						Name:      strings.TrimPrefix(e.Key, tmplPrefix),
+						UpdatedAt: e.UpdatedAt.UTC().Format(time.RFC3339),
+					})
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"count": len(metas), "templates": metas})
+
+			case http.MethodPost:
+				var tmpl struct {
+					Name      string `json:"name"`
+					System    string `json:"system,omitempty"`
+					Prompt    string `json:"prompt"`
+					Model     string `json:"model,omitempty"`
+					MaxTokens int    `json:"max_tokens,omitempty"`
+				}
+				if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&tmpl); err != nil {
+					writeError(w, http.StatusBadRequest, "invalid request body")
+					return
+				}
+				if strings.TrimSpace(tmpl.Name) == "" {
+					writeError(w, http.StatusBadRequest, "name is required")
+					return
+				}
+				if strings.TrimSpace(tmpl.Prompt) == "" {
+					writeError(w, http.StatusBadRequest, "prompt is required")
+					return
+				}
+				data, _ := json.Marshal(tmpl)
+				kvStore.Set(tenant, tmplPrefix+tmpl.Name, string(data), 0)
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(tmpl)
+
+			default:
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
+		})
+
+		mux.HandleFunc("/ai/templates/", func(w http.ResponseWriter, r *http.Request) {
+			if kvStore == nil {
+				writeError(w, http.StatusServiceUnavailable, "kv store unavailable")
+				return
+			}
+			if os.Getenv("ANTHROPIC_API_KEY") == "" && r.Method == http.MethodPost {
+				writeError(w, http.StatusServiceUnavailable, "ANTHROPIC_API_KEY not configured")
+				return
+			}
+			_, tenant, err := getState(r)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load tenant")
+				return
+			}
+
+			rest := strings.TrimPrefix(r.URL.Path, "/ai/templates/")
+			// POST /ai/templates/{name}/run
+			if strings.HasSuffix(rest, "/run") && r.Method == http.MethodPost {
+				name := strings.TrimSuffix(rest, "/run")
+				entry, ok := kvStore.Get(tenant, tmplPrefix+name)
+				if !ok {
+					writeError(w, http.StatusNotFound, "template not found")
+					return
+				}
+				var tmpl struct {
+					System    string `json:"system"`
+					Prompt    string `json:"prompt"`
+					Model     string `json:"model"`
+					MaxTokens int    `json:"max_tokens"`
+				}
+				if err := json.Unmarshal([]byte(entry.Value), &tmpl); err != nil {
+					writeError(w, http.StatusInternalServerError, "corrupt template")
+					return
+				}
+				var vars map[string]string
+				_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&vars)
+
+				rendered := tmpl.Prompt
+				for k, v := range vars {
+					rendered = strings.ReplaceAll(rendered, "{{"+k+"}}", v)
+				}
+				result, inferErr := aiClient.Infer(r.Context(), ai.InferRequest{
+					Prompt:    rendered,
+					Model:     tmpl.Model,
+					System:    tmpl.System,
+					MaxTokens: tmpl.MaxTokens,
+				})
+				if inferErr != nil {
+					writeError(w, http.StatusBadGateway, inferErr.Error())
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"template":      name,
+					"rendered":      rendered,
+					"content":       result.Content,
+					"model":         result.Model,
+					"input_tokens":  result.InputTokens,
+					"output_tokens": result.OutputTokens,
+				})
+				return
+			}
+
+			// /ai/templates/{name} — GET / DELETE
+			name := rest
+			w.Header().Set("Content-Type", "application/json")
+			switch r.Method {
+			case http.MethodGet:
+				entry, ok := kvStore.Get(tenant, tmplPrefix+name)
+				if !ok {
+					writeError(w, http.StatusNotFound, "template not found")
+					return
+				}
+				w.Write([]byte(entry.Value)) //nolint:errcheck
+			case http.MethodDelete:
+				if !kvStore.Delete(tenant, tmplPrefix+name) {
+					writeError(w, http.StatusNotFound, "template not found")
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
+		})
+
+		// ── LLM-as-judge ─────────────────────────────────────────────────────
+		// POST /ai/judge — score text against criteria on a 0–10 scale.
+		// Body: {"text":"...", "criteria":"...", "model":"...", "max_tokens":N}
+		// Returns: {"score":8, "reasoning":"...", "model":"..."}
+		mux.HandleFunc("/ai/judge", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			if os.Getenv("ANTHROPIC_API_KEY") == "" {
+				writeError(w, http.StatusServiceUnavailable, "ANTHROPIC_API_KEY not configured")
+				return
+			}
+			var req struct {
+				Text      string `json:"text"`
+				Criteria  string `json:"criteria"`
+				Model     string `json:"model,omitempty"`
+				MaxTokens int    `json:"max_tokens,omitempty"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+			if strings.TrimSpace(req.Text) == "" {
+				writeError(w, http.StatusBadRequest, "text is required")
+				return
+			}
+			if strings.TrimSpace(req.Criteria) == "" {
+				writeError(w, http.StatusBadRequest, "criteria is required")
+				return
+			}
+			prompt := fmt.Sprintf(
+				"Evaluate the following text against the criteria and respond with ONLY valid JSON in this exact format:\n"+
+					`{"score": <integer 0-10>, "reasoning": "<one sentence>"}`+"\n\n"+
+					"Criteria: %s\n\nText:\n%s",
+				req.Criteria, req.Text,
+			)
+			result, inferErr := aiClient.Infer(r.Context(), ai.InferRequest{
+				Prompt:      prompt,
+				Model:       req.Model,
+				System:      "You are an objective evaluator. Return only valid JSON.",
+				MaxTokens:   req.MaxTokens,
+				CacheSystem: true,
+			})
+			if inferErr != nil {
+				writeError(w, http.StatusBadGateway, inferErr.Error())
+				return
+			}
+			var verdict struct {
+				Score     int    `json:"score"`
+				Reasoning string `json:"reasoning"`
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.Unmarshal([]byte(result.Content), &verdict); err != nil {
+				_ = json.NewEncoder(w).Encode(map[string]any{"raw": result.Content, "model": result.Model})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"score":            verdict.Score,
+				"reasoning":        verdict.Reasoning,
+				"model":            result.Model,
+				"input_tokens":     result.InputTokens,
+				"output_tokens":    result.OutputTokens,
+				"cache_read":       result.CacheReadTokens,
+				"cache_write":      result.CacheWriteTokens,
+			})
+		})
+
+		// ── candidate re-ranking ──────────────────────────────────────────────
+		// POST /ai/rerank — rank a list of candidates by relevance to a query.
+		// Body: {"query":"...", "candidates":["a","b","c"], "model":"...", "max_tokens":N}
+		// Returns: {"ranked":[{"index":2,"text":"c","score":9},...],"model":"..."}
+		mux.HandleFunc("/ai/rerank", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			if os.Getenv("ANTHROPIC_API_KEY") == "" {
+				writeError(w, http.StatusServiceUnavailable, "ANTHROPIC_API_KEY not configured")
+				return
+			}
+			var req struct {
+				Query      string   `json:"query"`
+				Candidates []string `json:"candidates"`
+				Model      string   `json:"model,omitempty"`
+				MaxTokens  int      `json:"max_tokens,omitempty"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+			if strings.TrimSpace(req.Query) == "" {
+				writeError(w, http.StatusBadRequest, "query is required")
+				return
+			}
+			if len(req.Candidates) == 0 {
+				writeError(w, http.StatusBadRequest, "candidates is required")
+				return
+			}
+			var numbered strings.Builder
+			for i, c := range req.Candidates {
+				fmt.Fprintf(&numbered, "%d. %s\n", i, c)
+			}
+			prompt := fmt.Sprintf(
+				"Rank the following candidates by relevance to the query.\n"+
+					"Return ONLY a JSON array of objects ordered from most to least relevant:\n"+
+					`[{"index":<original 0-based index>,"text":"<candidate text>","score":<1-10>}]`+"\n\n"+
+					"Query: %s\n\nCandidates:\n%s",
+				req.Query, numbered.String(),
+			)
+			result, inferErr := aiClient.Infer(r.Context(), ai.InferRequest{
+				Prompt:      prompt,
+				Model:       req.Model,
+				System:      "You are a relevance ranking engine. Return only valid JSON.",
+				MaxTokens:   req.MaxTokens,
+				CacheSystem: true,
+			})
+			if inferErr != nil {
+				writeError(w, http.StatusBadGateway, inferErr.Error())
+				return
+			}
+			var ranked []map[string]any
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.Unmarshal([]byte(result.Content), &ranked); err != nil {
+				_ = json.NewEncoder(w).Encode(map[string]any{"raw": result.Content, "model": result.Model})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ranked":        ranked,
+				"model":         result.Model,
+				"input_tokens":  result.InputTokens,
+				"output_tokens": result.OutputTokens,
+			})
+		})
+
+		// ── AI diff ──────────────────────────────────────────────────────────
+		// POST /ai/diff — explain the differences between two texts using Claude.
+		// Body: {"before":"...", "after":"...", "context":"...", "model":"...", "max_tokens":N}
+		mux.HandleFunc("/ai/diff", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			if os.Getenv("ANTHROPIC_API_KEY") == "" {
+				writeError(w, http.StatusServiceUnavailable, "ANTHROPIC_API_KEY not configured")
+				return
+			}
+			var req struct {
+				Before    string `json:"before"`
+				After     string `json:"after"`
+				Context   string `json:"context,omitempty"`
+				Model     string `json:"model,omitempty"`
+				MaxTokens int    `json:"max_tokens,omitempty"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+			if req.Before == "" || req.After == "" {
+				writeError(w, http.StatusBadRequest, "before and after are required")
+				return
+			}
+			contextLine := ""
+			if req.Context != "" {
+				contextLine = "Context: " + req.Context + "\n\n"
+			}
+			prompt := fmt.Sprintf(
+				"%sExplain the differences between the BEFORE and AFTER versions. "+
+					"Be specific and concise. Highlight what changed, why it matters, and any risks.\n\n"+
+					"BEFORE:\n%s\n\nAFTER:\n%s",
+				contextLine, req.Before, req.After,
+			)
+			result, inferErr := aiClient.Infer(r.Context(), ai.InferRequest{
+				Prompt:    prompt,
+				Model:     req.Model,
+				System:    "You are a precise diff analyst. Focus on meaningful changes, not formatting.",
+				MaxTokens: req.MaxTokens,
+			})
+			if inferErr != nil {
+				writeError(w, http.StatusBadGateway, inferErr.Error())
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"explanation":   result.Content,
+				"model":         result.Model,
+				"input_tokens":  result.InputTokens,
+				"output_tokens": result.OutputTokens,
+			})
+		})
+	}
+
 	// Serve the embedded web dashboard at /ui/.
 	uiFS, _ := fs.Sub(staticFiles, "static")
 	mux.Handle("/ui/", http.StripPrefix("/ui", http.FileServer(http.FS(uiFS))))
@@ -4075,6 +5133,17 @@ func parseTagsStrict(raw []string) (map[string]string, error) {
 		out[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 	}
 	return out, nil
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func validateTransactions(txs []blockchain.Transaction) error {
