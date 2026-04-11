@@ -7,6 +7,7 @@ package agentgroup
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -75,6 +76,7 @@ func (m *Manager) LoadFromStore(tenant string) (int, error) {
 	if err := m.store.ScanPrefix(tenant, groupKeyPrefix, func(_, val []byte) error {
 		var g Group
 		if err := json.Unmarshal(val, &g); err != nil {
+			log.Printf("warn: skipping corrupted persisted agent group for tenant %q: %v", tenant, err)
 			return nil
 		}
 		loaded = append(loaded, g)
@@ -112,16 +114,21 @@ func (m *Manager) persist(g *Group) {
 	}
 	data, err := json.Marshal(g)
 	if err != nil {
+		log.Printf("warn: failed to marshal agent group %q for tenant %q: %v", g.ID, g.Tenant, err)
 		return
 	}
-	_ = m.store.PutKV(g.Tenant, groupKeyPrefix+g.ID, data)
+	if err := m.store.PutKV(g.Tenant, groupKeyPrefix+g.ID, data); err != nil {
+		log.Printf("warn: failed to persist agent group %q for tenant %q: %v", g.ID, g.Tenant, err)
+	}
 }
 
 func (m *Manager) unpersist(g *Group) {
 	if m.store == nil {
 		return
 	}
-	_ = m.store.DeleteKV(g.Tenant, groupKeyPrefix+g.ID)
+	if err := m.store.DeleteKV(g.Tenant, groupKeyPrefix+g.ID); err != nil {
+		log.Printf("warn: failed to delete persisted agent group %q for tenant %q: %v", g.ID, g.Tenant, err)
+	}
 }
 
 // Create adds a new group for tenant and returns it.

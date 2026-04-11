@@ -4,6 +4,7 @@ package jobs
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -77,7 +78,8 @@ func (q *Queue) LoadFromStore(tenant string) (int, error) {
 	if err := q.store.ScanPrefix(tenant, jobKeyPrefix, func(_, val []byte) error {
 		var j Job
 		if err := json.Unmarshal(val, &j); err != nil {
-			return nil // skip corrupted entries
+			log.Printf("warn: skipping corrupted persisted job for tenant %q: %v", tenant, err)
+			return nil
 		}
 		loaded = append(loaded, j)
 		return nil
@@ -108,16 +110,18 @@ func parseJobNum(id string) uint64 {
 }
 
 // persist writes a single job to the store. Called with q.mu held (read or write).
-// Errors are silently dropped — persistence is best-effort.
 func (q *Queue) persist(j *Job) {
 	if q.store == nil {
 		return
 	}
 	data, err := json.Marshal(j)
 	if err != nil {
+		log.Printf("warn: failed to marshal job %q for tenant %q: %v", j.ID, j.Tenant, err)
 		return
 	}
-	_ = q.store.PutKV(j.Tenant, jobKeyPrefix+j.ID, data)
+	if err := q.store.PutKV(j.Tenant, jobKeyPrefix+j.ID, data); err != nil {
+		log.Printf("warn: failed to persist job %q for tenant %q: %v", j.ID, j.Tenant, err)
+	}
 }
 
 // unpersist removes a job from the store.
@@ -125,7 +129,9 @@ func (q *Queue) unpersist(j *Job) {
 	if q.store == nil {
 		return
 	}
-	_ = q.store.DeleteKV(j.Tenant, jobKeyPrefix+j.ID)
+	if err := q.store.DeleteKV(j.Tenant, jobKeyPrefix+j.ID); err != nil {
+		log.Printf("warn: failed to delete persisted job %q for tenant %q: %v", j.ID, j.Tenant, err)
+	}
 }
 
 // SubmitOptions carries optional fields for job submission.

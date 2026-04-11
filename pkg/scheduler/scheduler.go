@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -80,7 +81,8 @@ func (m *Manager) LoadFromStore(ctx context.Context, tenant string) (int, error)
 	if err := m.store.ScanPrefix(tenant, schedKeyPrefix, func(_, val []byte) error {
 		var s Schedule
 		if err := json.Unmarshal(val, &s); err != nil {
-			return nil // skip corrupted entries
+			log.Printf("warn: skipping corrupted persisted schedule for tenant %q: %v", tenant, err)
+			return nil
 		}
 		loaded = append(loaded, s)
 		return nil
@@ -122,16 +124,21 @@ func (m *Manager) persist(s *Schedule) {
 	}
 	data, err := json.Marshal(s)
 	if err != nil {
+		log.Printf("warn: failed to marshal schedule %q for tenant %q: %v", s.ID, s.Tenant, err)
 		return
 	}
-	_ = m.store.PutKV(s.Tenant, schedKeyPrefix+s.ID, data)
+	if err := m.store.PutKV(s.Tenant, schedKeyPrefix+s.ID, data); err != nil {
+		log.Printf("warn: failed to persist schedule %q for tenant %q: %v", s.ID, s.Tenant, err)
+	}
 }
 
 func (m *Manager) unpersist(s *Schedule) {
 	if m.store == nil {
 		return
 	}
-	_ = m.store.DeleteKV(s.Tenant, schedKeyPrefix+s.ID)
+	if err := m.store.DeleteKV(s.Tenant, schedKeyPrefix+s.ID); err != nil {
+		log.Printf("warn: failed to delete persisted schedule %q for tenant %q: %v", s.ID, s.Tenant, err)
+	}
 }
 
 // Add creates and starts a new schedule. Returns error on invalid input.
