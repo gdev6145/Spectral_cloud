@@ -26,17 +26,29 @@ Quick links:
 - `GET /ready` -> readiness (DB + server ready)
 - `GET /auth/whoami` -> resolved auth/tenant information for the presented credential
 - `GET /metrics` -> Prometheus metrics
+- `GET/PATCH/DELETE /agents?id=X` -> inspect, update, or deregister a tenant-scoped agent
+- `POST /agents/register` -> register or refresh an agent record
+- `GET/POST /agents/jobs` -> list jobs or submit work for the resolved tenant
+- `GET/PATCH/DELETE /agents/jobs/{id}` -> inspect, update, or cancel a single tenant-scoped job
+- `GET /agents/jobs/claim?agent_id=X&capability=Y` -> claim the next pending tenant job
+- `GET/POST /agent-groups` -> list or create tenant-scoped agent groups
+- `GET /agent-groups/{id}` -> fetch a tenant-scoped agent group
+- `GET /agent-groups/{id}/next` -> select the next available group member
 - `POST /blockchain/add` -> add block (JSON array of transactions)
 - `GET /routes` -> list routes
 - `POST /routes?destination=X&latency=1&throughput=10&ttlSeconds=60` -> add a route (optional TTL)
 - `POST /proto/data` -> protobuf `DataMessage` request, returns protobuf `Ack`
 - `POST /proto/control` -> protobuf `ControlMessage` request, returns protobuf `Ack`
+- `GET/POST /admin/notifications` -> list or create tenant-scoped notification rules
+- `DELETE /admin/notifications/{id}` -> delete a tenant-scoped notification rule
+- `GET /circuit` -> inspect circuit breaker state for agents
+- `POST /circuit/reset?agent_id=X` -> manually reset a circuit breaker
 - `GET /admin/status` -> backup/compaction status (admin-only)
 - `GET /admin/mesh` -> mesh config/stats/anomaly state (admin-only)
 - `GET /admin/tenants` -> list tenants and per-tenant counts (admin-only)
 
 If `TENANT_KEYS`, `TENANT_WRITE_KEYS`, or `API_KEY` is set, include `Authorization: Bearer <key>` or `X-API-Key: <key>`.
-Multi-tenant mode uses `TENANT_KEYS=tenant:key` mappings and isolates blockchain/routes by tenant.
+Multi-tenant mode uses `TENANT_KEYS=tenant:key` mappings and isolates control-plane state such as blockchain data, routes, agents, jobs, groups, and notification rules by tenant.
 
 **Docker Compose**
 
@@ -67,6 +79,7 @@ Tenant quotas and per-tenant rate limiting can be enabled with `TENANT_MAX_BLOCK
 **Persistence Notes**
 - BoltDB is the primary store at `DATA_DIR/spectral.db`.
 - Legacy JSON files are migrated into BoltDB on startup.
+- Jobs, schedules, and agent groups reload from BoltDB on startup.
 - Invalid blocks are ignored and the chain truncates at first invalid block.
 
 **Maintenance**
