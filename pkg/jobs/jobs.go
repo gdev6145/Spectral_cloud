@@ -287,6 +287,8 @@ func (q *Queue) Claim(agentID, capability string) (Job, bool) {
 }
 
 // ClaimForTenant is like Claim but restricts candidates to the given tenant.
+// A job matches when its capability equals the requested capability AND it is
+// either unassigned (AgentID=="") or pre-assigned to the requesting agent.
 func (q *Queue) ClaimForTenant(tenant, agentID, capability string) (Job, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -299,13 +301,10 @@ func (q *Queue) ClaimForTenant(tenant, agentID, capability string) (Job, bool) {
 		if j.Tenant != tenant {
 			continue
 		}
-		var match bool
-		if agentID != "" {
-			match = j.AgentID == agentID
-		} else if capability != "" {
-			match = j.Capability == capability
+		if capability != "" && j.Capability != capability {
+			continue
 		}
-		if !match {
+		if agentID != "" && j.AgentID != "" && j.AgentID != agentID {
 			continue
 		}
 		if best == nil ||

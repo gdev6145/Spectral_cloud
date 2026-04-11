@@ -202,6 +202,25 @@ t.Fatalf("expected running, got %s", got.Status)
 }
 }
 
+func TestClaimForTenant_AllowsUnassignedJobForMatchingAgentCapability(t *testing.T) {
+	q := NewQueue()
+	j := q.Submit("tenant-a", "", "inference", nil)
+
+	got, ok := q.ClaimForTenant("tenant-a", "worker-1", "inference")
+	if !ok {
+		t.Fatal("expected claim to succeed")
+	}
+	if got.ID != j.ID {
+		t.Fatalf("expected job %s, got %s", j.ID, got.ID)
+	}
+	if got.AgentID != "worker-1" {
+		t.Fatalf("expected claimed agent to be worker-1, got %s", got.AgentID)
+	}
+	if got.Status != StatusRunning {
+		t.Fatalf("expected running, got %s", got.Status)
+	}
+}
+
 func TestClaim_OldestFirst(t *testing.T) {
 q := NewQueue()
 j1 := q.Submit("t", "agent-x", "cap", nil)
