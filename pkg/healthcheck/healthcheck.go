@@ -80,19 +80,18 @@ func (c *Checker) runChecks() {
 		tenant string
 		ag     agent.Agent
 	}
-	// The registry doesn't expose tenants directly, so we ping all agents.
 	all := c.registry.List("")
 	refs := make([]agentRef, 0, len(all))
 	for _, ag := range all {
 		if strings.TrimSpace(ag.Addr) != "" {
-			// Infer tenant from agent key format "tenant/id".
-			refs = append(refs, agentRef{tenant: "", ag: ag})
+			refs = append(refs, agentRef{tenant: ag.TenantID, ag: ag})
 		}
 	}
 
 	for _, ref := range refs {
 		result := c.ping(ref.ag)
-		key := ref.ag.ID
+		result.Tenant = ref.tenant
+		key := ref.tenant + "/" + ref.ag.ID
 		c.mu.Lock()
 		c.results[key] = result
 		c.mu.Unlock()
@@ -102,7 +101,7 @@ func (c *Checker) runChecks() {
 		if !result.Healthy {
 			newStatus = agent.StatusDegraded
 		}
-		_ = c.registry.UpdateStatus(ref.tenant, ref.ag.ID, newStatus)
+		_ = c.registry.UpdateStatus(ref.ag.TenantID, ref.ag.ID, newStatus)
 
 		// Publish health event.
 		if c.broker != nil {
@@ -112,7 +111,7 @@ func (c *Checker) runChecks() {
 			}
 			c.broker.Publish(events.Event{
 				Type:      evType,
-				TenantID:  ref.tenant,
+				TenantID:  ref.ag.TenantID,
 				Timestamp: result.CheckedAt,
 				Data: map[string]any{
 					"id":         ref.ag.ID,
@@ -167,10 +166,10 @@ func (c *Checker) Results() []Result {
 	return out
 }
 
-// ResultFor returns the latest check result for a specific agent ID.
-func (c *Checker) ResultFor(agentID string) (Result, bool) {
+// ResultFor returns the latest check result for a specific agent (by tenant+ID).
+func (c *Checker) ResultFor(tenantID, agentID string) (Result, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	r, ok := c.results[agentID]
+	r, ok := c.results[tenantID+"/"+agentID]
 	return r, ok
 }

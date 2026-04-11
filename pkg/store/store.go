@@ -367,6 +367,67 @@ func cleanupLegacyDefault(tx *bolt.Tx, tenant, key string) error {
 	return data.Delete([]byte(key))
 }
 
+// PutKV stores an arbitrary value under a prefixed key in the tenant's bucket.
+// The key is stored as-is; callers should use a consistent prefix (e.g. "job_", "sched_").
+func (s *Store) PutKV(tenant, key string, value []byte) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b, err := tenantBucket(tx, tenant, true)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(key), value)
+	})
+}
+
+// GetKV retrieves the value for the given key from the tenant's bucket.
+// Returns (nil, nil) if the key does not exist.
+func (s *Store) GetKV(tenant, key string) ([]byte, error) {
+	var val []byte
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b, _ := tenantBucket(tx, tenant, false)
+		if b == nil {
+			return nil
+		}
+		raw := b.Get([]byte(key))
+		if raw != nil {
+			val = make([]byte, len(raw))
+			copy(val, raw)
+		}
+		return nil
+	})
+	return val, err
+}
+
+// DeleteKV removes a key from the tenant's bucket. A missing key is not an error.
+func (s *Store) DeleteKV(tenant, key string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b, _ := tenantBucket(tx, tenant, false)
+		if b == nil {
+			return nil
+		}
+		return b.Delete([]byte(key))
+	})
+}
+
+// ScanPrefix iterates all keys in the tenant's bucket that start with prefix,
+// calling fn(key, value) for each. Returning an error from fn stops iteration.
+func (s *Store) ScanPrefix(tenant, prefix string, fn func(key, val []byte) error) error {
+	return s.db.View(func(tx *bolt.Tx) error {
+		b, _ := tenantBucket(tx, tenant, false)
+		if b == nil {
+			return nil
+		}
+		pfx := []byte(prefix)
+		c := b.Cursor()
+		for k, v := c.Seek(pfx); k != nil && bytes.HasPrefix(k, pfx); k, v = c.Next() {
+			if err := fn(k, v); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func DBPath(dataDir string) string {
 	return filepath.Join(dataDir, "spectral.db")
 }

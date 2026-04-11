@@ -3,6 +3,8 @@ package jobs
 import (
 	"testing"
 	"time"
+
+	"github.com/gdev6145/Spectral_cloud/pkg/store"
 )
 
 func TestSubmitAndGet(t *testing.T) {
@@ -354,6 +356,48 @@ all := q.ListByStatus("", StatusPending)
 if len(all) != 3 {
 t.Fatalf("expected 3 pending across all tenants, got %d", len(all))
 }
+}
+
+func TestLoadFromStoreAndClaimForTenant(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	q1 := NewQueueWithStore(db)
+	jobTenantA := q1.Submit("tenant-a", "worker-1", "ocr", map[string]any{"doc": "a"})
+	jobTenantB := q1.Submit("tenant-b", "worker-1", "ocr", map[string]any{"doc": "b"})
+
+	q2 := NewQueueWithStore(db)
+	if n, err := q2.LoadFromStore("tenant-a"); err != nil || n != 1 {
+		t.Fatalf("load tenant-a: n=%d err=%v", n, err)
+	}
+	if n, err := q2.LoadFromStore("tenant-b"); err != nil || n != 1 {
+		t.Fatalf("load tenant-b: n=%d err=%v", n, err)
+	}
+
+	claimed, ok := q2.ClaimForTenant("tenant-a", "worker-1", "")
+	if !ok {
+		t.Fatal("expected tenant-a claim to succeed")
+	}
+	if claimed.ID != jobTenantA.ID || claimed.Tenant != "tenant-a" || claimed.Status != StatusRunning {
+		t.Fatalf("unexpected claimed job: %+v", claimed)
+	}
+
+	other, ok := q2.Get(jobTenantB.ID)
+	if !ok {
+		t.Fatal("expected tenant-b job to be loaded")
+	}
+	if other.Status != StatusPending {
+		t.Fatalf("expected tenant-b job to remain pending, got %s", other.Status)
+	}
+
+	next := q2.Submit("tenant-a", "worker-1", "ocr", nil)
+	if next.ID == jobTenantA.ID || next.ID == jobTenantB.ID {
+		t.Fatalf("expected unique ID after reload, got %s", next.ID)
+	}
 }
 
 func TestCountByStatus(t *testing.T) {

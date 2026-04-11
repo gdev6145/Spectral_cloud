@@ -523,7 +523,7 @@ func main() {
 		}
 	}()
 
-	jobQueue := jobs.NewQueue()
+	jobQueue := jobs.NewQueueWithStore(db)
 	go func() {
 		// Prune completed jobs older than 24h every 10 minutes.
 		ticker := time.NewTicker(10 * time.Minute)
@@ -589,10 +589,31 @@ func main() {
 	circuitResetSec := getEnvInt("CIRCUIT_RESET_SECONDS", 30)
 	circuitMgr := circuit.New(circuitThreshold, time.Duration(circuitResetSec)*time.Second)
 
-	groupMgr := agentgroup.New()
+	groupMgr := agentgroup.NewWithStore(db)
 
-	sched := scheduler.New(jobQueue)
+	sched := scheduler.NewWithStore(jobQueue, db)
 	defer sched.StopAll()
+
+	// Restore jobs and schedules persisted in previous runs.
+	if tenantNames, err := db.TenantNames(); err == nil {
+		for _, tn := range tenantNames {
+			if n, err := jobQueue.LoadFromStore(tn); err != nil {
+				log.Printf("warn: failed to load jobs for tenant %q: %v", tn, err)
+			} else if n > 0 {
+				log.Printf("restored %d job(s) for tenant %q", n, tn)
+			}
+			if n, err := sched.LoadFromStore(ctx, tn); err != nil {
+				log.Printf("warn: failed to load schedules for tenant %q: %v", tn, err)
+			} else if n > 0 {
+				log.Printf("restored %d schedule(s) for tenant %q", n, tn)
+			}
+			if n, err := groupMgr.LoadFromStore(tn); err != nil {
+				log.Printf("warn: failed to load agent groups for tenant %q: %v", tn, err)
+			} else if n > 0 {
+				log.Printf("restored %d agent group(s) for tenant %q", n, tn)
+			}
+		}
+	}
 
 	corsCfg := parseCORSConfig(
 		strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS")),
@@ -1493,6 +1514,29 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
+		case http.MethodPatch:
+			// PATCH /agents?id=X — update capabilities, tags, addr, or status.
+			id := strings.TrimSpace(r.URL.Query().Get("id"))
+			if id == "" {
+				writeError(w, http.StatusBadRequest, "id is required")
+				return
+			}
+			var req agent.UpdateRequest
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid JSON body")
+				return
+			}
+			if req.Status != "" && !agent.IsValidStatus(req.Status) {
+				writeError(w, http.StatusBadRequest, "invalid status: must be healthy, degraded, or unknown")
+				return
+			}
+			if err := agentReg.Update(tenant, id, req); err != nil {
+				writeError(w, http.StatusNotFound, "agent not found")
+				return
+			}
+			a, _ := agentReg.Get(tenant, id)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(a)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -1764,7 +1808,12 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			writeError(w, http.StatusBadRequest, "status is required")
 			return
 		}
-		if err := agentReg.UpdateStatus(tenant, id, agent.Status(statusStr)); err != nil {
+		s := agent.Status(statusStr)
+		if !agent.IsValidStatus(s) {
+			writeError(w, http.StatusBadRequest, "invalid status: must be healthy, degraded, or unknown")
+			return
+		}
+		if err := agentReg.UpdateStatus(tenant, id, s); err != nil {
 			writeError(w, http.StatusNotFound, "agent not found")
 			return
 		}
@@ -1873,8 +1922,6 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			writeError(w, http.StatusInternalServerError, "failed to load tenant")
 			return
 		}
-		_ = tenant // used for future per-tenant claim scoping
-
 		path := strings.TrimPrefix(r.URL.Path, "/agents/jobs/")
 
 		// GET /agents/jobs/claim?agent_id=X&capability=Y
@@ -1889,7 +1936,7 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				writeError(w, http.StatusBadRequest, "agent_id or capability is required")
 				return
 			}
-			j, ok := jobQueue.Claim(agentID, capability)
+			j, ok := jobQueue.ClaimForTenant(tenant, agentID, capability)
 			if !ok {
 				writeError(w, http.StatusNoContent, "no pending job available")
 				return
@@ -1906,7 +1953,21 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 
 		switch r.Method {
+		case http.MethodGet:
+			j, ok := jobQueue.Get(id)
+			if !ok || j.Tenant != tenant {
+				writeError(w, http.StatusNotFound, "job not found")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(j)
+
 		case http.MethodPatch:
+			existing, ok := jobQueue.Get(id)
+			if !ok || existing.Tenant != tenant {
+				writeError(w, http.StatusNotFound, "job not found")
+				return
+			}
 			var req struct {
 				Status jobs.Status `json:"status"`
 				Result string      `json:"result,omitempty"`
@@ -1929,6 +1990,11 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			_ = json.NewEncoder(w).Encode(j)
 
 		case http.MethodDelete:
+			existing, ok := jobQueue.Get(id)
+			if !ok || existing.Tenant != tenant {
+				writeError(w, http.StatusNotFound, "job not found or already in terminal state")
+				return
+			}
 			if !jobQueue.Cancel(id) {
 				writeError(w, http.StatusNotFound, "job not found or already in terminal state")
 				return
@@ -2535,9 +2601,14 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 
 	// Notification rule endpoints — /admin/notifications
 	mux.HandleFunc("/admin/notifications", func(w http.ResponseWriter, r *http.Request) {
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
-			rules := notifyMgr.List()
+			rules := notifyMgr.List(tenant)
 			if rules == nil {
 				rules = []notify.Rule{}
 			}
@@ -2562,7 +2633,7 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				writeError(w, http.StatusBadRequest, "webhook_url is required")
 				return
 			}
-			rule := notifyMgr.Add(body.Name, body.WebhookURL, body.Secret, body.EventTypes)
+			rule := notifyMgr.Add(tenant, body.Name, body.WebhookURL, body.Secret, body.EventTypes)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(rule)
@@ -2572,6 +2643,11 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 	})
 
 	mux.HandleFunc("/admin/notifications/", func(w http.ResponseWriter, r *http.Request) {
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
 		id := strings.TrimPrefix(r.URL.Path, "/admin/notifications/")
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "missing rule id")
@@ -2579,7 +2655,7 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 		switch r.Method {
 		case http.MethodDelete:
-			if !notifyMgr.Delete(id) {
+			if !notifyMgr.Delete(tenant, id) {
 				writeError(w, http.StatusNotFound, "rule not found")
 				return
 			}
@@ -2660,9 +2736,14 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 
 	// GET/POST /agent-groups
 	mux.HandleFunc("/agent-groups", func(w http.ResponseWriter, r *http.Request) {
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
-			groups := groupMgr.List()
+			groups := groupMgr.List(tenant)
 			if groups == nil {
 				groups = []agentgroup.Group{}
 			}
@@ -2676,7 +2757,7 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				writeError(w, http.StatusBadRequest, "invalid body")
 				return
 			}
-			g, err := groupMgr.Create(body.Name)
+			g, err := groupMgr.Create(tenant, body.Name)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
@@ -2689,9 +2770,15 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 	})
 
-	// DELETE /agent-groups/{id}  POST /agent-groups/{id}/members  DELETE /agent-groups/{id}/members/{agentID}
+	// GET/DELETE /agent-groups/{id}
+	// POST /agent-groups/{id}/members   DELETE /agent-groups/{id}/members/{agentID}
 	// GET /agent-groups/{id}/next — round-robin next member
 	mux.HandleFunc("/agent-groups/", func(w http.ResponseWriter, r *http.Request) {
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
 		path := strings.TrimPrefix(r.URL.Path, "/agent-groups/")
 		parts := strings.SplitN(path, "/", 3)
 		groupID := parts[0]
@@ -2701,15 +2788,24 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 		// /agent-groups/{id}
 		if len(parts) == 1 {
-			if r.Method != http.MethodDelete {
+			switch r.Method {
+			case http.MethodGet:
+				g, ok := groupMgr.Get(tenant, groupID)
+				if !ok {
+					writeError(w, http.StatusNotFound, "group not found")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(g)
+			case http.MethodDelete:
+				if !groupMgr.Delete(tenant, groupID) {
+					writeError(w, http.StatusNotFound, "group not found")
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+			default:
 				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-				return
 			}
-			if !groupMgr.Delete(groupID) {
-				writeError(w, http.StatusNotFound, "group not found")
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		sub := parts[1]
@@ -2726,11 +2822,11 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				writeError(w, http.StatusBadRequest, "invalid body")
 				return
 			}
-			if err := groupMgr.AddMember(groupID, body.AgentID); err != nil {
+			if err := groupMgr.AddMember(tenant, groupID, body.AgentID); err != nil {
 				writeError(w, http.StatusNotFound, err.Error())
 				return
 			}
-			g, _ := groupMgr.Get(groupID)
+			g, _ := groupMgr.Get(tenant, groupID)
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(g)
 			return
@@ -2742,7 +2838,7 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 				return
 			}
-			if err := groupMgr.RemoveMember(groupID, agentID); err != nil {
+			if err := groupMgr.RemoveMember(tenant, groupID, agentID); err != nil {
 				writeError(w, http.StatusNotFound, err.Error())
 				return
 			}
@@ -2751,7 +2847,7 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 		// /agent-groups/{id}/next
 		if sub == "next" && r.Method == http.MethodGet {
-			agentID, ok := groupMgr.Next(groupID, func(id string) bool {
+			agentID, ok := groupMgr.Next(tenant, groupID, func(id string) bool {
 				return circuitMgr.Allow(id)
 			})
 			if !ok {

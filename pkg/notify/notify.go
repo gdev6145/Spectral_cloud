@@ -22,8 +22,9 @@ import (
 // Rule describes a single notification subscription.
 type Rule struct {
 	ID         string    `json:"id"`
+	Tenant     string    `json:"tenant"`
 	Name       string    `json:"name"`
-	EventTypes []string  `json:"event_types"` // empty = all events
+	EventTypes []string  `json:"event_types"` // empty = all event types for this tenant
 	WebhookURL string    `json:"webhook_url"`
 	Secret     string    `json:"secret,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
@@ -46,11 +47,12 @@ func New() *Manager {
 	}
 }
 
-// Add registers a new rule and returns it.
-func (m *Manager) Add(name, webhookURL, secret string, eventTypes []string) *Rule {
+// Add registers a new rule for a tenant and returns it.
+func (m *Manager) Add(tenant, name, webhookURL, secret string, eventTypes []string) *Rule {
 	id := fmt.Sprintf("rule-%d", atomic.AddUint64(&m.counter, 1))
 	r := &Rule{
 		ID:         id,
+		Tenant:     tenant,
 		Name:       name,
 		WebhookURL: webhookURL,
 		Secret:     secret,
@@ -64,23 +66,28 @@ func (m *Manager) Add(name, webhookURL, secret string, eventTypes []string) *Rul
 	return r
 }
 
-// Delete removes a rule by ID. Returns false if not found.
-func (m *Manager) Delete(id string) bool {
+// Delete removes a rule by ID for the given tenant. Returns false if not found or wrong tenant.
+func (m *Manager) Delete(tenant, id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	_, ok := m.rules[id]
-	if ok {
-		delete(m.rules, id)
+	r, ok := m.rules[id]
+	if !ok || r.Tenant != tenant {
+		return false
 	}
-	return ok
+	delete(m.rules, id)
+	return true
 }
 
-// List returns a snapshot of all rules, sorted by created time.
-func (m *Manager) List() []Rule {
+// List returns a snapshot of rules for the given tenant, sorted by created time.
+// Pass "" to list all rules across tenants.
+func (m *Manager) List(tenant string) []Rule {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make([]Rule, 0, len(m.rules))
 	for _, r := range m.rules {
+		if tenant != "" && r.Tenant != tenant {
+			continue
+		}
 		out = append(out, *r)
 	}
 	return out
@@ -128,6 +135,10 @@ func (m *Manager) dispatch(ev events.Event) {
 }
 
 func (m *Manager) matches(r *Rule, ev events.Event) bool {
+	// Tenant must match (empty rule tenant = global/admin rule that fires for all).
+	if r.Tenant != "" && r.Tenant != ev.TenantID {
+		return false
+	}
 	if len(r.EventTypes) == 0 {
 		return true
 	}

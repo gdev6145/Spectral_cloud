@@ -1,12 +1,24 @@
-// Package jobs provides an in-memory agent job queue.
+// Package jobs provides an agent job queue backed by optional BoltDB persistence.
 package jobs
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// Persister is the subset of store.Store methods that jobs needs.
+// Using an interface avoids a circular import.
+type Persister interface {
+	PutKV(tenant, key string, value []byte) error
+	DeleteKV(tenant, key string) error
+	ScanPrefix(tenant, prefix string, fn func(key, val []byte) error) error
+}
+
+const jobKeyPrefix = "job_"
 
 // Status values for a job.
 type Status string
@@ -36,15 +48,84 @@ type Job struct {
 	ExpiresAt  *time.Time     `json:"expires_at,omitempty"`
 }
 
-// Queue is a thread-safe in-memory job store.
+// Queue is a thread-safe job store with optional BoltDB persistence.
 type Queue struct {
 	mu      sync.RWMutex
 	jobs    map[string]*Job
 	counter uint64
+	store   Persister
 }
 
 func NewQueue() *Queue {
 	return &Queue{jobs: make(map[string]*Job)}
+}
+
+// NewQueueWithStore creates a Queue backed by the given Persister.
+// Call LoadFromStore after construction to restore jobs from a previous run.
+func NewQueueWithStore(p Persister) *Queue {
+	return &Queue{jobs: make(map[string]*Job), store: p}
+}
+
+// LoadFromStore reads all persisted jobs for a tenant and restores them into
+// memory. It also advances the counter past the highest seen job number so new
+// jobs don't collide with loaded ones. Returns the number of jobs loaded.
+func (q *Queue) LoadFromStore(tenant string) (int, error) {
+	if q.store == nil {
+		return 0, nil
+	}
+	var loaded []Job
+	if err := q.store.ScanPrefix(tenant, jobKeyPrefix, func(_, val []byte) error {
+		var j Job
+		if err := json.Unmarshal(val, &j); err != nil {
+			return nil // skip corrupted entries
+		}
+		loaded = append(loaded, j)
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for i := range loaded {
+		j := loaded[i]
+		q.jobs[j.ID] = &j
+		// Keep counter above any loaded ID to prevent collisions.
+		if n := parseJobNum(j.ID); n > q.counter {
+			q.counter = n
+		}
+	}
+	return len(loaded), nil
+}
+
+func parseJobNum(id string) uint64 {
+	// IDs are "job-N"; extract N.
+	if !strings.HasPrefix(id, "job-") {
+		return 0
+	}
+	var n uint64
+	fmt.Sscanf(id[4:], "%d", &n)
+	return n
+}
+
+// persist writes a single job to the store. Called with q.mu held (read or write).
+// Errors are silently dropped — persistence is best-effort.
+func (q *Queue) persist(j *Job) {
+	if q.store == nil {
+		return
+	}
+	data, err := json.Marshal(j)
+	if err != nil {
+		return
+	}
+	_ = q.store.PutKV(j.Tenant, jobKeyPrefix+j.ID, data)
+}
+
+// unpersist removes a job from the store.
+func (q *Queue) unpersist(j *Job) {
+	if q.store == nil {
+		return
+	}
+	_ = q.store.DeleteKV(j.Tenant, jobKeyPrefix+j.ID)
 }
 
 // SubmitOptions carries optional fields for job submission.
@@ -82,6 +163,7 @@ func (q *Queue) SubmitWithOpts(tenant, agentID, capability string, payload map[s
 	}
 	q.mu.Lock()
 	q.jobs[id] = j
+	q.persist(j)
 	q.mu.Unlock()
 	return j
 }
@@ -110,6 +192,7 @@ func (q *Queue) Update(id string, status Status, result, errMsg string) bool {
 	j.Result = result
 	j.Error = errMsg
 	j.UpdatedAt = time.Now().UTC()
+	q.persist(j)
 	return true
 }
 
@@ -153,6 +236,7 @@ func (q *Queue) Cancel(id string) bool {
 	}
 	j.Status = StatusCancelled
 	j.UpdatedAt = time.Now().UTC()
+	q.persist(j)
 	return true
 }
 
@@ -192,6 +276,47 @@ func (q *Queue) Claim(agentID, capability string) (Job, bool) {
 	}
 	best.Status = StatusRunning
 	best.UpdatedAt = time.Now().UTC()
+	q.persist(best)
+	return *best, true
+}
+
+// ClaimForTenant is like Claim but restricts candidates to the given tenant.
+func (q *Queue) ClaimForTenant(tenant, agentID, capability string) (Job, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	var best *Job
+	for _, j := range q.jobs {
+		if j.Status != StatusPending {
+			continue
+		}
+		if j.Tenant != tenant {
+			continue
+		}
+		var match bool
+		if agentID != "" {
+			match = j.AgentID == agentID
+		} else if capability != "" {
+			match = j.Capability == capability
+		}
+		if !match {
+			continue
+		}
+		if best == nil ||
+			j.Priority > best.Priority ||
+			(j.Priority == best.Priority && j.CreatedAt.Before(best.CreatedAt)) {
+			best = j
+		}
+	}
+	if best == nil {
+		return Job{}, false
+	}
+	if agentID != "" {
+		best.AgentID = agentID
+	}
+	best.Status = StatusRunning
+	best.UpdatedAt = time.Now().UTC()
+	q.persist(best)
 	return *best, true
 }
 
@@ -207,6 +332,7 @@ func (q *Queue) ExpireStale() int {
 			j.Status = StatusFailed
 			j.Error = "ttl expired"
 			j.UpdatedAt = now
+			q.persist(j)
 			n++
 		}
 	}
@@ -254,6 +380,7 @@ func (q *Queue) Prune(maxAge time.Duration) int {
 	n := 0
 	for id, j := range q.jobs {
 		if (j.Status == StatusDone || j.Status == StatusFailed || j.Status == StatusCancelled) && j.UpdatedAt.Before(cutoff) {
+			q.unpersist(j)
 			delete(q.jobs, id)
 			n++
 		}

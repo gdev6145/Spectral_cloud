@@ -160,6 +160,51 @@ func (r *Registry) UpdateStatus(tenantID, id string, status Status) error {
 	return nil
 }
 
+// IsValidStatus reports whether s is a recognized agent status value.
+func IsValidStatus(s Status) bool {
+	return s == StatusHealthy || s == StatusDegraded || s == StatusUnknown
+}
+
+// UpdateRequest carries fields that can be patched on a live agent.
+// Zero values are ignored: only non-empty fields are applied.
+type UpdateRequest struct {
+	Status       Status            `json:"status,omitempty"`
+	Tags         map[string]string `json:"tags,omitempty"`
+	Capabilities []string          `json:"capabilities,omitempty"`
+	Addr         string            `json:"addr,omitempty"`
+}
+
+// Update applies a partial update to a registered agent. Fields left at their
+// zero value are not changed. Returns an error if the agent is not found.
+func (r *Registry) Update(tenantID, id string, req UpdateRequest) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := agentKey(tenantID, id)
+	a, ok := r.agents[key]
+	if !ok {
+		return errors.New("agent not found")
+	}
+	now := time.Now().UTC()
+	if a.ExpiresAt != nil && now.After(*a.ExpiresAt) {
+		delete(r.agents, key)
+		return errors.New("agent not found")
+	}
+	if req.Status != "" {
+		a.Status = req.Status
+	}
+	if req.Addr != "" {
+		a.Addr = req.Addr
+	}
+	if req.Tags != nil {
+		a.Tags = req.Tags
+	}
+	if req.Capabilities != nil {
+		a.Capabilities = req.Capabilities
+	}
+	a.LastSeen = now
+	return nil
+}
+
 // Deregister removes an agent. Returns an error if not found.
 func (r *Registry) Deregister(tenantID, id string) error {
 	r.mu.Lock()

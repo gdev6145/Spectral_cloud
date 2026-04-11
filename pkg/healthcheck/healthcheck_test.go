@@ -23,7 +23,7 @@ func TestPingHealthy(t *testing.T) {
 	checker := New(reg, events.NewBroker(), time.Hour, 2*time.Second)
 	checker.runChecks()
 
-	r, ok := checker.ResultFor("a1")
+	r, ok := checker.ResultFor("t", "a1")
 	if !ok {
 		t.Fatal("result not found for a1")
 	}
@@ -47,7 +47,7 @@ func TestPingUnhealthy(t *testing.T) {
 	checker := New(reg, events.NewBroker(), time.Hour, 2*time.Second)
 	checker.runChecks()
 
-	r, ok := checker.ResultFor("a2")
+	r, ok := checker.ResultFor("t", "a2")
 	if !ok {
 		t.Fatal("result not found for a2")
 	}
@@ -66,7 +66,7 @@ func TestPingUnreachable(t *testing.T) {
 	checker := New(reg, events.NewBroker(), time.Hour, 200*time.Millisecond)
 	checker.runChecks()
 
-	r, ok := checker.ResultFor("a3")
+	r, ok := checker.ResultFor("t", "a3")
 	if !ok {
 		t.Fatal("result not found for a3")
 	}
@@ -85,7 +85,7 @@ func TestNoAddrSkipped(t *testing.T) {
 	checker := New(reg, events.NewBroker(), time.Hour, 2*time.Second)
 	checker.runChecks()
 
-	_, ok := checker.ResultFor("no-addr")
+	_, ok := checker.ResultFor("t", "no-addr")
 	if ok {
 		t.Error("agent without addr should not have a result")
 	}

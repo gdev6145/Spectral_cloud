@@ -2058,7 +2058,7 @@ async function renderGroups(rid) {
           ${groups.map(g=>`<tr>
             <td class="mono">${esc(g.id)}</td>
             <td><strong>${esc(g.name)}</strong></td>
-            <td class="mono">${(g.members||[]).join(', ')||'—'}</td>
+            <td class="mono">${(g.members||[]).map(m=>m.agent_id).join(', ')||'—'}</td>
             <td class="mono">${fmtTime(g.created_at)}</td>
             <td class="flex">
               <button class="btn btn-outline btn-sm" onclick="addGroupMember('${esc(g.id)}')">+ Member</button>
@@ -2086,7 +2086,10 @@ async function createGroup() {
   if (!name) { toast('Name required', false); return; }
   const members = document.getElementById('grp-members').value.split(',').map(s=>s.trim()).filter(Boolean);
   try {
-    await post('/agent-groups', {name, members});
+    const g = await post('/agent-groups', {name});
+    for (const agentId of members) {
+      await post('/agent-groups/'+encodeURIComponent(g.id)+'/members', {agent_id: agentId});
+    }
     toast('Group created'); renderGroups(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
 }
@@ -2120,15 +2123,15 @@ async function renderCircuit(rid) {
     ${breakers.length===0?'<div class="empty">No circuit breakers registered</div>':''}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Name</th><th>State</th><th>Failures</th><th>Last Failure</th><th>Reset At</th><th></th></tr></thead>
+        <thead><tr><th>Agent ID</th><th>State</th><th>Failures</th><th>Last Failure</th><th>Opened At</th><th></th></tr></thead>
         <tbody>
           ${breakers.map(b=>`<tr>
-            <td><strong>${esc(b.name)}</strong></td>
-            <td><span class="pill ${b.state==='closed'?'healthy':b.state==='half-open'?'degraded':'degraded'}">${esc(b.state||'unknown')}</span></td>
+            <td><strong>${esc(b.agent_id)}</strong></td>
+            <td><span class="pill ${b.state==='closed'?'healthy':b.state==='half_open'?'degraded':'degraded'}">${esc(b.state||'unknown')}</span></td>
             <td>${b.failures||0}</td>
             <td class="mono">${fmtTime(b.last_failure)}</td>
-            <td class="mono">${fmtTime(b.reset_at)}</td>
-            <td><button class="btn btn-outline btn-sm" onclick="resetBreaker('${esc(b.name)}')">↺ Reset</button></td>
+            <td class="mono">${fmtTime(b.opened_at)}</td>
+            <td><button class="btn btn-outline btn-sm" onclick="resetBreaker('${esc(b.agent_id)}')">↺ Reset</button></td>
           </tr>`).join('')||'<tr><td colspan="6" class="empty">No circuit breakers</td></tr>'}
         </tbody>
       </table>
@@ -2136,10 +2139,10 @@ async function renderCircuit(rid) {
   </div>`;
 }
 
-async function resetBreaker(name) {
+async function resetBreaker(agentId) {
   try {
-    await post('/circuit/reset', {name});
-    toast('Circuit breaker "'+name+'" reset'); renderCircuit(currentRenderId);
+    await post('/circuit/reset?agent_id='+encodeURIComponent(agentId), {});
+    toast('Circuit breaker "'+agentId+'" reset'); renderCircuit(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
 }
 

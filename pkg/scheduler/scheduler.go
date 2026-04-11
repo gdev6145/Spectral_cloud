@@ -1,16 +1,28 @@
 // Package scheduler runs recurring job submissions on a cron-like schedule.
-// Schedules are in-memory only; they do not survive restarts.
+// Schedules are persisted to BoltDB when a Persister is provided, and survive
+// restarts; without one they are in-memory only.
 package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/gdev6145/Spectral_cloud/pkg/jobs"
 )
+
+// Persister is the subset of store.Store methods that the scheduler needs.
+type Persister interface {
+	PutKV(tenant, key string, value []byte) error
+	DeleteKV(tenant, key string) error
+	ScanPrefix(tenant, prefix string, fn func(key, val []byte) error) error
+}
+
+const schedKeyPrefix = "sched_"
 
 // Schedule describes a recurring job submission.
 type Schedule struct {
@@ -29,10 +41,11 @@ type Schedule struct {
 
 // Manager runs schedule tickers and submits jobs.
 type Manager struct {
-	mu       sync.RWMutex
+	mu        sync.RWMutex
 	schedules map[string]*scheduleEntry
-	counter  uint64
-	queue    *jobs.Queue
+	counter   uint64
+	queue     *jobs.Queue
+	store     Persister
 }
 
 type scheduleEntry struct {
@@ -45,6 +58,80 @@ func New(queue *jobs.Queue) *Manager {
 		schedules: make(map[string]*scheduleEntry),
 		queue:     queue,
 	}
+}
+
+// NewWithStore creates a Manager that persists schedules via p.
+// Call LoadFromStore after construction to restore schedules from a previous run.
+func NewWithStore(queue *jobs.Queue, p Persister) *Manager {
+	return &Manager{
+		schedules: make(map[string]*scheduleEntry),
+		queue:     queue,
+		store:     p,
+	}
+}
+
+// LoadFromStore reads all persisted schedules for a tenant and re-arms them.
+// Returns the number of schedules loaded.
+func (m *Manager) LoadFromStore(ctx context.Context, tenant string) (int, error) {
+	if m.store == nil {
+		return 0, nil
+	}
+	var loaded []Schedule
+	if err := m.store.ScanPrefix(tenant, schedKeyPrefix, func(_, val []byte) error {
+		var s Schedule
+		if err := json.Unmarshal(val, &s); err != nil {
+			return nil // skip corrupted entries
+		}
+		loaded = append(loaded, s)
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+
+	m.mu.Lock()
+	for i := range loaded {
+		s := loaded[i]
+		if n := parseSchedNum(s.ID); n > m.counter {
+			m.counter = n
+		}
+		if !s.Active {
+			continue
+		}
+		schedCtx, cancel := context.WithCancel(ctx)
+		entry := &scheduleEntry{sched: &s, cancel: cancel}
+		m.schedules[s.ID] = entry
+		go m.run(schedCtx, entry)
+	}
+	n := len(loaded)
+	m.mu.Unlock()
+	return n, nil
+}
+
+func parseSchedNum(id string) uint64 {
+	if !strings.HasPrefix(id, "sched-") {
+		return 0
+	}
+	var n uint64
+	fmt.Sscanf(id[6:], "%d", &n)
+	return n
+}
+
+func (m *Manager) persist(s *Schedule) {
+	if m.store == nil {
+		return
+	}
+	data, err := json.Marshal(s)
+	if err != nil {
+		return
+	}
+	_ = m.store.PutKV(s.Tenant, schedKeyPrefix+s.ID, data)
+}
+
+func (m *Manager) unpersist(s *Schedule) {
+	if m.store == nil {
+		return
+	}
+	_ = m.store.DeleteKV(s.Tenant, schedKeyPrefix+s.ID)
 }
 
 // Add creates and starts a new schedule. Returns error on invalid input.
@@ -71,6 +158,7 @@ func (m *Manager) Add(name, tenant, agentID, capability string, payload map[stri
 	entry := &scheduleEntry{sched: s, cancel: cancel}
 	m.mu.Lock()
 	m.schedules[id] = entry
+	m.persist(s)
 	m.mu.Unlock()
 	go m.run(ctx, entry)
 	return s, nil
@@ -93,6 +181,7 @@ func (m *Manager) run(ctx context.Context, entry *scheduleEntry) {
 			if e, ok := m.schedules[s.ID]; ok {
 				e.sched.LastRun = &now
 				atomic.AddUint64(&e.sched.RunCount, 1)
+				m.persist(e.sched)
 			}
 			m.mu.Unlock()
 		}
@@ -108,6 +197,7 @@ func (m *Manager) Delete(id string) bool {
 		return false
 	}
 	entry.cancel()
+	m.unpersist(entry.sched)
 	delete(m.schedules, id)
 	return true
 }
