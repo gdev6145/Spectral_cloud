@@ -18,6 +18,16 @@ Optional:
 4. Add or update tests for new behavior.
 5. Ensure `go test ./...` is clean.
 
+## Copilot skills
+
+This repository includes project-level Copilot skills under `.github/skills/` for:
+
+- general Spectral Cloud development
+- mesh and protobuf changes
+- operations and debugging
+
+If you add or edit a skill during a live Copilot CLI session, run `/skills reload` so the CLI picks up the new definitions without restarting.
+
 ## Code Style
 - Prefer small, composable functions.
 - Avoid hidden side effects.
