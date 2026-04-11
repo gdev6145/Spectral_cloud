@@ -33,6 +33,13 @@ const (
 	EventGroupMemberAdded   EventType = "group.member_added"
 	EventGroupMemberUpdated EventType = "group.member_updated"
 	EventGroupMemberRemoved EventType = "group.member_removed"
+
+	EventPipelineCreated     EventType = "pipeline.created"
+	EventPipelineDeleted     EventType = "pipeline.deleted"
+	EventPipelineRunStarted  EventType = "pipeline.run_started"
+	EventPipelineRunAdvanced EventType = "pipeline.run_advanced"
+	EventPipelineRunDone     EventType = "pipeline.run_done"
+	EventPipelineRunFailed   EventType = "pipeline.run_failed"
 )
 
 // Event is the canonical event envelope published through the broker.

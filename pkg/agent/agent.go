@@ -276,6 +276,30 @@ func (r *Registry) ListByCapability(tenantID, capability string) []Agent {
 	return out
 }
 
+// ListBySelector returns all live agents for a tenant whose tags match every
+// key=value pair in selector. Pass "" for tenantID to search across all tenants.
+// An empty selector returns all live agents (equivalent to List).
+func (r *Registry) ListBySelector(tenantID string, selector map[string]string) []Agent {
+	all := r.List(tenantID)
+	if len(selector) == 0 {
+		return all
+	}
+	out := make([]Agent, 0)
+	for _, a := range all {
+		match := true
+		for k, v := range selector {
+			if a.Tags[k] != v {
+				match = false
+				break
+			}
+		}
+		if match {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 // Prune removes all expired agents and returns the count removed.
 func (r *Registry) Prune() int {
 	r.mu.Lock()

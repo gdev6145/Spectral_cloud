@@ -26,6 +26,7 @@ import (
 
 	"github.com/gdev6145/Spectral_cloud/pkg/agent"
 	"github.com/gdev6145/Spectral_cloud/pkg/agentgroup"
+	"github.com/gdev6145/Spectral_cloud/pkg/pipeline"
 	"github.com/gdev6145/Spectral_cloud/pkg/auth"
 	"github.com/gdev6145/Spectral_cloud/pkg/blockchain"
 	"github.com/gdev6145/Spectral_cloud/pkg/circuit"
@@ -34,6 +35,7 @@ import (
 	"github.com/gdev6145/Spectral_cloud/pkg/jobs"
 	"github.com/gdev6145/Spectral_cloud/pkg/kv"
 	"github.com/gdev6145/Spectral_cloud/pkg/ai"
+	"github.com/gdev6145/Spectral_cloud/pkg/billing"
 	"github.com/gdev6145/Spectral_cloud/pkg/mesh"
 	"github.com/gdev6145/Spectral_cloud/pkg/notify"
 	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
@@ -592,6 +594,17 @@ func main() {
 
 	groupMgr := agentgroup.NewWithStore(db)
 
+	pipelineMgr := pipeline.NewWithStore(db)
+
+	meter := billing.New(db)
+	go func() {
+		tick := time.NewTicker(30 * time.Second)
+		defer tick.Stop()
+		for range tick.C {
+			meter.Flush()
+		}
+	}()
+
 	sched := scheduler.NewWithStore(jobQueue, db)
 	defer sched.StopAll()
 
@@ -612,6 +625,11 @@ func main() {
 				log.Printf("warn: failed to load agent groups for tenant %q: %v", tn, err)
 			} else if n > 0 {
 				log.Printf("restored %d agent group(s) for tenant %q", n, tn)
+			}
+			if np, nr, err := pipelineMgr.LoadFromStore(tn); err != nil {
+				log.Printf("warn: failed to load pipelines for tenant %q: %v", tn, err)
+			} else if np > 0 || nr > 0 {
+				log.Printf("restored %d pipeline(s), %d run(s) for tenant %q", np, nr, tn)
 			}
 			if n, err := notifyMgr.LoadFromStore(tn); err != nil {
 				log.Printf("warn: failed to load notification rules for tenant %q: %v", tn, err)
@@ -692,7 +710,7 @@ func main() {
 		}
 	}()
 
-	handler := newHandler(tenantMgr, db, maxBodyBytes, requestsTotal, meshPackets, meshRejectRate, meshAnomaly, requestDuration, auth, rateRPS, rateBurst, tenantRateRPS, tenantRateBurst, limits, status, meshNode, anomalyState, agentReg, corsCfg, enableAccessLog, eventBroker, hookDispatcher, blockSigningKey, jobQueue, hcChecker, kvStore, notifyMgr, circuitMgr, groupMgr, sched)
+	handler := newHandler(tenantMgr, db, maxBodyBytes, requestsTotal, meshPackets, meshRejectRate, meshAnomaly, requestDuration, auth, rateRPS, rateBurst, tenantRateRPS, tenantRateBurst, limits, status, meshNode, anomalyState, agentReg, corsCfg, enableAccessLog, eventBroker, hookDispatcher, blockSigningKey, jobQueue, hcChecker, kvStore, notifyMgr, circuitMgr, groupMgr, sched, pipelineMgr, meter)
 
 	srv := &http.Server{
 		Addr:              ":" + port,
@@ -753,7 +771,7 @@ func main() {
 	}
 }
 
-func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, requestsTotal *prometheus.CounterVec, meshPackets *prometheus.CounterVec, meshRejectRate prometheus.Gauge, meshAnomaly *prometheus.GaugeVec, requestDuration *prometheus.HistogramVec, auth authConfig, rateRPS float64, rateBurst int, tenantRateRPS float64, tenantRateBurst int, limits tenantLimits, status *statusTracker, meshNode *mesh.Node, anomalyState *meshAnomalyState, agentReg *agent.Registry, corsCfg corsConfig, enableAccessLog bool, eventBroker *events.Broker, hookDispatcher *webhook.Dispatcher, blockSigningKey string, jobQueue *jobs.Queue, hcChecker *healthcheck.Checker, kvStore *kv.Store, notifyMgr *notify.Manager, circuitMgr *circuit.Manager, groupMgr *agentgroup.Manager, sched *scheduler.Manager) http.Handler {
+func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, requestsTotal *prometheus.CounterVec, meshPackets *prometheus.CounterVec, meshRejectRate prometheus.Gauge, meshAnomaly *prometheus.GaugeVec, requestDuration *prometheus.HistogramVec, auth authConfig, rateRPS float64, rateBurst int, tenantRateRPS float64, tenantRateBurst int, limits tenantLimits, status *statusTracker, meshNode *mesh.Node, anomalyState *meshAnomalyState, agentReg *agent.Registry, corsCfg corsConfig, enableAccessLog bool, eventBroker *events.Broker, hookDispatcher *webhook.Dispatcher, blockSigningKey string, jobQueue *jobs.Queue, hcChecker *healthcheck.Checker, kvStore *kv.Store, notifyMgr *notify.Manager, circuitMgr *circuit.Manager, groupMgr *agentgroup.Manager, sched *scheduler.Manager, pipelineMgr *pipeline.Manager, meter *billing.Meter) http.Handler {
 	mux := http.NewServeMux()
 	getState := func(r *http.Request) (*tenantState, string, error) {
 		tenant, ok := tenantFromContext(r.Context())
@@ -1995,10 +2013,15 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				return
 			}
 			capability := strings.TrimSpace(r.URL.Query().Get("capability"))
+			selectorStr := strings.TrimSpace(r.URL.Query().Get("selector"))
 			var agents []agent.Agent
-			if capability != "" {
+			switch {
+			case capability != "":
 				agents = agentReg.ListByCapability(tenant, capability)
-			} else {
+			case selectorStr != "":
+				sel := parseTagSelector(selectorStr)
+				agents = agentReg.ListBySelector(tenant, sel)
+			default:
 				agents = agentReg.List(tenant)
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -2402,6 +2425,7 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				Priority:   req.Priority,
 				TTLSeconds: req.TTLSeconds,
 			})
+			meter.Record(tenant, billing.MetricJobs, 1)
 			if eventBroker != nil {
 				eventBroker.Publish(events.Event{
 					Type:     events.EventJobCreated,
@@ -3649,6 +3673,290 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 
 	// ── Scheduler endpoints ───────────────────────────────────────────────────
 
+
+	// ── Pipeline endpoints ────────────────────────────────────────────────────
+
+	// GET  /agent-pipelines   — list pipelines
+	// POST /agent-pipelines   — create pipeline
+	mux.HandleFunc("/agent-pipelines", func(w http.ResponseWriter, r *http.Request) {
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			pipelines := pipelineMgr.ListPipelines(tenant)
+			if pipelines == nil {
+				pipelines = []pipeline.Pipeline{}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"pipelines": pipelines, "count": len(pipelines)})
+		case http.MethodPost:
+			var body struct {
+				Name   string           `json:"name"`
+				Stages []pipeline.Stage `json:"stages"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid body")
+				return
+			}
+			p, err := pipelineMgr.CreatePipeline(tenant, body.Name, body.Stages)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{
+					Type:     events.EventPipelineCreated,
+					TenantID: tenant,
+					Data:     p,
+				})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(p)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
+
+	// GET    /agent-pipelines/{id}                      — get pipeline
+	// PATCH  /agent-pipelines/{id}                      — update pipeline
+	// DELETE /agent-pipelines/{id}                      — delete pipeline
+	// GET    /agent-pipelines/{id}/runs                 — list runs
+	// POST   /agent-pipelines/{id}/runs                 — start a run
+	// GET    /agent-pipelines/{id}/runs/{runID}         — get run
+	// POST   /agent-pipelines/{id}/runs/{runID}/advance — advance to next stage
+	mux.HandleFunc("/agent-pipelines/", func(w http.ResponseWriter, r *http.Request) {
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		path := strings.TrimPrefix(r.URL.Path, "/agent-pipelines/")
+		parts := strings.SplitN(path, "/", 4)
+		pipelineID := parts[0]
+		if pipelineID == "" {
+			writeError(w, http.StatusBadRequest, "missing pipeline id")
+			return
+		}
+
+		// /agent-pipelines/{id}
+		if len(parts) == 1 {
+			switch r.Method {
+			case http.MethodGet:
+				p, ok := pipelineMgr.GetPipeline(tenant, pipelineID)
+				if !ok {
+					writeError(w, http.StatusNotFound, "pipeline not found")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(p)
+			case http.MethodPatch:
+				var body struct {
+					Name   *string          `json:"name"`
+					Stages []pipeline.Stage `json:"stages"`
+				}
+				if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
+					writeError(w, http.StatusBadRequest, "invalid body")
+					return
+				}
+				p, ok, err := pipelineMgr.UpdatePipeline(tenant, pipelineID, pipeline.UpdateParams{
+					Name:   body.Name,
+					Stages: body.Stages,
+				})
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+				if !ok {
+					writeError(w, http.StatusNotFound, "pipeline not found")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(p)
+			case http.MethodDelete:
+				if !pipelineMgr.DeletePipeline(tenant, pipelineID) {
+					writeError(w, http.StatusNotFound, "pipeline not found")
+					return
+				}
+				if eventBroker != nil {
+					eventBroker.Publish(events.Event{
+						Type:     events.EventPipelineDeleted,
+						TenantID: tenant,
+						Data:     map[string]string{"pipeline_id": pipelineID},
+					})
+				}
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
+			return
+		}
+
+		if parts[1] != "runs" {
+			writeError(w, http.StatusNotFound, "unknown sub-path")
+			return
+		}
+
+		// /agent-pipelines/{id}/runs
+		if len(parts) == 2 {
+			switch r.Method {
+			case http.MethodGet:
+				runs := pipelineMgr.ListRuns(tenant, pipelineID)
+				if runs == nil {
+					runs = []pipeline.Run{}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{"runs": runs, "count": len(runs)})
+			case http.MethodPost:
+				var body struct {
+					Input map[string]any `json:"input"`
+				}
+				if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
+					writeError(w, http.StatusBadRequest, "invalid body")
+					return
+				}
+				run, stage, err := pipelineMgr.StartRun(tenant, pipelineID, body.Input)
+				if err != nil {
+					if strings.Contains(err.Error(), "not found") {
+						writeError(w, http.StatusNotFound, err.Error())
+					} else {
+						writeError(w, http.StatusBadRequest, err.Error())
+					}
+					return
+				}
+				stagePayload := make(map[string]any)
+				for k, v := range stage.Payload {
+					stagePayload[k] = v
+				}
+				for k, v := range body.Input {
+					stagePayload[k] = v
+				}
+				agentID := stage.AgentID
+				if agentID == "" {
+					best, ok := agentReg.FindBest(tenant, stage.Capability)
+					if !ok {
+						writeError(w, http.StatusServiceUnavailable, "no healthy agent available for capability: "+stage.Capability)
+						return
+					}
+					agentID = best.ID
+				}
+				j := jobQueue.SubmitWithOpts(tenant, agentID, stage.Capability, stagePayload, jobs.SubmitOptions{})
+				run, _ = pipelineMgr.RecordStageJob(tenant, run.ID, j.ID)
+				if eventBroker != nil {
+					eventBroker.Publish(events.Event{
+						Type:     events.EventPipelineRunStarted,
+						TenantID: tenant,
+						Data: map[string]any{
+							"run_id":      run.ID,
+							"pipeline_id": pipelineID,
+							"stage":       0,
+							"job_id":      j.ID,
+						},
+					})
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(map[string]any{"run": run, "job": j})
+			default:
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
+			return
+		}
+
+		runID := parts[2]
+
+		// /agent-pipelines/{id}/runs/{runID}
+		if len(parts) == 3 {
+			if r.Method != http.MethodGet {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			run, ok := pipelineMgr.GetRun(tenant, runID)
+			if !ok {
+				writeError(w, http.StatusNotFound, "run not found")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(run)
+			return
+		}
+
+		// /agent-pipelines/{id}/runs/{runID}/advance
+		if parts[3] == "advance" && r.Method == http.MethodPost {
+			var body struct {
+				Result string `json:"result"`
+				Failed bool   `json:"failed"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid body")
+				return
+			}
+			run, nextStage, err := pipelineMgr.AdvanceRun(tenant, runID, body.Failed)
+			if err != nil {
+				if strings.Contains(err.Error(), "not found") {
+					writeError(w, http.StatusNotFound, err.Error())
+				} else {
+					writeError(w, http.StatusBadRequest, err.Error())
+				}
+				return
+			}
+			if nextStage == nil {
+				evType := events.EventPipelineRunDone
+				if run.Status == pipeline.RunStatusFailed {
+					evType = events.EventPipelineRunFailed
+				}
+				if eventBroker != nil {
+					eventBroker.Publish(events.Event{
+						Type:     evType,
+						TenantID: tenant,
+						Data:     map[string]any{"run_id": run.ID, "pipeline_id": pipelineID},
+					})
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{"run": run, "job": nil})
+				return
+			}
+			stagePayload := make(map[string]any)
+			for k, v := range nextStage.Payload {
+				stagePayload[k] = v
+			}
+			if body.Result != "" {
+				stagePayload["_prev_result"] = body.Result
+			}
+			agentID := nextStage.AgentID
+			if agentID == "" {
+				best, ok := agentReg.FindBest(tenant, nextStage.Capability)
+				if !ok {
+					writeError(w, http.StatusServiceUnavailable, "no healthy agent available for capability: "+nextStage.Capability)
+					return
+				}
+				agentID = best.ID
+			}
+			j := jobQueue.SubmitWithOpts(tenant, agentID, nextStage.Capability, stagePayload, jobs.SubmitOptions{})
+			run, _ = pipelineMgr.RecordStageJob(tenant, run.ID, j.ID)
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{
+					Type:     events.EventPipelineRunAdvanced,
+					TenantID: tenant,
+					Data: map[string]any{
+						"run_id":      run.ID,
+						"pipeline_id": pipelineID,
+						"stage":       run.CurrentStage,
+						"job_id":      j.ID,
+					},
+				})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"run": run, "job": j})
+			return
+		}
+
+		writeError(w, http.StatusNotFound, "unknown sub-path")
+	})
+
 	// GET/POST /schedules
 	mux.HandleFunc("/schedules", func(w http.ResponseWriter, r *http.Request) {
 		_, tenant, err := getState(r)
@@ -3860,6 +4168,287 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 	})
 
+	// ── SaaS: self-service signup ─────────────────────────────────────────────
+	// POST /auth/signup — create a new tenant + initial API key.
+	// Body: {"tenant_id":"acme","name":"Acme Corp","email":"ops@acme.com","plan":"free"}
+	// Returns: {"tenant_id","api_key","plan","quota"} — store the key, it is shown once.
+	mux.HandleFunc("/auth/signup", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req struct {
+			TenantID string        `json:"tenant_id"`
+			Name     string        `json:"name"`
+			Email    string        `json:"email"`
+			Plan     billing.Plan  `json:"plan"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		req.TenantID = strings.ToLower(strings.TrimSpace(req.TenantID))
+		if req.TenantID == "" {
+			writeError(w, http.StatusBadRequest, "tenant_id is required")
+			return
+		}
+		if strings.TrimSpace(req.Email) == "" {
+			writeError(w, http.StatusBadRequest, "email is required")
+			return
+		}
+		if req.Plan == "" {
+			req.Plan = billing.PlanFree
+		}
+		if req.Plan != billing.PlanFree && req.Plan != billing.PlanPro && req.Plan != billing.PlanEnterprise {
+			writeError(w, http.StatusBadRequest, "plan must be free, pro, or enterprise")
+			return
+		}
+		// Reject if profile already exists.
+		if _, exists := meter.GetProfile(req.TenantID); exists {
+			writeError(w, http.StatusConflict, "tenant already registered")
+			return
+		}
+		// Ensure BoltDB tenant bucket exists.
+		if err := db.EnsureTenant(req.TenantID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to provision tenant")
+			return
+		}
+		quota := billing.QuotaFor(req.Plan)
+		profile := billing.TenantProfile{
+			TenantID:  req.TenantID,
+			Name:      req.Name,
+			Email:     req.Email,
+			Plan:      req.Plan,
+			Quota:     quota,
+			CreatedAt: time.Now().UTC(),
+		}
+		if err := meter.SaveProfile(profile); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to save profile")
+			return
+		}
+		// Generate first API key.
+		sk, err := meter.GenerateKey(req.TenantID, "default")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to generate api key")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tenant_id": req.TenantID,
+			"api_key":   sk.Key, // shown once
+			"plan":      req.Plan,
+			"quota":     quota,
+		})
+	})
+
+	// ── SaaS: tenant self-service ─────────────────────────────────────────────
+	// GET  /tenant/me — view own profile, plan, and today's usage.
+	// PATCH /tenant/me — update name or email.
+	mux.HandleFunc("/tenant/me", func(w http.ResponseWriter, r *http.Request) {
+		_, tenant, err := getState(r)
+		if err != nil || tenant == "" {
+			writeError(w, http.StatusUnauthorized, "authenticated tenant required")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			profile, _ := meter.GetProfile(tenant)
+			if profile.TenantID == "" {
+				profile = billing.TenantProfile{TenantID: tenant, Plan: billing.PlanFree, Quota: billing.QuotaFor(billing.PlanFree)}
+			}
+			usage := meter.Usage(tenant)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"profile": profile,
+				"usage":   usage,
+				"agents":  agentReg.CountByTenant(tenant),
+			})
+		case http.MethodPatch:
+			var req struct {
+				Name  string `json:"name,omitempty"`
+				Email string `json:"email,omitempty"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+			profile, _ := meter.GetProfile(tenant)
+			if profile.TenantID == "" {
+				profile = billing.TenantProfile{TenantID: tenant, Plan: billing.PlanFree, Quota: billing.QuotaFor(billing.PlanFree), CreatedAt: time.Now().UTC()}
+			}
+			if req.Name != "" {
+				profile.Name = req.Name
+			}
+			if req.Email != "" {
+				profile.Email = req.Email
+			}
+			if err := meter.SaveProfile(profile); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to save profile")
+				return
+			}
+			_ = json.NewEncoder(w).Encode(profile)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
+
+	// ── SaaS: sub-key management ──────────────────────────────────────────────
+	// GET    /tenant/keys      — list sub-keys (secrets redacted).
+	// POST   /tenant/keys      — create a new sub-key. Body: {"name":"ci-pipeline"}
+	// DELETE /tenant/keys/{id} — revoke a sub-key.
+	mux.HandleFunc("/tenant/keys", func(w http.ResponseWriter, r *http.Request) {
+		_, tenant, err := getState(r)
+		if err != nil || tenant == "" {
+			writeError(w, http.StatusUnauthorized, "authenticated tenant required")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			keys, err := meter.ListKeys(tenant)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to list keys")
+				return
+			}
+			if keys == nil {
+				keys = []billing.SubKey{}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"count": len(keys), "keys": keys})
+		case http.MethodPost:
+			var req struct {
+				Name string `json:"name"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+			if strings.TrimSpace(req.Name) == "" {
+				req.Name = "key-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+			}
+			sk, err := meter.GenerateKey(tenant, req.Name)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to generate key")
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(sk) // full secret shown once
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
+
+	mux.HandleFunc("/tenant/keys/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, tenant, err := getState(r)
+		if err != nil || tenant == "" {
+			writeError(w, http.StatusUnauthorized, "authenticated tenant required")
+			return
+		}
+		keyID := strings.TrimPrefix(r.URL.Path, "/tenant/keys/")
+		if keyID == "" {
+			writeError(w, http.StatusBadRequest, "key id is required")
+			return
+		}
+		if err := meter.DeleteKey(tenant, keyID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to delete key")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// ── SaaS: usage / plan admin ──────────────────────────────────────────────
+	// GET /admin/usage — global usage report across all tenants (admin only).
+	// GET /admin/usage?tenant=X — usage for a specific tenant.
+	mux.HandleFunc("/admin/usage", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		tenantFilter := r.URL.Query().Get("tenant")
+		var tenants []string
+		if tenantFilter != "" {
+			tenants = []string{tenantFilter}
+		} else {
+			names, err := db.TenantNames()
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to list tenants")
+				return
+			}
+			tenants = names
+		}
+
+		type tenantReport struct {
+			TenantID string                   `json:"tenant_id"`
+			Plan     billing.Plan             `json:"plan"`
+			Quota    billing.Quota            `json:"quota"`
+			Usage    map[string]int64         `json:"usage_today"`
+			Agents   int                      `json:"agents_live"`
+		}
+		reports := make([]tenantReport, 0, len(tenants))
+		for _, t := range tenants {
+			profile, _ := meter.GetProfile(t)
+			if profile.TenantID == "" {
+				profile = billing.TenantProfile{TenantID: t, Plan: billing.PlanFree, Quota: billing.QuotaFor(billing.PlanFree)}
+			}
+			reports = append(reports, tenantReport{
+				TenantID: t,
+				Plan:     profile.Plan,
+				Quota:    profile.Quota,
+				Usage:    meter.Usage(t),
+				Agents:   agentReg.CountByTenant(t),
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"date":    time.Now().UTC().Format("2006-01-02"),
+			"tenants": reports,
+			"count":   len(reports),
+		})
+	})
+
+	// PATCH /admin/tenants/{id}/plan — upgrade/downgrade a tenant's plan (admin).
+	// Body: {"plan":"pro"}
+	mux.HandleFunc("/admin/tenants/", func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.TrimPrefix(r.URL.Path, "/admin/tenants/")
+		parts := strings.SplitN(rest, "/", 2)
+		if len(parts) != 2 || parts[1] != "plan" {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		if r.Method != http.MethodPatch {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		targetTenant := parts[0]
+		var req struct {
+			Plan billing.Plan `json:"plan"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if req.Plan != billing.PlanFree && req.Plan != billing.PlanPro && req.Plan != billing.PlanEnterprise {
+			writeError(w, http.StatusBadRequest, "plan must be free, pro, or enterprise")
+			return
+		}
+		profile, _ := meter.GetProfile(targetTenant)
+		if profile.TenantID == "" {
+			profile = billing.TenantProfile{TenantID: targetTenant, CreatedAt: time.Now().UTC()}
+		}
+		profile.Plan = req.Plan
+		profile.Quota = billing.QuotaFor(req.Plan)
+		if err := meter.SaveProfile(profile); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update plan")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(profile)
+	})
+
 	// ── AI inference ──────────────────────────────────────────────────────────
 	// POST /ai/infer         — run an inference request.
 	//   mode=direct (default): call Claude API synchronously; returns result inline.
@@ -3957,6 +4546,7 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 					writeError(w, http.StatusBadGateway, inferErr.Error())
 					return
 				}
+				meter.Record(tenant, billing.MetricAITokens, int64(result.InputTokens+result.OutputTokens))
 				_ = json.NewEncoder(w).Encode(result)
 
 			case "async":
@@ -5178,11 +5768,12 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 	if tenantRateRPS > 0 && tenantRateBurst > 0 {
 		tenantLimiter = newTenantLimiter(rate.Limit(tenantRateRPS), tenantRateBurst, 10*time.Minute)
 	}
-	handler := withAuth(mux, auth)
+	handler := withDynAuth(mux, meter, db, auth)
 	handler = withAudit(handler, db, auth.defaultTenant)
 	handler = withTenantRateLimit(handler, tenantLimiter, auth.defaultTenant)
 	handler = withRateLimit(handler, limiter)
 	handler = withMetrics(handler, requestsTotal)
+	handler = withBillingMetrics(handler, meter, auth.defaultTenant)
 	handler = withDuration(handler, requestDuration)
 	handler = withCORS(handler, corsCfg)
 	if enableAccessLog {
@@ -5225,6 +5816,20 @@ func withMetrics(next http.Handler, counter *prometheus.CounterVec) http.Handler
 	})
 }
 
+// withBillingMetrics records per-tenant API call counts for SaaS metering.
+func withBillingMetrics(next http.Handler, m *billing.Meter, defaultTenant string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+		tenant, ok := tenantFromContext(r.Context())
+		if !ok || tenant == "" {
+			tenant = defaultTenant
+		}
+		if tenant != "" {
+			m.Record(tenant, billing.MetricAPICalls, 1)
+		}
+	})
+}
+
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
@@ -5239,6 +5844,24 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// parseTagSelector parses a comma-separated "key=value" selector string into a
+// map. Malformed pairs (missing "=") are silently skipped.
+func parseTagSelector(s string) map[string]string {
+	sel := make(map[string]string)
+	for _, pair := range strings.Split(s, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
+		}
+		sel[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	return sel
 }
 
 func withRecover(next http.Handler) http.Handler {
@@ -5873,6 +6496,35 @@ func detectAnomaly(rejectRate float64, rejectedDelta, receivedDelta int64, rateT
 		}
 	}
 	return false, ""
+}
+
+// withDynAuth wraps withAuth with a dynamic sub-key resolver.
+// If the bearer token in the request matches a BoltDB-stored sub-key, the
+// tenant is injected into the context so the inner withAuth sees it as
+// pre-authenticated. Otherwise request falls through to normal auth.
+func withDynAuth(next http.Handler, m *billing.Meter, db *store.Store, auth authConfig) http.Handler {
+	inner := withAuth(next, auth)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Extract presented key.
+		key := strings.TrimSpace(r.Header.Get("X-API-Key"))
+		if key == "" {
+			key = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			key = strings.TrimSpace(key)
+		}
+		if key != "" && strings.HasPrefix(key, "sk-") {
+			// Look up across all tenants.
+			names, _ := db.TenantNames()
+			if sk, ok := m.GetKeyBySecret(names, key); ok {
+				go m.TouchKey(sk.TenantID, sk.ID)
+				ctx := withTenant(r.Context(), sk.TenantID)
+				ctx = withRequestAuth(ctx, requestAuth{access: "tenant", tenant: sk.TenantID})
+				r = r.WithContext(ctx)
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		inner.ServeHTTP(w, r)
+	})
 }
 
 func withAuth(next http.Handler, auth authConfig) http.Handler {
