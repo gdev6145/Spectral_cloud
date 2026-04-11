@@ -27,17 +27,17 @@ const schedKeyPrefix = "sched_"
 
 // Schedule describes a recurring job submission.
 type Schedule struct {
-	ID         string            `json:"id"`
-	Name       string            `json:"name"`
-	Tenant     string            `json:"tenant"`
-	AgentID    string            `json:"agent_id"`
-	Capability string            `json:"capability"`
-	Payload    map[string]any    `json:"payload,omitempty"`
-	Interval   time.Duration     `json:"interval_ns"` // stored as nanoseconds for JSON
-	Active     bool              `json:"active"`
-	CreatedAt  time.Time         `json:"created_at"`
-	LastRun    *time.Time        `json:"last_run,omitempty"`
-	RunCount   uint64            `json:"run_count"`
+	ID         string         `json:"id"`
+	Name       string         `json:"name"`
+	Tenant     string         `json:"tenant"`
+	AgentID    string         `json:"agent_id"`
+	Capability string         `json:"capability"`
+	Payload    map[string]any `json:"payload,omitempty"`
+	Interval   time.Duration  `json:"interval_ns"` // stored as nanoseconds for JSON
+	Active     bool           `json:"active"`
+	CreatedAt  time.Time      `json:"created_at"`
+	LastRun    *time.Time     `json:"last_run,omitempty"`
+	RunCount   uint64         `json:"run_count"`
 }
 
 // Manager runs schedule tickers and submits jobs.
@@ -52,6 +52,16 @@ type Manager struct {
 type scheduleEntry struct {
 	sched  *Schedule
 	cancel context.CancelFunc
+}
+
+// UpdateParams describes a partial schedule update.
+type UpdateParams struct {
+	Name       *string
+	AgentID    *string
+	Capability *string
+	Payload    *map[string]any
+	Interval   *time.Duration
+	Active     *bool
 }
 
 func New(queue *jobs.Queue) *Manager {
@@ -74,6 +84,7 @@ func NewWithStore(queue *jobs.Queue, p Persister) *Manager {
 // LoadFromStore reads all persisted schedules for a tenant and re-arms them.
 // Returns the number of schedules loaded.
 func (m *Manager) LoadFromStore(ctx context.Context, tenant string) (int, error) {
+	_ = ctx
 	if m.store == nil {
 		return 0, nil
 	}
@@ -96,13 +107,11 @@ func (m *Manager) LoadFromStore(ctx context.Context, tenant string) (int, error)
 		if n := parseSchedNum(s.ID); n > m.counter {
 			m.counter = n
 		}
-		if !s.Active {
-			continue
-		}
-		schedCtx, cancel := context.WithCancel(ctx)
-		entry := &scheduleEntry{sched: &s, cancel: cancel}
+		entry := &scheduleEntry{sched: &s}
 		m.schedules[s.ID] = entry
-		go m.run(schedCtx, entry)
+		if s.Active {
+			m.startLocked(entry)
+		}
 	}
 	n := len(loaded)
 	m.mu.Unlock()
@@ -156,19 +165,32 @@ func (m *Manager) Add(name, tenant, agentID, capability string, payload map[stri
 		Tenant:     tenant,
 		AgentID:    agentID,
 		Capability: capability,
-		Payload:    payload,
+		Payload:    clonePayload(payload),
 		Interval:   interval,
 		Active:     true,
 		CreatedAt:  time.Now().UTC(),
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	entry := &scheduleEntry{sched: s, cancel: cancel}
+	entry := &scheduleEntry{sched: s}
 	m.mu.Lock()
 	m.schedules[id] = entry
 	m.persist(s)
+	m.startLocked(entry)
 	m.mu.Unlock()
-	go m.run(ctx, entry)
 	return s, nil
+}
+
+func (m *Manager) startLocked(entry *scheduleEntry) {
+	ctx, cancel := context.WithCancel(context.Background())
+	entry.cancel = cancel
+	go m.run(ctx, entry)
+}
+
+func (m *Manager) stopLocked(entry *scheduleEntry) {
+	if entry.cancel == nil {
+		return
+	}
+	entry.cancel()
+	entry.cancel = nil
 }
 
 func (m *Manager) run(ctx context.Context, entry *scheduleEntry) {
@@ -181,7 +203,10 @@ func (m *Manager) run(ctx context.Context, entry *scheduleEntry) {
 			return
 		case t := <-ticker.C:
 			if m.queue != nil {
-				m.queue.Submit(s.Tenant, s.AgentID, s.Capability, s.Payload)
+				tenant, agentID, capability, payload, ok := m.snapshotSubmission(s.ID)
+				if ok {
+					m.queue.Submit(tenant, agentID, capability, payload)
+				}
 			}
 			now := t.UTC()
 			m.mu.Lock()
@@ -195,6 +220,84 @@ func (m *Manager) run(ctx context.Context, entry *scheduleEntry) {
 	}
 }
 
+// Update mutates an existing schedule and re-arms it when required.
+func (m *Manager) Update(id string, params UpdateParams) (Schedule, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	entry, ok := m.schedules[id]
+	if !ok {
+		return Schedule{}, false, nil
+	}
+	s := entry.sched
+	wasActive := s.Active
+	intervalChanged := false
+
+	if params.Name != nil {
+		if *params.Name == "" {
+			return Schedule{}, true, fmt.Errorf("name is required")
+		}
+		s.Name = *params.Name
+	}
+	if params.AgentID != nil {
+		s.AgentID = *params.AgentID
+	}
+	if params.Capability != nil {
+		s.Capability = *params.Capability
+	}
+	if params.Payload != nil {
+		s.Payload = clonePayload(*params.Payload)
+	}
+	if params.Interval != nil {
+		if *params.Interval < 50*time.Millisecond {
+			return Schedule{}, true, fmt.Errorf("interval must be at least 50ms")
+		}
+		if s.Interval != *params.Interval {
+			s.Interval = *params.Interval
+			intervalChanged = true
+		}
+	}
+	if params.Active != nil {
+		s.Active = *params.Active
+	}
+
+	switch {
+	case wasActive && !s.Active:
+		m.stopLocked(entry)
+	case !wasActive && s.Active:
+		m.startLocked(entry)
+	case wasActive && s.Active && intervalChanged:
+		m.stopLocked(entry)
+		m.startLocked(entry)
+	}
+
+	m.persist(s)
+	return *s, true, nil
+}
+
+func (m *Manager) snapshotSubmission(id string) (tenant, agentID, capability string, payload map[string]any, ok bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	entry, found := m.schedules[id]
+	if !found || entry.sched == nil || !entry.sched.Active {
+		return "", "", "", nil, false
+	}
+	s := entry.sched
+	return s.Tenant, s.AgentID, s.Capability, clonePayload(s.Payload), true
+}
+
+func clonePayload(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(payload))
+	for k, v := range payload {
+		cloned[k] = v
+	}
+	return cloned
+}
+
 // Delete stops and removes the schedule by ID. Returns false if not found.
 func (m *Manager) Delete(id string) bool {
 	m.mu.Lock()
@@ -203,7 +306,7 @@ func (m *Manager) Delete(id string) bool {
 	if !ok {
 		return false
 	}
-	entry.cancel()
+	m.stopLocked(entry)
 	m.unpersist(entry.sched)
 	delete(m.schedules, id)
 	return true
@@ -236,6 +339,6 @@ func (m *Manager) StopAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, e := range m.schedules {
-		e.cancel()
+		m.stopLocked(e)
 	}
 }
