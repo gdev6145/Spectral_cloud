@@ -15,26 +15,26 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
-	"runtime"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/gdev6145/Spectral_cloud/pkg/agent"
+	"github.com/gdev6145/Spectral_cloud/pkg/agentgroup"
 	"github.com/gdev6145/Spectral_cloud/pkg/auth"
 	"github.com/gdev6145/Spectral_cloud/pkg/blockchain"
+	"github.com/gdev6145/Spectral_cloud/pkg/circuit"
 	"github.com/gdev6145/Spectral_cloud/pkg/events"
 	"github.com/gdev6145/Spectral_cloud/pkg/healthcheck"
 	"github.com/gdev6145/Spectral_cloud/pkg/jobs"
-	"github.com/gdev6145/Spectral_cloud/pkg/agentgroup"
-	"github.com/gdev6145/Spectral_cloud/pkg/circuit"
 	"github.com/gdev6145/Spectral_cloud/pkg/kv"
 	"github.com/gdev6145/Spectral_cloud/pkg/mesh"
-	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
 	"github.com/gdev6145/Spectral_cloud/pkg/notify"
+	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
 	"github.com/gdev6145/Spectral_cloud/pkg/routing"
 	"github.com/gdev6145/Spectral_cloud/pkg/scheduler"
 	"github.com/gdev6145/Spectral_cloud/pkg/store"
@@ -1203,6 +1203,113 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 	})
 
+	mux.HandleFunc("/routes/", func(w http.ResponseWriter, r *http.Request) {
+		state, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		destination, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/routes/"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid route destination")
+			return
+		}
+		if destination == "" {
+			writeError(w, http.StatusBadRequest, "missing route destination")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			route, err := state.router.GetRoute(destination)
+			if err != nil {
+				writeError(w, http.StatusNotFound, "route not found")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(route)
+		case http.MethodPatch:
+			var body struct {
+				Latency    *int               `json:"latency"`
+				Throughput *int               `json:"throughput"`
+				TTLSeconds *int               `json:"ttl_seconds"`
+				Satellite  *bool              `json:"satellite"`
+				Tags       *map[string]string `json:"tags"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid body")
+				return
+			}
+			opts := routing.UpdateRouteOptions{
+				Satellite: body.Satellite,
+				Tags:      body.Tags,
+			}
+			if body.Latency != nil || body.Throughput != nil {
+				current, err := state.router.GetRoute(destination)
+				if err != nil {
+					writeError(w, http.StatusNotFound, "route not found")
+					return
+				}
+				metric := current.Metric
+				if body.Latency != nil {
+					metric.Latency = *body.Latency
+				}
+				if body.Throughput != nil {
+					metric.Throughput = *body.Throughput
+				}
+				opts.Metric = &metric
+			}
+			if body.TTLSeconds != nil {
+				if *body.TTLSeconds < 0 {
+					writeError(w, http.StatusBadRequest, "ttl_seconds must be non-negative")
+					return
+				}
+				ttl := time.Duration(*body.TTLSeconds) * time.Second
+				opts.TTL = &ttl
+			}
+			if err := state.router.UpdateRoute(destination, opts); err != nil {
+				if err.Error() == "route not found" {
+					writeError(w, http.StatusNotFound, "route not found")
+					return
+				}
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if err := db.SaveRoutesTenant(tenant, state.router); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to persist routes")
+				return
+			}
+			route, _ := state.router.GetRoute(destination)
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{
+					Type:     events.EventRouteUpdated,
+					TenantID: tenant,
+					Data:     map[string]any{"destination": destination},
+				})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(route)
+		case http.MethodDelete:
+			if err := state.router.DeleteRoute(destination); err != nil {
+				writeError(w, http.StatusNotFound, "route not found")
+				return
+			}
+			if err := db.SaveRoutesTenant(tenant, state.router); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to persist routes")
+				return
+			}
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{
+					Type:     events.EventRouteDeleted,
+					TenantID: tenant,
+					Data:     map[string]string{"destination": destination},
+				})
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
+
 	mux.HandleFunc("/routes/best", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -2190,13 +2297,13 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"total":           total,
-			"online":          online,
-			"satellite":       satellite,
-			"avg_latency_ms":  avgLat,
-			"min_latency_ms":  minLat,
-			"max_latency_ms":  maxLat,
-			"destinations":    dests,
+			"total":          total,
+			"online":         online,
+			"satellite":      satellite,
+			"avg_latency_ms": avgLat,
+			"min_latency_ms": minLat,
+			"max_latency_ms": maxLat,
+			"destinations":   dests,
 		})
 	})
 
@@ -2224,10 +2331,10 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"total":          len(agents),
-			"by_capability":  byCap,
-			"by_status":      byStatus,
-			"by_tenant":      byTenant,
+			"total":         len(agents),
+			"by_capability": byCap,
+			"by_status":     byStatus,
+			"by_tenant":     byTenant,
 		})
 	})
 
@@ -2517,10 +2624,10 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			Latency     int    `json:"latency_ms"`
 		}
 		type txResult struct {
-			BlockIndex int                    `json:"block_index"`
-			Sender     string                 `json:"sender"`
-			Recipient  string                 `json:"recipient"`
-			Amount     float64                `json:"amount"`
+			BlockIndex int     `json:"block_index"`
+			Sender     string  `json:"sender"`
+			Recipient  string  `json:"recipient"`
+			Amount     float64 `json:"amount"`
 		}
 
 		var agents []agentResult
@@ -2696,6 +2803,43 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			return
 		}
 		switch r.Method {
+		case http.MethodGet:
+			rule, ok := notifyMgr.Get(tenant, id)
+			if !ok {
+				writeError(w, http.StatusNotFound, "rule not found")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(rule)
+		case http.MethodPatch:
+			var body struct {
+				Name       *string   `json:"name"`
+				WebhookURL *string   `json:"webhook_url"`
+				Secret     *string   `json:"secret"`
+				EventTypes *[]string `json:"event_types"`
+				Active     *bool     `json:"active"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid body")
+				return
+			}
+			rule, ok, err := notifyMgr.Update(tenant, id, notify.UpdateParams{
+				Name:       body.Name,
+				WebhookURL: body.WebhookURL,
+				Secret:     body.Secret,
+				EventTypes: body.EventTypes,
+				Active:     body.Active,
+			})
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if !ok {
+				writeError(w, http.StatusNotFound, "rule not found")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(rule)
 		case http.MethodDelete:
 			if !notifyMgr.Delete(tenant, id) {
 				writeError(w, http.StatusNotFound, "rule not found")
@@ -2819,7 +2963,7 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 	})
 
-	// GET/DELETE /agent-groups/{id}
+	// GET/PATCH/DELETE /agent-groups/{id}
 	// POST /agent-groups/{id}/members   DELETE /agent-groups/{id}/members/{agentID}
 	// GET /agent-groups/{id}/next — round-robin next member
 	mux.HandleFunc("/agent-groups/", func(w http.ResponseWriter, r *http.Request) {
@@ -2843,6 +2987,32 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				if !ok {
 					writeError(w, http.StatusNotFound, "group not found")
 					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(g)
+			case http.MethodPatch:
+				var body struct {
+					Name *string `json:"name"`
+				}
+				if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
+					writeError(w, http.StatusBadRequest, "invalid body")
+					return
+				}
+				g, ok, err := groupMgr.Update(tenant, groupID, agentgroup.UpdateParams{Name: body.Name})
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+				if !ok {
+					writeError(w, http.StatusNotFound, "group not found")
+					return
+				}
+				if eventBroker != nil {
+					eventBroker.Publish(events.Event{
+						Type:     events.EventGroupUpdated,
+						TenantID: tenant,
+						Data:     g,
+					})
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(g)
@@ -2893,9 +3063,9 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 					Type:     events.EventGroupMemberAdded,
 					TenantID: tenant,
 					Data: map[string]any{
-						"group_id":  groupID,
-						"agent_id":  body.AgentID,
-						"members":   g.Members,
+						"group_id":   groupID,
+						"agent_id":   body.AgentID,
+						"members":    g.Members,
 						"group_name": g.Name,
 					},
 				})
@@ -3000,26 +3170,91 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 	})
 
-	// DELETE /schedules/{id}
+	// GET/PATCH/DELETE /schedules/{id}
 	mux.HandleFunc("/schedules/", func(w http.ResponseWriter, r *http.Request) {
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
 		id := strings.TrimPrefix(r.URL.Path, "/schedules/")
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "missing schedule id")
 			return
 		}
+		s, ok := sched.Get(id)
+		if !ok || (tenant != "" && s.Tenant != tenant) {
+			writeError(w, http.StatusNotFound, "schedule not found")
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
-			s, ok := sched.Get(id)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(s)
+		case http.MethodPatch:
+			var body struct {
+				Name        *string         `json:"name"`
+				AgentID     *string         `json:"agent_id"`
+				Capability  *string         `json:"capability"`
+				Payload     *map[string]any `json:"payload"`
+				IntervalSec *int            `json:"interval_seconds"`
+				Active      *bool           `json:"active"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid body")
+				return
+			}
+			params := scheduler.UpdateParams{
+				Name:       body.Name,
+				AgentID:    body.AgentID,
+				Capability: body.Capability,
+				Payload:    body.Payload,
+				Active:     body.Active,
+			}
+			if body.IntervalSec != nil {
+				if *body.IntervalSec <= 0 {
+					writeError(w, http.StatusBadRequest, "interval_seconds must be > 0")
+					return
+				}
+				interval := time.Duration(*body.IntervalSec) * time.Second
+				params.Interval = &interval
+			}
+			updated, ok, err := sched.Update(tenant, id, params)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 			if !ok {
 				writeError(w, http.StatusNotFound, "schedule not found")
 				return
 			}
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{
+					Type:      "schedule.updated",
+					TenantID:  tenant,
+					Timestamp: time.Now().UTC(),
+					Data: map[string]any{
+						"id":       updated.ID,
+						"name":     updated.Name,
+						"active":   updated.Active,
+						"interval": updated.Interval,
+					},
+				})
+			}
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(s)
+			_ = json.NewEncoder(w).Encode(updated)
 		case http.MethodDelete:
 			if !sched.Delete(id) {
 				writeError(w, http.StatusNotFound, "schedule not found")
 				return
+			}
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{
+					Type:      "schedule.deleted",
+					TenantID:  tenant,
+					Timestamp: time.Now().UTC(),
+					Data:      map[string]any{"id": s.ID, "name": s.Name},
+				})
 			}
 			w.WriteHeader(http.StatusNoContent)
 		default:

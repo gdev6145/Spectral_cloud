@@ -71,7 +71,7 @@ func TestUpdatePauseResume(t *testing.T) {
 
 	paused := false
 	updatedInterval := 100 * time.Millisecond
-	updated, ok, err := m.Update(s.ID, UpdateParams{
+	updated, ok, err := m.Update("t1", s.ID, UpdateParams{
 		Name:     strPtr("fast-paused"),
 		Payload:  &map[string]any{"mode": "fast"},
 		Interval: &updatedInterval,
@@ -93,7 +93,7 @@ func TestUpdatePauseResume(t *testing.T) {
 	}
 
 	resumed := true
-	updated, ok, err = m.Update(s.ID, UpdateParams{Active: &resumed})
+	updated, ok, err = m.Update("t1", s.ID, UpdateParams{Active: &resumed})
 	if err != nil {
 		t.Fatalf("resume schedule: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestUpdateActiveScheduleUsesLatestSubmissionFields(t *testing.T) {
 
 	time.Sleep(70 * time.Millisecond)
 
-	updated, ok, err := m.Update(s.ID, UpdateParams{
+	updated, ok, err := m.Update("t1", s.ID, UpdateParams{
 		AgentID:    strPtr("agent-2"),
 		Capability: strPtr("sync"),
 		Payload:    &map[string]any{"mode": "fast"},
@@ -236,7 +236,7 @@ func TestLoadFromStoreRestoresInactiveSchedule(t *testing.T) {
 		t.Fatalf("add schedule: %v", err)
 	}
 	paused := false
-	if _, ok, err := m1.Update(sched.ID, UpdateParams{Active: &paused}); err != nil {
+	if _, ok, err := m1.Update("t1", sched.ID, UpdateParams{Active: &paused}); err != nil {
 		t.Fatalf("pause schedule: %v", err)
 	} else if !ok {
 		t.Fatal("expected paused schedule to exist")
@@ -288,6 +288,32 @@ func TestDeleteRemovesPersistedSchedule(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("expected 0 restored schedules after delete, got %d", n)
+	}
+}
+
+func TestUpdateRejectsCrossTenantSchedule(t *testing.T) {
+	q := jobs.NewQueue()
+	m := New(q)
+	s, err := m.Add("fast", "tenant-a", "agent-1", "sync", nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m.StopAll)
+
+	updated, ok, err := m.Update("tenant-b", s.ID, UpdateParams{Name: strPtr("blocked")})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected cross-tenant update to be rejected, got %+v", updated)
+	}
+
+	snap, ok := m.Get(s.ID)
+	if !ok {
+		t.Fatal("expected original schedule to remain")
+	}
+	if snap.Name != "fast" {
+		t.Fatalf("expected schedule to stay unchanged, got %+v", snap)
 	}
 }
 

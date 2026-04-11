@@ -220,8 +220,8 @@ func (m *Manager) run(ctx context.Context, entry *scheduleEntry) {
 	}
 }
 
-// Update mutates an existing schedule and re-arms it when required.
-func (m *Manager) Update(id string, params UpdateParams) (Schedule, bool, error) {
+// Update mutates an existing tenant-owned schedule and re-arms it when required.
+func (m *Manager) Update(tenant, id string, params UpdateParams) (Schedule, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -230,6 +230,9 @@ func (m *Manager) Update(id string, params UpdateParams) (Schedule, bool, error)
 		return Schedule{}, false, nil
 	}
 	s := entry.sched
+	if tenant != "" && s.Tenant != tenant {
+		return Schedule{}, false, nil
+	}
 	wasActive := s.Active
 	intervalChanged := false
 
