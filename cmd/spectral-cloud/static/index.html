@@ -894,8 +894,8 @@ async function renderRoutes(rid) {
   document.getElementById('content').innerHTML = `<div class="section"><div class="table-wrap"><table><thead><tr><th>Destination</th><th>Latency</th><th>Throughput</th><th>Tags</th><th>Expires</th><th></th></tr></thead><tbody>${skeletonRows(6)}</tbody></table></div></div>`;
   const [routesRes, statsRes] = await Promise.allSettled([api('/routes'), api('/routes/stats').catch(()=>null)]);
   if (rid && rid !== currentRenderId) return;
-  const routes = routesRes[0].value || [];
-  const routeStats = statsRes[1]?.value || null;
+  const routes = (routesRes.status === 'fulfilled' ? routesRes.value : null) || [];
+  const routeStats = (statsRes.status === 'fulfilled' ? statsRes.value : null) || null;
 
   const statsCards = routeStats ? `<div class="cards" style="margin-bottom:16px">
     <div class="card accent"><div class="card-label">Total Routes</div><div class="card-value">${routeStats.total}</div></div>
@@ -1040,8 +1040,8 @@ async function renderAgents(rid) {
   document.getElementById('content').innerHTML = `<div class="section"><div class="table-wrap"><table><thead><tr><th>ID</th><th>Status</th><th>Address</th><th>Capabilities</th><th>Expires</th><th>Actions</th></tr></thead><tbody>${skeletonRows(6)}</tbody></table></div></div>`;
   const [agentsRes, statsRes] = await Promise.allSettled([api('/agents'), api('/agents/stats').catch(()=>null)]);
   if (rid && rid !== currentRenderId) return;
-  const agentsAll = agentsRes[0].value || [];
-  const agentStats = statsRes[1] && statsRes[1].value ? statsRes[1].value : null;
+  const agentsAll = (agentsRes.status === 'fulfilled' ? agentsRes.value : null) || [];
+  const agentStats = (statsRes.status === 'fulfilled' ? statsRes.value : null) || null;
   const agents = agentCapFilter ? agentsAll.filter(a => (a.capabilities||[]).includes(agentCapFilter)) : agentsAll;
   const allCaps = [...new Set(agentsAll.flatMap(a => a.capabilities||[]))].sort();
 
@@ -1242,7 +1242,7 @@ async function heartbeat(id) {
 
 async function deregisterAgent(id) {
   if (!confirm('Deregister '+id+'?')) return;
-  try { await del('/agents?id=${encodeURIComponent(id)}'); toast('Agent removed'); renderAgents(currentRenderId); }
+  try { await del(`/agents?id=${encodeURIComponent(id)}`); toast('Agent removed'); renderAgents(currentRenderId); }
   catch(e) { toast('Error: '+e.message, false); }
 }
 
