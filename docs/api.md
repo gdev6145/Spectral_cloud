@@ -99,6 +99,27 @@ Example request:
 `DELETE /agents/jobs/{id}`
 Cancels a job if it belongs to the resolved tenant and is not already terminal.
 
+## Schedules
+
+`GET /schedules`
+Lists schedules for the resolved tenant.
+
+`POST /schedules`
+Creates a recurring interval-based schedule for the resolved tenant. `interval_seconds` must be greater than zero.
+
+Example request:
+```json
+{"name":"hourly-sync","capability":"sync","agent_id":"worker-1","payload":{"mode":"full"},"interval_seconds":3600}
+```
+
+The schedule response includes the stored interval as `interval_ns`, the `active` flag, `last_run`, and `run_count`.
+
+`GET /schedules/{id}`
+Fetches a single schedule by ID.
+
+`DELETE /schedules/{id}`
+Deletes a schedule.
+
 ## Agent Groups
 
 `GET /agent-groups`

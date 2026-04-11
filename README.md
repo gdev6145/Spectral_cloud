@@ -31,6 +31,8 @@ Quick links:
 - `GET/POST /agents/jobs` -> list jobs or submit work for the resolved tenant
 - `GET/PATCH/DELETE /agents/jobs/{id}` -> inspect, update, or cancel a single tenant-scoped job
 - `GET /agents/jobs/claim?agent_id=X&capability=Y` -> claim the next pending tenant job
+- `GET/POST /schedules` -> list or create interval-based scheduled jobs
+- `GET/DELETE /schedules/{id}` -> inspect or delete a schedule
 - `GET/POST /agent-groups` -> list or create tenant-scoped agent groups
 - `GET /agent-groups/{id}` -> fetch a tenant-scoped agent group
 - `GET /agent-groups/{id}/next` -> select the next available group member

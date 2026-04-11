@@ -1962,7 +1962,7 @@ function fmt_bytes(b) {
 
 // ── SCHEDULES ──────────────────────────────────────────────────────────────────
 async function renderSchedules(rid) {
-  document.getElementById('content').innerHTML = `<div class="section"><div class="table-wrap"><table><thead><tr><th>Name</th><th>Cron</th><th>Capability</th><th>Agent</th><th>Enabled</th><th>Last Run</th><th>Next Run</th><th></th></tr></thead><tbody>${skeletonRows(8)}</tbody></table></div></div>`;
+  document.getElementById('content').innerHTML = `<div class="section"><div class="table-wrap"><table><thead><tr><th>Name</th><th>Every</th><th>Capability</th><th>Agent</th><th>Status</th><th>Last Run</th><th>Runs</th><th></th></tr></thead><tbody>${skeletonRows(8)}</tbody></table></div></div>`;
   const res = await api('/schedules').catch(() => ({schedules:[]}));
   if (rid && rid !== currentRenderId) return;
   const schedules = (res && res.schedules) ? res.schedules : (Array.isArray(res) ? res : []);
@@ -1974,18 +1974,17 @@ async function renderSchedules(rid) {
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Name</th><th>Cron</th><th>Capability</th><th>Agent</th><th>Enabled</th><th>Last Run</th><th>Next Run</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Every</th><th>Capability</th><th>Agent</th><th>Status</th><th>Last Run</th><th>Runs</th><th></th></tr></thead>
         <tbody>
           ${schedules.map(s=>`<tr>
             <td><strong>${esc(s.name)}</strong></td>
-            <td class="mono">${esc(s.cron)}</td>
+            <td class="mono">${esc(Math.round((Number(s.interval_ns)||0) / 1e9))}s</td>
             <td>${esc(s.capability||'—')}</td>
             <td class="mono">${esc(s.agent_id||'—')}</td>
-            <td><span class="pill ${s.enabled?'healthy':'unknown'}">${s.enabled?'enabled':'disabled'}</span></td>
+            <td><span class="pill ${s.active?'healthy':'unknown'}">${s.active?'active':'stopped'}</span></td>
             <td class="mono">${fmtTime(s.last_run)}</td>
-            <td class="mono">${fmtTime(s.next_run)}</td>
+            <td class="mono">${esc(String(s.run_count||0))}</td>
             <td class="flex">
-              <button class="btn btn-outline btn-sm" onclick="toggleSchedule('${esc(s.id)}',${!s.enabled})">${s.enabled?'Disable':'Enable'}</button>
               <button class="btn btn-danger btn-sm" onclick="deleteSchedule('${esc(s.id)}')">✕</button>
             </td>
           </tr>`).join('')||'<tr><td colspan="8" class="empty">No schedules</td></tr>'}
@@ -1998,10 +1997,9 @@ async function renderSchedules(rid) {
     <div class="card">
       <div class="form-row">
         <div class="form-group"><label>Name</label><input id="sch-name" placeholder="daily-inference"></div>
-        <div class="form-group"><label>Cron</label><input id="sch-cron" placeholder="0 * * * *" style="width:130px"></div>
+        <div class="form-group"><label>Interval (seconds)</label><input id="sch-interval" type="number" min="1" value="60" style="width:130px"></div>
         <div class="form-group"><label>Capability</label><input id="sch-cap" placeholder="inference"></div>
         <div class="form-group"><label>Agent ID (opt)</label><input id="sch-agent" placeholder="edge-01"></div>
-        <div class="form-group"><label>Enabled</label><select id="sch-enabled" style="width:90px"><option value="true">Yes</option><option value="false">No</option></select></div>
       </div>
       <div class="form-group" style="margin-bottom:8px"><label>Payload (JSON)</label><textarea id="sch-payload" placeholder='{"prompt":"hello"}'></textarea></div>
       <button class="btn btn-primary" onclick="createSchedule()">Create Schedule</button>
@@ -2011,26 +2009,19 @@ async function renderSchedules(rid) {
 
 async function createSchedule() {
   const name = document.getElementById('sch-name').value.trim();
-  const cron = document.getElementById('sch-cron').value.trim();
-  if (!name || !cron) { toast('Name and cron required', false); return; }
+  const intervalSeconds = Number(document.getElementById('sch-interval').value || '0');
+  if (!name || !Number.isFinite(intervalSeconds) || intervalSeconds <= 0) { toast('Name and interval required', false); return; }
   let payload = {};
   try { payload = JSON.parse(document.getElementById('sch-payload').value || '{}'); } catch { toast('Invalid JSON payload', false); return; }
   try {
     await post('/schedules', {
-      name, cron,
+      name,
+      interval_seconds: Math.round(intervalSeconds),
       capability: document.getElementById('sch-cap').value.trim(),
       agent_id: document.getElementById('sch-agent').value.trim(),
-      payload,
-      enabled: document.getElementById('sch-enabled').value === 'true'
+      payload
     });
     toast('Schedule created'); renderSchedules(currentRenderId);
-  } catch(e) { toast('Error: '+e.message, false); }
-}
-
-async function toggleSchedule(id, enabled) {
-  try {
-    await api('/schedules/'+encodeURIComponent(id), {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled})});
-    toast('Schedule '+(enabled?'enabled':'disabled')); renderSchedules(currentRenderId);
   } catch(e) { toast('Error: '+e.message, false); }
 }
 

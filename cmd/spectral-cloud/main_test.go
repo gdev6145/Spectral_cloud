@@ -2621,6 +2621,52 @@ func TestSchedulerEndpoints(t *testing.T) {
 	}
 }
 
+func TestScheduleExecutionCreatesJobs(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_sched_exec_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/schedules", "application/json", bytes.NewBufferString(
+		`{"name":"fast-sync","agent_id":"worker-1","capability":"sync","interval_seconds":1}`,
+	))
+	if err != nil {
+		t.Fatalf("create schedule: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	deadline := time.Now().Add(2500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		listResp, err := http.Get(srv.URL + "/agents/jobs")
+		if err != nil {
+			t.Fatalf("list jobs: %v", err)
+		}
+		var list struct {
+			Count int `json:"count"`
+		}
+		if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
+			listResp.Body.Close()
+			t.Fatalf("decode job list: %v", err)
+		}
+		listResp.Body.Close()
+		if list.Count > 0 {
+			return
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+
+	t.Fatal("expected schedule to enqueue at least one job")
+}
+
 func TestBlockchainHeightEndpoint(t *testing.T) {
 counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_bc_height_total", Help: "test"}, []string{"path", "method", "code"})
 tmp := t.TempDir()
