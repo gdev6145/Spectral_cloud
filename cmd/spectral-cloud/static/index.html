@@ -45,6 +45,10 @@ main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 .topbar h2 { font-size: 15px; font-weight: 600; }
 .topbar-right { display: flex; align-items: center; gap: 12px; }
 .badge { font-size: 11px; padding: 2px 8px; border-radius: 20px; background: rgba(108,99,255,.15); color: var(--accent); }
+.badge.ok { background: rgba(0,212,170,.15); color: var(--accent2); }
+.badge.warn { background: rgba(245,166,35,.15); color: var(--warn); }
+.badge.err { background: rgba(224,82,82,.15); color: var(--danger); }
+.badge.muted { background: rgba(100,116,139,.15); color: var(--muted); }
 .content { flex: 1; overflow-y: auto; padding: 20px; }
 
 /* CARDS */
@@ -302,6 +306,7 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
     <h2 id="page-title">Overview</h2>
     <div class="topbar-right">
       <span class="badge" id="tenant-badge">default</span>
+      <span class="badge muted" id="access-badge">checking…</span>
       <button class="btn btn-outline btn-sm" onclick="refresh()">↻ Refresh</button>
     </div>
   </div>
@@ -361,6 +366,7 @@ let currentPage = 'overview';
 let sseSource = null;
 let autoRefreshTimer = null;
 let currentRenderId = 0;
+let sessionIdentity = null;
 
 // ── theme ────────────────────────────────────────────────────────────────────
 (function() {
@@ -429,6 +435,82 @@ function go(page) {
 }
 
 let apiKey = localStorage.getItem('spectral_api_key') || '';
+
+function normalizeIdentity(identity) {
+  const base = identity && typeof identity === 'object' ? identity : {};
+  const access = base.access || (base.authenticated ? 'authenticated' : 'anonymous');
+  return {
+    authenticated: !!base.authenticated,
+    access,
+    tenant: base.tenant || '',
+    error: base.error || ''
+  };
+}
+
+function identityBadgeTone(identity) {
+  if (!identity) return 'muted';
+  if (identity.error || identity.access === 'unauthorized' || identity.access === 'error') return 'err';
+  if (identity.authenticated) return 'ok';
+  if (identity.access === 'anonymous') return 'muted';
+  return 'warn';
+}
+
+function identityLabel(identity) {
+  if (!identity) return 'checking…';
+  if (identity.access === 'error') return 'identity error';
+  return identity.access || 'unknown';
+}
+
+function identityStatusText(identity) {
+  if (!identity) return 'Checking session…';
+  if (identity.error && identity.access === 'unauthorized') return 'Credential rejected';
+  if (identity.error) return identity.error;
+  if (identity.authenticated) return 'Authenticated';
+  if (identity.access === 'anonymous') return 'Anonymous';
+  return 'Unauthenticated';
+}
+
+function applySessionIdentity(identity) {
+  const who = normalizeIdentity(identity);
+  sessionIdentity = who;
+  const tenantBadge = document.getElementById('tenant-badge');
+  if (tenantBadge) {
+    tenantBadge.textContent = who.tenant || 'unknown';
+    tenantBadge.className = 'badge ' + (who.tenant ? '' : 'muted');
+    tenantBadge.title = who.tenant ? `Resolved tenant: ${who.tenant}` : (who.error || 'Tenant not resolved');
+  }
+  const accessBadge = document.getElementById('access-badge');
+  if (accessBadge) {
+    accessBadge.textContent = identityLabel(who);
+    accessBadge.className = 'badge ' + identityBadgeTone(who);
+    accessBadge.title = who.error || (who.authenticated ? 'Authenticated session' : 'Unauthenticated session');
+  }
+  return who;
+}
+
+async function updateSessionIdentity() {
+  const headers = {};
+  if (apiKey) headers['X-API-Key'] = apiKey;
+  try {
+    const resp = await fetch(API + '/auth/whoami', {headers});
+    let body = null;
+    try { body = await resp.json(); } catch (_) { body = null; }
+    if (resp.ok) return applySessionIdentity(body || {});
+    return applySessionIdentity({
+      authenticated: false,
+      access: resp.status === 401 ? 'unauthorized' : 'error',
+      tenant: body && body.tenant ? body.tenant : '',
+      error: body && body.error ? body.error : resp.statusText
+    });
+  } catch (e) {
+    return applySessionIdentity({
+      authenticated: false,
+      access: 'error',
+      tenant: '',
+      error: e && e.message ? e.message : 'session check failed'
+    });
+  }
+}
 
 // ── API helpers ──────────────────────────────────────────────────────────────
 async function api(path, opts={}) {
@@ -585,9 +667,10 @@ function emptyState(icon, title, msg, btnLabel, btnAction) {
 // ── page renderers ────────────────────────────────────────────────────────────
 
 async function render(page, rid) {
+  const identityPromise = updateSessionIdentity();
   try {
     switch(page) {
-      case 'overview':   await renderOverview(rid); break;
+      case 'overview':   await renderOverview(rid, identityPromise); break;
       case 'blockchain': await renderBlockchain(rid); break;
       case 'routes':     await renderRoutes(rid); break;
       case 'agents':     await renderAgents(rid); break;
@@ -599,7 +682,7 @@ async function render(page, rid) {
       case 'groups':     await renderGroups(rid); break;
       case 'circuit':    await renderCircuit(rid); break;
       case 'audit':      await renderAudit(rid); break;
-      case 'admin':      await renderAdmin(rid); break;
+      case 'admin':      await renderAdmin(rid, identityPromise); break;
       case 'notifs':     await renderNotifs(rid); break;
       case 'mesh':       await renderMesh(rid); break;
       case 'stats':      await renderStats(rid); break;
@@ -613,12 +696,12 @@ async function render(page, rid) {
 }
 
 // ── OVERVIEW ─────────────────────────────────────────────────────────────────
-async function renderOverview(rid) {
-  const [health, status, height, routesList, agentsList, histRes, metricsRes, bestRouteRes, meshPeersRes, tsRes] = await Promise.allSettled([
+async function renderOverview(rid, identityPromise) {
+  const [health, status, height, routesList, agentsList, histRes, metricsRes, bestRouteRes, meshPeersRes, tsRes, whoamiRes] = await Promise.allSettled([
     api('/health'), api('/admin/status'), api('/blockchain/height'),
     api('/routes'), api('/agents'), api('/events/history?limit=8'), api('/metrics/json'),
     api('/routes/best').catch(() => null), api('/mesh/peers').catch(() => ({peers:[]})),
-    api('/metrics/timeseries?n=30').catch(() => [])
+    api('/metrics/timeseries?n=30').catch(() => []), identityPromise || updateSessionIdentity()
   ]);
   if (rid && rid !== currentRenderId) return;
   const h = health.value||{};
@@ -630,6 +713,7 @@ async function renderOverview(rid) {
   const metrics = metricsRes.value||{tenants:[], jobs:0};
   const meshPeers = ((meshPeersRes.value||{}).peers) || [];
   const tsData = Array.isArray(tsRes.value) ? tsRes.value : [];
+  const who = whoamiRes.status === 'fulfilled' ? whoamiRes.value : (sessionIdentity || normalizeIdentity(null));
   const blockCount = h.blocks != null ? h.blocks : (ht.height != null ? ht.height : null);
   if (blockCount !== null && blockCount !== undefined && !isNaN(Number(blockCount))) {
     blockHistory.push(Number(blockCount));
@@ -650,6 +734,23 @@ async function renderOverview(rid) {
     ? `<div class="chart-wrap"><div class="chart-title">System Metrics Over Time</div>${lineChart(tsData, ['blocks','routes','agents','peers'], ['var(--accent)','var(--accent2)','#a78bfa','#fb923c'], 560, 160)}<div class="chart-legend"><span class="legend-item"><span class="legend-dot" style="background:var(--accent)"></span>Blocks</span><span class="legend-item"><span class="legend-dot" style="background:var(--accent2)"></span>Routes</span><span class="legend-item"><span class="legend-dot" style="background:#a78bfa"></span>Agents</span><span class="legend-item"><span class="legend-dot" style="background:#fb923c"></span>Peers</span></div></div>`
     : '';
 
+  const sessionAlert = who.error
+    ? `<div class="alert err" style="margin-bottom:16px">Session identity: ${esc(who.error)}.</div>`
+    : '';
+  const sessionPanel = `<div class="section" style="margin-bottom:16px">
+    <div class="section-title">Session</div>
+    <div class="table-wrap">
+      <table>
+        <tbody>
+          <tr><td style="color:var(--muted)">Status</td><td>${esc(identityStatusText(who))}</td></tr>
+          <tr><td style="color:var(--muted)">Access</td><td><span class="badge ${identityBadgeTone(who)}">${esc(identityLabel(who))}</span></td></tr>
+          <tr><td style="color:var(--muted)">Tenant</td><td class="mono">${esc(who.tenant || '—')}</td></tr>
+          <tr><td style="color:var(--muted)">Stored API Key</td><td>${apiKey ? '<span class="pill healthy">Saved locally</span>' : '<span class="pill unknown">Not set</span>'}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+
   const c = `
   <div class="cards">
     <div class="card ${h.status==='ok'?'green':'warn'}"><div class="card-label">Status</div><div class="card-value" style="font-size:18px">${esc(h.status||'Offline')}</div><div class="card-sub">${esc(h.timestamp?new Date(h.timestamp).toLocaleTimeString():'')}</div></div>
@@ -669,6 +770,8 @@ async function renderOverview(rid) {
       <button class="btn btn-primary" onclick="quickBackup()">💾 Backup Now</button>
     </div>
   </div>
+  ${sessionAlert}
+  ${sessionPanel}
   <div style="display:flex;align-items:center;gap:16px;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px;flex-wrap:wrap">
     <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:700">System Health</span>
     <span style="display:flex;align-items:center;gap:5px;font-size:12px"><span class="status-dot ${h.status==='ok'?'ok':'err'}"></span>API</span>
@@ -917,6 +1020,28 @@ async function renderRoutes(rid) {
   ${statsCards}
   ${heatmapHtml}
   <div class="section">
+    <div class="section-title">Route Resolver</div>
+    <div class="card">
+      <div class="form-row">
+        <div class="form-group"><label>Region</label><input id="rr-region" placeholder="us-west"></div>
+        <div class="form-group"><label>Site</label><input id="rr-site" placeholder="edge-a"></div>
+        <div class="form-group"><label>Max Latency (ms)</label><input id="rr-max-lat" type="number" placeholder="50" style="width:100px"></div>
+        <div class="form-group"><label>Min Throughput</label><input id="rr-min-thr" type="number" placeholder="100" style="width:100px"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Tag (k:v)</label><input id="rr-tag" placeholder="region:us-west"></div>
+        <div class="form-group"><label>Satellite</label><select id="rr-sat" style="width:110px"><option value="">Any</option><option value="false">Prefer terrestrial</option><option value="true">Satellite only</option></select></div>
+        <div class="form-group"><label>Satellite Penalty</label><input id="rr-penalty" type="number" placeholder="25" style="width:100px"></div>
+        <div class="form-group"><label>Alternatives</label><input id="rr-alts" type="number" value="2" min="0" max="10" style="width:90px"></div>
+      </div>
+      <div class="flex" style="margin-top:8px;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="resolveRoute()">Resolve Best Route</button>
+        <label class="flex" style="font-size:12px;color:var(--muted)"><input id="rr-explain" type="checkbox" checked style="min-width:auto"> Include fallback explanation</label>
+      </div>
+      <div id="route-resolve-result" style="margin-top:12px"></div>
+    </div>
+  </div>
+  <div class="section">
     <div class="flex" style="margin-bottom:12px">
       <div class="section-title" style="margin:0">${routes.length} Route(s)</div>
       <div class="ml-auto flex">
@@ -1032,6 +1157,81 @@ async function applyRouteFilter() {
     wrap.innerHTML = `<table><thead><tr><th>Destination</th><th>Latency</th><th>Throughput</th><th>Tags</th><th>Expires</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="6" class="empty">No routes match filter</td></tr>'}</tbody></table>`;
     toast('Showing ' + routes.length + ' route(s)');
   } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function resolveRoute() {
+  const region = (document.getElementById('rr-region') || {}).value.trim();
+  const site = (document.getElementById('rr-site') || {}).value.trim();
+  const maxLat = (document.getElementById('rr-max-lat') || {}).value.trim();
+  const minThr = (document.getElementById('rr-min-thr') || {}).value.trim();
+  const sat = (document.getElementById('rr-sat') || {}).value;
+  const tag = (document.getElementById('rr-tag') || {}).value.trim();
+  const penalty = (document.getElementById('rr-penalty') || {}).value.trim();
+  const alts = (document.getElementById('rr-alts') || {}).value.trim();
+  const explain = !!((document.getElementById('rr-explain') || {}).checked);
+  const resultEl = document.getElementById('route-resolve-result');
+  if (resultEl) resultEl.innerHTML = '<div class="card-sub">Resolving…</div>';
+
+  const params = new URLSearchParams();
+  if (region) params.set('region', region);
+  if (site) params.set('site', site);
+  if (maxLat) params.set('max_latency', maxLat);
+  if (minThr) params.set('min_throughput', minThr);
+  if (sat) params.set('satellite', sat);
+  if (tag) params.append('tag', tag);
+  if (penalty) params.set('satellite_penalty', penalty);
+  if (alts) params.set('alternatives', alts);
+  if (explain) params.set('explain', 'true');
+
+  try {
+    const res = await api('/routes/resolve?' + params.toString());
+    const route = res.route || {};
+    const metric = route.metric || {};
+    const tags = route.tags ? Object.entries(route.tags).map(([k,v]) => `${k}:${v}`).join(', ') : '';
+    const alternatives = Array.isArray(res.alternatives) ? res.alternatives : [];
+    const attempts = res.explanation && Array.isArray(res.explanation.attempts) ? res.explanation.attempts : [];
+    if (!resultEl) return;
+    resultEl.innerHTML = `
+      <div class="cards" style="margin-bottom:12px">
+        <div class="card accent"><div class="card-label">Selected Route</div><div class="card-value" style="font-size:18px">${esc(route.destination || '—')}</div><div class="card-sub">${res.scope ? `scope: ${esc(res.scope)}` : '—'}</div></div>
+        <div class="card"><div class="card-label">Latency</div><div class="card-value">${metric.latency != null ? esc(metric.latency) : '—'}<span style="font-size:13px">ms</span></div><div class="card-sub">${route.satellite ? 'satellite' : 'terrestrial'}</div></div>
+        <div class="card"><div class="card-label">Throughput</div><div class="card-value">${metric.throughput != null ? esc(metric.throughput) : '—'}</div><div class="card-sub">${tags ? esc(tags) : 'no tags'}</div></div>
+      </div>
+      ${alternatives.length ? `<div class="section" style="margin-bottom:12px">
+        <div class="section-title">Alternatives</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Destination</th><th>Latency</th><th>Throughput</th><th>Tags</th></tr></thead>
+            <tbody>
+              ${alternatives.map(alt => `<tr>
+                <td><strong>${esc(alt.destination)}</strong>${alt.satellite ? ' <span class="pill sat">SAT</span>' : ''}</td>
+                <td>${alt.metric ? alt.metric.latency : '—'}ms</td>
+                <td>${alt.metric ? alt.metric.throughput : '—'}</td>
+                <td class="mono">${alt.tags ? Object.entries(alt.tags).map(([k,v]) => `${k}:${v}`).join(', ') : '—'}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>` : ''}
+      ${attempts.length ? `<div class="section">
+        <div class="section-title">Fallback Attempts</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Scope</th><th>Candidates</th><th>Matching</th><th>Selected</th></tr></thead>
+            <tbody>
+              ${attempts.map(a => `<tr>
+                <td><span class="pill ${a.selected ? 'healthy' : 'unknown'}">${esc(a.scope || '—')}</span></td>
+                <td>${esc(a.candidate_count ?? '—')}</td>
+                <td>${esc(a.matching_candidates ?? '—')}</td>
+                <td>${a.selected ? 'yes' : 'no'}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>` : ''}`;
+  } catch(e) {
+    if (resultEl) resultEl.innerHTML = `<div class="alert err">${esc(e.message)}</div>`;
+  }
 }
 
 // ── AGENTS ────────────────────────────────────────────────────────────────────
@@ -1603,12 +1803,12 @@ async function doSearch() {
 }
 
 // ── ADMIN ─────────────────────────────────────────────────────────────────────
-async function renderAdmin(rid) {
+async function renderAdmin(rid, identityPromise) {
   const content = document.getElementById('content');
   if (content) content.innerHTML = skeletonCards(4) + `<div class="table-wrap"><table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>${skeletonRows(2,5)}</tbody></table></div>`;
-  const [statusRes, tenantsRes, backupsRes, verifyRes, meshRes, sysInfoRes] = await Promise.allSettled([
+  const [statusRes, tenantsRes, backupsRes, verifyRes, meshRes, sysInfoRes, whoamiRes] = await Promise.allSettled([
     api('/admin/status'), api('/admin/tenants'), api('/admin/backup/list'), api('/blockchain/verify'), api('/admin/mesh'),
-    api('/system/info').catch(()=>null)
+    api('/system/info').catch(()=>null), identityPromise || updateSessionIdentity()
   ]);
   if (rid && rid !== currentRenderId) return;
   const st = statusRes.value||{};
@@ -1617,6 +1817,7 @@ async function renderAdmin(rid) {
   const verify = verifyRes.value||{valid: false, unknown: true};
   const mesh = meshRes.value||{status:'unknown'};
   const sysInfo = sysInfoRes.value || null;
+  const who = whoamiRes.status === 'fulfilled' ? whoamiRes.value : (sessionIdentity || normalizeIdentity(null));
 
   const sysInfoHtml = sysInfo ? `<div class="section" style="margin-bottom:16px">
     <div class="section-title">System Info</div>
@@ -1675,12 +1876,24 @@ async function renderAdmin(rid) {
       <div class="section">
         <div class="section-title">Authentication</div>
         <div class="card">
+          ${who.error ? `<div class="alert err" style="margin-bottom:12px">${esc(who.error)}</div>` : ''}
+          <div class="table-wrap" style="margin-bottom:12px">
+            <table>
+              <tbody>
+                <tr><td style="color:var(--muted)">Session Status</td><td>${esc(identityStatusText(who))}</td></tr>
+                <tr><td style="color:var(--muted)">Access</td><td><span class="badge ${identityBadgeTone(who)}">${esc(identityLabel(who))}</span></td></tr>
+                <tr><td style="color:var(--muted)">Resolved Tenant</td><td class="mono">${esc(who.tenant || '—')}</td></tr>
+                <tr><td style="color:var(--muted)">Stored API Key</td><td>${apiKey ? '<span class="pill healthy">Saved locally</span>' : '<span class="pill unknown">Not set</span>'}</td></tr>
+              </tbody>
+            </table>
+          </div>
           <div class="form-group">
             <label>API Key (stored locally)</label>
             <div class="flex">
               <input type="password" id="api-key-input" placeholder="Enter API Key..." value="${apiKey ? '********' : ''}" style="flex:1">
               <button class="btn btn-primary" onclick="saveApiKey()">Save</button>
               <button class="btn btn-outline" onclick="clearApiKey()">Clear</button>
+              <button class="btn btn-outline" onclick="refresh()">Recheck</button>
             </div>
           </div>
           <div class="card-sub" style="margin-top:8px">Required if Spectral Cloud was started with API_KEY or ADMIN_API_KEY.</div>
@@ -2424,6 +2637,7 @@ function saveApiKeyModal() {
     toast('API Key saved');
   }
   closeApiKeyModal();
+  refresh();
 }
 
 function skipApiKeyModal() { closeApiKeyModal(); }

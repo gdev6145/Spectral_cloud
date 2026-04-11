@@ -1,0 +1,65 @@
+{
+  "mcpServers": {
+    "docker-local": {
+      "type": "local",
+      "command": "mcp-server-docker",
+      "args": [
+      ],
+      "env": {},
+      "tools": [
+        "list_containers",
+        "fetch_container_logs",
+        "list_images",
+        "list_networks",
+        "list_volumes"
+      ]
+    },
+    "kubernetes-non-destructive": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "mcp-server-kubernetes"
+      ],
+      "env": {
+        "ALLOW_ONLY_NON_DESTRUCTIVE_TOOLS": "true"
+      },
+      "tools": [
+        "*"
+      ]
+    },
+    "prometheus-local": {
+      "type": "local",
+      "command": "prometheus-mcp-server",
+      "args": [
+      ],
+      "env": {
+        "PROMETHEUS_URL": "http://localhost:9090",
+        "PROMETHEUS_DISABLE_LINKS": "True"
+      },
+      "tools": [
+        "health_check",
+        "execute_query",
+        "execute_range_query",
+        "list_metrics",
+        "get_metric_metadata",
+        "get_targets"
+      ]
+    },
+    "alertmanager-local": {
+      "type": "local",
+      "command": "alertmanager-mcp-server",
+      "args": [
+      ],
+      "env": {
+        "ALERTMANAGER_URL": "http://localhost:9093"
+      },
+      "tools": [
+        "get_status",
+        "get_alerts",
+        "get_silences",
+        "get_receivers",
+        "get_alert_groups"
+      ]
+    }
+  }
+}

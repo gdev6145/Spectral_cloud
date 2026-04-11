@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -582,8 +583,7 @@ func main() {
 		}
 	}()
 
-	notifyMgr := notify.New()
-	notifyMgr.Start(ctx, eventBroker)
+	notifyMgr := notify.NewWithStore(db)
 
 	circuitThreshold := getEnvInt("CIRCUIT_THRESHOLD", 5)
 	circuitResetSec := getEnvInt("CIRCUIT_RESET_SECONDS", 30)
@@ -612,8 +612,14 @@ func main() {
 			} else if n > 0 {
 				log.Printf("restored %d agent group(s) for tenant %q", n, tn)
 			}
+			if n, err := notifyMgr.LoadFromStore(tn); err != nil {
+				log.Printf("warn: failed to load notification rules for tenant %q: %v", tn, err)
+			} else if n > 0 {
+				log.Printf("restored %d notification rule(s) for tenant %q", n, tn)
+			}
 		}
 	}
+	notifyMgr.Start(ctx, eventBroker)
 
 	corsCfg := parseCORSConfig(
 		strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS")),
@@ -1266,7 +1272,8 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				ttl := time.Duration(*body.TTLSeconds) * time.Second
 				opts.TTL = &ttl
 			}
-			if err := state.router.UpdateRoute(destination, opts); err != nil {
+			route, err := state.router.UpdateRoute(destination, opts)
+			if err != nil {
 				if err.Error() == "route not found" {
 					writeError(w, http.StatusNotFound, "route not found")
 					return
@@ -1278,7 +1285,6 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				writeError(w, http.StatusInternalServerError, "failed to persist routes")
 				return
 			}
-			route, _ := state.router.GetRoute(destination)
 			if eventBroker != nil {
 				eventBroker.Publish(events.Event{
 					Type:     events.EventRouteUpdated,
@@ -1310,6 +1316,185 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 	})
 
+	parseRouteFilterQuery := func(r *http.Request) (routing.BestRouteFilter, error) {
+		q := r.URL.Query()
+		filter := routing.BestRouteFilter{}
+		if maxLatStr := strings.TrimSpace(q.Get("max_latency")); maxLatStr != "" {
+			maxLat, err := strconv.Atoi(maxLatStr)
+			if err != nil {
+				return routing.BestRouteFilter{}, fmt.Errorf("max_latency must be an integer")
+			}
+			filter.MaxLatency = maxLat
+		}
+		if minThrStr := strings.TrimSpace(q.Get("min_throughput")); minThrStr != "" {
+			minThr, err := strconv.Atoi(minThrStr)
+			if err != nil {
+				return routing.BestRouteFilter{}, fmt.Errorf("min_throughput must be an integer")
+			}
+			filter.MinThroughput = minThr
+		}
+		if satStr := strings.TrimSpace(q.Get("satellite")); satStr != "" {
+			wantSat, err := strconv.ParseBool(satStr)
+			if err != nil {
+				return routing.BestRouteFilter{}, fmt.Errorf("satellite must be a boolean")
+			}
+			filter.Satellite = &wantSat
+		}
+		tagFilter, err := parseTagsStrict(q["tag"])
+		if err != nil {
+			return routing.BestRouteFilter{}, err
+		}
+		if len(tagFilter) > 0 {
+			filter.Tags = tagFilter
+		}
+		return filter, nil
+	}
+
+	parseSatellitePenalty := func(r *http.Request) (int, error) {
+		q := r.URL.Query()
+		satellitePenalty := routing.SatellitePenaltyMs
+		if penaltyStr := strings.TrimSpace(q.Get("satellite_penalty")); penaltyStr != "" {
+			penalty, err := strconv.Atoi(penaltyStr)
+			if err != nil {
+				return 0, fmt.Errorf("satellite_penalty must be an integer")
+			}
+			satellitePenalty = penalty
+		}
+		return satellitePenalty, nil
+	}
+
+	type resolveRequest struct {
+		ID               string            `json:"id,omitempty"`
+		Region           string            `json:"region,omitempty"`
+		Site             string            `json:"site,omitempty"`
+		MaxScope         string            `json:"max_scope,omitempty"`
+		Explain          bool              `json:"explain,omitempty"`
+		Alternatives     int               `json:"alternatives,omitempty"`
+		MaxLatency       int               `json:"max_latency,omitempty"`
+		MinThroughput    int               `json:"min_throughput,omitempty"`
+		Satellite        *bool             `json:"satellite,omitempty"`
+		Tags             map[string]string `json:"tags,omitempty"`
+		SatellitePenalty *int              `json:"satellite_penalty,omitempty"`
+	}
+
+	scopeRank := map[string]int{"site": 1, "region": 2, "global": 3}
+	resolveRoute := func(routes []routing.Route, req resolveRequest) (int, map[string]any) {
+		region := strings.TrimSpace(req.Region)
+		site := strings.TrimSpace(req.Site)
+		maxScope := strings.TrimSpace(req.MaxScope)
+		if maxScope == "" {
+			maxScope = "global"
+		}
+		if _, ok := scopeRank[maxScope]; !ok {
+			return http.StatusBadRequest, map[string]any{"error": "max_scope must be one of: site, region, global"}
+		}
+		baseScope := "global"
+		if region != "" {
+			baseScope = "region"
+		}
+		if site != "" {
+			baseScope = "site"
+		}
+		if scopeRank[maxScope] < scopeRank[baseScope] {
+			return http.StatusBadRequest, map[string]any{"error": "max_scope cannot be narrower than the requested scope"}
+		}
+		if req.Alternatives < 0 {
+			return http.StatusBadRequest, map[string]any{"error": "alternatives must be a non-negative integer"}
+		}
+		satellitePenalty := routing.SatellitePenaltyMs
+		if req.SatellitePenalty != nil {
+			satellitePenalty = *req.SatellitePenalty
+		}
+		filter := routing.BestRouteFilter{
+			MaxLatency:    req.MaxLatency,
+			MinThroughput: req.MinThroughput,
+			Satellite:     req.Satellite,
+			Tags:          req.Tags,
+		}
+		attempts := make([]map[string]any, 0, 3)
+		explanation := func() map[string]any {
+			return map[string]any{
+				"requested": map[string]any{"region": region, "site": site, "max_scope": maxScope},
+				"attempts":  attempts,
+			}
+		}
+
+		selectScope := func(scope string, candidates []routing.Route) (map[string]any, bool) {
+			filteredCandidates := routing.RankedRoutesFromRoutesFiltered(candidates, filter, satellitePenalty)
+			attempt := map[string]any{
+				"scope":               scope,
+				"candidate_count":     len(candidates),
+				"matching_candidates": len(filteredCandidates),
+			}
+			attempts = append(attempts, attempt)
+			if len(filteredCandidates) == 0 {
+				return nil, false
+			}
+			attempt["selected"] = true
+			resp := map[string]any{"scope": scope, "route": filteredCandidates[0]}
+			if req.Alternatives > 0 {
+				alternatives := []routing.Route{}
+				if len(filteredCandidates) > 1 {
+					end := 1 + req.Alternatives
+					if end > len(filteredCandidates) {
+						end = len(filteredCandidates)
+					}
+					alternatives = filteredCandidates[1:end]
+				}
+				resp["alternatives"] = alternatives
+			}
+			if req.Explain {
+				resp["explanation"] = explanation()
+			}
+			return resp, true
+		}
+
+		if site != "" && scopeRank[maxScope] >= scopeRank["site"] {
+			candidates := make([]routing.Route, 0)
+			for _, rt := range routes {
+				if strings.TrimSpace(rt.Tags["site"]) != site {
+					continue
+				}
+				if region != "" && strings.TrimSpace(rt.Tags["region"]) != region {
+					continue
+				}
+				candidates = append(candidates, rt)
+			}
+			if resp, ok := selectScope("site", candidates); ok {
+				return http.StatusOK, resp
+			}
+		}
+		if region != "" && scopeRank[maxScope] >= scopeRank["region"] {
+			candidates := make([]routing.Route, 0)
+			for _, rt := range routes {
+				if strings.TrimSpace(rt.Tags["region"]) == region {
+					candidates = append(candidates, rt)
+				}
+			}
+			if resp, ok := selectScope("region", candidates); ok {
+				return http.StatusOK, resp
+			}
+		}
+
+		candidates := make([]routing.Route, 0)
+		for _, rt := range routes {
+			if strings.TrimSpace(rt.Tags["region"]) != "" || strings.TrimSpace(rt.Tags["site"]) != "" {
+				continue
+			}
+			candidates = append(candidates, rt)
+		}
+		if scopeRank[maxScope] >= scopeRank["global"] {
+			if resp, ok := selectScope("global", candidates); ok {
+				return http.StatusOK, resp
+			}
+		}
+		resp := map[string]any{"error": "no routes available"}
+		if req.Explain {
+			resp["explanation"] = explanation()
+		}
+		return http.StatusNotFound, resp
+	}
+
 	mux.HandleFunc("/routes/best", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1320,13 +1505,117 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			writeError(w, http.StatusInternalServerError, "failed to load tenant")
 			return
 		}
-		best, err := state.router.SelectBestNextHop()
+		filter, err := parseRouteFilterQuery(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		satellitePenalty, err := parseSatellitePenalty(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		best, err := state.router.SelectBestNextHopFiltered(filter, satellitePenalty)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "no routes available")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(best)
+	})
+
+	// GET /routes/resolve — resolve the nearest edge route with site/region/global fallback.
+	mux.HandleFunc("/routes/resolve", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		state, _, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		filter, err := parseRouteFilterQuery(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		satellitePenalty, err := parseSatellitePenalty(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		explain := false
+		if explainStr := strings.TrimSpace(r.URL.Query().Get("explain")); explainStr != "" {
+			wantExplain, err := strconv.ParseBool(explainStr)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "explain must be a boolean")
+				return
+			}
+			explain = wantExplain
+		}
+		alternativesLimit := 0
+		if altStr := strings.TrimSpace(r.URL.Query().Get("alternatives")); altStr != "" {
+			parsed, err := strconv.Atoi(altStr)
+			if err != nil || parsed < 0 {
+				writeError(w, http.StatusBadRequest, "alternatives must be a non-negative integer")
+				return
+			}
+			alternativesLimit = parsed
+		}
+		req := resolveRequest{
+			Region:           strings.TrimSpace(r.URL.Query().Get("region")),
+			Site:             strings.TrimSpace(r.URL.Query().Get("site")),
+			MaxScope:         strings.TrimSpace(r.URL.Query().Get("max_scope")),
+			Explain:          explain,
+			Alternatives:     alternativesLimit,
+			MaxLatency:       filter.MaxLatency,
+			MinThroughput:    filter.MinThroughput,
+			Satellite:        filter.Satellite,
+			Tags:             filter.Tags,
+			SatellitePenalty: &satellitePenalty,
+		}
+		status, resp := resolveRoute(state.router.ListRoutes(), req)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	// POST /routes/resolve/batch — resolve multiple edge route requests in one call.
+	mux.HandleFunc("/routes/resolve/batch", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		state, _, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		var body struct {
+			Requests []resolveRequest `json:"requests"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		if len(body.Requests) == 0 {
+			writeError(w, http.StatusBadRequest, "requests must not be empty")
+			return
+		}
+		routes := state.router.ListRoutes()
+		results := make([]map[string]any, 0, len(body.Requests))
+		for i, req := range body.Requests {
+			status, result := resolveRoute(routes, req)
+			result["status"] = status
+			result["index"] = i
+			if strings.TrimSpace(req.ID) != "" {
+				result["id"] = strings.TrimSpace(req.ID)
+			}
+			results = append(results, result)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"count": len(results), "results": results})
 	})
 
 	mux.HandleFunc("/blockchain", func(w http.ResponseWriter, r *http.Request) {
@@ -2267,13 +2556,71 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			writeError(w, http.StatusInternalServerError, "failed to load tenant")
 			return
 		}
-		routes := state.router.ListRoutes()
+		filter, err := parseRouteFilterQuery(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		routes := routing.FilterRoutes(state.router.ListRoutes(), filter)
 		total := len(routes)
 		online := 0
 		satellite := 0
 		var minLat, maxLat int
 		var sumLat float64
 		dests := make([]string, 0, total)
+		type routeStatsBucket struct {
+			Count        int
+			Satellite    int
+			MinLatency   int
+			MaxLatency   int
+			SumLatency   float64
+			Destinations []string
+			First        bool
+		}
+		updateBucket := func(bucket map[string]*routeStatsBucket, key string, rt routing.Route) {
+			if key == "" {
+				return
+			}
+			entry := bucket[key]
+			if entry == nil {
+				entry = &routeStatsBucket{First: true}
+				bucket[key] = entry
+			}
+			entry.Count++
+			if rt.Satellite {
+				entry.Satellite++
+			}
+			lat := rt.Metric.Latency
+			if entry.First || lat < entry.MinLatency {
+				entry.MinLatency = lat
+			}
+			if entry.First || lat > entry.MaxLatency {
+				entry.MaxLatency = lat
+			}
+			entry.SumLatency += float64(lat)
+			entry.Destinations = append(entry.Destinations, rt.Destination)
+			entry.First = false
+		}
+		flattenBucket := func(bucket map[string]*routeStatsBucket) map[string]any {
+			out := make(map[string]any, len(bucket))
+			for key, entry := range bucket {
+				avgLatency := 0.0
+				if entry.Count > 0 {
+					avgLatency = entry.SumLatency / float64(entry.Count)
+				}
+				out[key] = map[string]any{
+					"count":          entry.Count,
+					"satellite":      entry.Satellite,
+					"avg_latency_ms": avgLatency,
+					"min_latency_ms": entry.MinLatency,
+					"max_latency_ms": entry.MaxLatency,
+					"destinations":   entry.Destinations,
+				}
+			}
+			return out
+		}
+		byRegion := map[string]*routeStatsBucket{}
+		bySite := map[string]*routeStatsBucket{}
 		first := true
 		for _, rt := range routes {
 			online++
@@ -2289,6 +2636,8 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			}
 			sumLat += float64(lat)
 			dests = append(dests, rt.Destination)
+			updateBucket(byRegion, rt.Tags["region"], rt)
+			updateBucket(bySite, rt.Tags["site"], rt)
 			first = false
 		}
 		avgLat := 0.0
@@ -2304,7 +2653,84 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			"min_latency_ms": minLat,
 			"max_latency_ms": maxLat,
 			"destinations":   dests,
+			"by_region":      flattenBucket(byRegion),
+			"by_site":        flattenBucket(bySite),
 		})
+	})
+
+	// GET /routes/topology — edge-oriented topology grouped by region and site.
+	mux.HandleFunc("/routes/topology", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		state, _, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		filter, err := parseRouteFilterQuery(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		satellitePenalty, err := parseSatellitePenalty(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		routes := routing.FilterRoutes(state.router.ListRoutes(), filter)
+		regions := map[string][]routing.Route{}
+		sitesByRegion := map[string]map[string][]routing.Route{}
+		untagged := make([]routing.Route, 0)
+		for _, rt := range routes {
+			region := strings.TrimSpace(rt.Tags["region"])
+			site := strings.TrimSpace(rt.Tags["site"])
+			if region == "" {
+				untagged = append(untagged, rt)
+				continue
+			}
+			regions[region] = append(regions[region], rt)
+			if site != "" {
+				if sitesByRegion[region] == nil {
+					sitesByRegion[region] = map[string][]routing.Route{}
+				}
+				sitesByRegion[region][site] = append(sitesByRegion[region][site], rt)
+			}
+		}
+
+		regionPayload := map[string]any{}
+		for region, regionRoutes := range regions {
+			regionBest, _ := routing.BestRouteFromRoutes(regionRoutes, satellitePenalty)
+			sitePayload := map[string]any{}
+			for site, siteRoutes := range sitesByRegion[region] {
+				siteBest, _ := routing.BestRouteFromRoutes(siteRoutes, satellitePenalty)
+				sitePayload[site] = map[string]any{
+					"count":      len(siteRoutes),
+					"best_route": siteBest,
+				}
+			}
+			regionPayload[region] = map[string]any{
+				"count":      len(regionRoutes),
+				"best_route": regionBest,
+				"sites":      sitePayload,
+			}
+		}
+
+		resp := map[string]any{
+			"total":   len(routes),
+			"regions": regionPayload,
+		}
+		if len(untagged) > 0 {
+			best, _ := routing.BestRouteFromRoutes(untagged, satellitePenalty)
+			resp["untagged"] = map[string]any{
+				"count":      len(untagged),
+				"best_route": best,
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 
 	// GET /agents/stats — aggregate stats for all agents.
@@ -2679,7 +3105,7 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		})
 	})
 
-	// GET /routes/filter — advanced route filtering by latency, throughput, satellite flag, tag.
+	// GET /routes/filter — advanced route filtering by latency, throughput, satellite flag, and tags.
 	mux.HandleFunc("/routes/filter", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -2690,57 +3116,12 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			writeError(w, http.StatusInternalServerError, "failed to load tenant")
 			return
 		}
-		q := r.URL.Query()
-		maxLatStr := q.Get("max_latency")
-		minThrStr := q.Get("min_throughput")
-		satStr := q.Get("satellite")
-		tagFilter := q.Get("tag") // "key:value"
-
-		var maxLat, minThr int
-		if maxLatStr != "" {
-			if v, err := strconv.Atoi(maxLatStr); err == nil {
-				maxLat = v
-			}
+		filter, err := parseRouteFilterQuery(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
-		if minThrStr != "" {
-			if v, err := strconv.Atoi(minThrStr); err == nil {
-				minThr = v
-			}
-		}
-		filterSat := satStr != ""
-		wantSat := satStr == "true" || satStr == "1"
-
-		tagKey, tagVal := "", ""
-		if tagFilter != "" {
-			parts := strings.SplitN(tagFilter, ":", 2)
-			tagKey = parts[0]
-			if len(parts) == 2 {
-				tagVal = parts[1]
-			}
-		}
-
-		var filtered []routing.Route
-		for _, rt := range state.router.ListRoutes() {
-			if maxLat > 0 && rt.Metric.Latency > maxLat {
-				continue
-			}
-			if minThr > 0 && rt.Metric.Throughput < minThr {
-				continue
-			}
-			if filterSat && rt.Satellite != wantSat {
-				continue
-			}
-			if tagKey != "" {
-				v, ok := rt.Tags[tagKey]
-				if !ok {
-					continue
-				}
-				if tagVal != "" && v != tagVal {
-					continue
-				}
-			}
-			filtered = append(filtered, rt)
-		}
+		filtered := routing.FilterRoutes(state.router.ListRoutes(), filter)
 		if filtered == nil {
 			filtered = []routing.Route{}
 		}
@@ -2964,8 +3345,8 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 	})
 
 	// GET/PATCH/DELETE /agent-groups/{id}
-	// POST /agent-groups/{id}/members   DELETE /agent-groups/{id}/members/{agentID}
-	// GET /agent-groups/{id}/next — round-robin next member
+	// POST /agent-groups/{id}/members   PATCH/DELETE /agent-groups/{id}/members/{agentID}
+	// GET /agent-groups/{id}/next — weighted round-robin next member
 	mux.HandleFunc("/agent-groups/", func(w http.ResponseWriter, r *http.Request) {
 		_, tenant, err := getState(r)
 		if err != nil {
@@ -3048,23 +3429,38 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			}
 			var body struct {
 				AgentID string `json:"agent_id"`
+				Weight  *int   `json:"weight"`
 			}
 			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
 				writeError(w, http.StatusBadRequest, "invalid body")
 				return
 			}
-			if err := groupMgr.AddMember(tenant, groupID, body.AgentID); err != nil {
-				writeError(w, http.StatusNotFound, err.Error())
+			weight := 1
+			if body.Weight != nil {
+				weight = *body.Weight
+			}
+			before, ok := groupMgr.Get(tenant, groupID)
+			if !ok {
+				writeError(w, http.StatusNotFound, "group not found")
+				return
+			}
+			if err := groupMgr.AddMemberWithWeight(tenant, groupID, body.AgentID, weight); err != nil {
+				if strings.Contains(err.Error(), "not found") {
+					writeError(w, http.StatusNotFound, err.Error())
+					return
+				}
+				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
 			g, _ := groupMgr.Get(tenant, groupID)
-			if eventBroker != nil {
+			if eventBroker != nil && len(g.Members) > len(before.Members) {
 				eventBroker.Publish(events.Event{
 					Type:     events.EventGroupMemberAdded,
 					TenantID: tenant,
 					Data: map[string]any{
 						"group_id":   groupID,
 						"agent_id":   body.AgentID,
+						"weight":     weight,
 						"members":    g.Members,
 						"group_name": g.Name,
 					},
@@ -3077,26 +3473,59 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		// /agent-groups/{id}/members/{agentID}
 		if sub == "members" && len(parts) == 3 {
 			agentID := parts[2]
-			if r.Method != http.MethodDelete {
+			switch r.Method {
+			case http.MethodPatch:
+				var body struct {
+					Weight int `json:"weight"`
+				}
+				if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&body); err != nil {
+					writeError(w, http.StatusBadRequest, "invalid body")
+					return
+				}
+				g, ok, err := groupMgr.UpdateMemberWeight(tenant, groupID, agentID, body.Weight)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+				if !ok {
+					writeError(w, http.StatusNotFound, "group member not found")
+					return
+				}
+				if eventBroker != nil {
+					eventBroker.Publish(events.Event{
+						Type:     events.EventGroupMemberUpdated,
+						TenantID: tenant,
+						Data: map[string]any{
+							"group_id": groupID,
+							"agent_id": agentID,
+							"weight":   body.Weight,
+						},
+					})
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(g)
+				return
+			case http.MethodDelete:
+				if err := groupMgr.RemoveMember(tenant, groupID, agentID); err != nil {
+					writeError(w, http.StatusNotFound, err.Error())
+					return
+				}
+				if eventBroker != nil {
+					eventBroker.Publish(events.Event{
+						Type:     events.EventGroupMemberRemoved,
+						TenantID: tenant,
+						Data: map[string]any{
+							"group_id": groupID,
+							"agent_id": agentID,
+						},
+					})
+				}
+				w.WriteHeader(http.StatusNoContent)
+				return
+			default:
 				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 				return
 			}
-			if err := groupMgr.RemoveMember(tenant, groupID, agentID); err != nil {
-				writeError(w, http.StatusNotFound, err.Error())
-				return
-			}
-			if eventBroker != nil {
-				eventBroker.Publish(events.Event{
-					Type:     events.EventGroupMemberRemoved,
-					TenantID: tenant,
-					Data: map[string]any{
-						"group_id": groupID,
-						"agent_id": agentID,
-					},
-				})
-			}
-			w.WriteHeader(http.StatusNoContent)
-			return
 		}
 		// /agent-groups/{id}/next
 		if sub == "next" && r.Method == http.MethodGet {
@@ -3631,6 +4060,21 @@ func parseTags(raw []string) map[string]string {
 		return nil
 	}
 	return out
+}
+
+func parseTagsStrict(raw []string) (map[string]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(raw))
+	for _, kv := range raw {
+		parts := strings.SplitN(kv, ":", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+			return nil, fmt.Errorf("tag must be in key:value format")
+		}
+		out[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+	}
+	return out, nil
 }
 
 func validateTransactions(txs []blockchain.Transaction) error {

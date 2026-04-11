@@ -50,15 +50,24 @@ SPECTRAL_API_KEY=<tenant-or-api-key> ./cmd/spectral-agent/supervisor.sh http://l
 - `GET/POST /schedules` -> list or create interval-based scheduled jobs
 - `GET/PATCH/DELETE /schedules/{id}` -> inspect, update, pause/resume, or delete a schedule
 - `GET/POST /agent-groups` -> list or create tenant-scoped agent groups
-- `GET /agent-groups/{id}` -> fetch a tenant-scoped agent group
+- `GET/PATCH/DELETE /agent-groups/{id}` -> fetch, rename, or delete a tenant-scoped agent group
 - `GET /agent-groups/{id}/next` -> select the next available group member
+- `POST /agent-groups/{id}/members` -> add a weighted member to a tenant-scoped group
+- `PATCH/DELETE /agent-groups/{id}/members/{agentID}` -> update weight or remove a group member
 - `POST /blockchain/add` -> add block (JSON array of transactions)
 - `GET /routes` -> list routes
 - `POST /routes?destination=X&latency=1&throughput=10&ttlSeconds=60` -> add a route (optional TTL)
+- `GET/PATCH/DELETE /routes/{destination}` -> inspect, update, or delete a single tenant route
+- `GET /routes/best?tag=region:us-west&tag=site:edge-a&max_latency=20&satellite_penalty=0` -> pick the best matching route for an edge/location filter
+- `GET /routes/stats?tag=region:us-west` -> aggregate route metrics for a filtered edge subset, including per-region and per-site summaries
+- `GET /routes/topology?tag=region:us-west&tag=site:edge-a` -> group a filtered edge subset by region/site and expose the best route per grouping
+- `GET /routes/resolve?region=us-west&site=edge-a&tag=tier:premium&max_scope=region&explain=true&alternatives=2` -> resolve the nearest edge route with caller-limited fallback, optional diagnostics, and ranked backup routes
+- `POST /routes/resolve/batch` -> resolve many edge route requests in one call with per-item status, diagnostics, and alternatives
+- `GET /routes/filter?tag=region:us-west&tag=site:edge-a` -> filter routes by multiple tag dimensions
 - `POST /proto/data` -> protobuf `DataMessage` request, returns protobuf `Ack`
 - `POST /proto/control` -> protobuf `ControlMessage` request, returns protobuf `Ack`
 - `GET/POST /admin/notifications` -> list or create tenant-scoped notification rules
-- `DELETE /admin/notifications/{id}` -> delete a tenant-scoped notification rule
+- `GET/PATCH/DELETE /admin/notifications/{id}` -> inspect, update, enable/disable, or delete a tenant-scoped notification rule
 - `GET /circuit` -> inspect circuit breaker state for agents
 - `POST /circuit/reset?agent_id=X` -> manually reset a circuit breaker
 - `GET /admin/status` -> backup/compaction status (admin-only)
@@ -97,7 +106,7 @@ Tenant quotas and per-tenant rate limiting can be enabled with `TENANT_MAX_BLOCK
 **Persistence Notes**
 - BoltDB is the primary store at `DATA_DIR/spectral.db`.
 - Legacy JSON files are migrated into BoltDB on startup.
-- Jobs, schedules, and agent groups reload from BoltDB on startup.
+- Jobs, schedules, agent groups, and notification rules reload from BoltDB on startup.
 - Invalid blocks are ignored and the chain truncates at first invalid block.
 
 **Maintenance**

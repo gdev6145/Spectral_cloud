@@ -13,22 +13,25 @@ import (
 type EventType string
 
 const (
-	EventBlockAdded        EventType = "block_added"
-	EventRouteAdded        EventType = "route_added"
-	EventRouteDeleted      EventType = "route_deleted"
-	EventAgentRegistered   EventType = "agent_registered"
-	EventAgentDeregistered EventType = "agent_deregistered"
-	EventAgentHeartbeat    EventType = "agent_heartbeat"
-	EventMeshAnomaly       EventType = "mesh_anomaly"
-	EventJobCreated        EventType = "job.created"
-	EventJobClaimed        EventType = "job.claimed"
-	EventJobUpdated        EventType = "job.updated"
-	EventJobCompleted      EventType = "job.completed"
-	EventJobFailed         EventType = "job.failed"
-	EventJobCancelled      EventType = "job.cancelled"
-	EventGroupCreated      EventType = "group.created"
-	EventGroupDeleted      EventType = "group.deleted"
-	EventGroupMemberAdded  EventType = "group.member_added"
+	EventBlockAdded         EventType = "block_added"
+	EventRouteAdded         EventType = "route_added"
+	EventRouteUpdated       EventType = "route.updated"
+	EventRouteDeleted       EventType = "route_deleted"
+	EventAgentRegistered    EventType = "agent_registered"
+	EventAgentDeregistered  EventType = "agent_deregistered"
+	EventAgentHeartbeat     EventType = "agent_heartbeat"
+	EventMeshAnomaly        EventType = "mesh_anomaly"
+	EventJobCreated         EventType = "job.created"
+	EventJobClaimed         EventType = "job.claimed"
+	EventJobUpdated         EventType = "job.updated"
+	EventJobCompleted       EventType = "job.completed"
+	EventJobFailed          EventType = "job.failed"
+	EventJobCancelled       EventType = "job.cancelled"
+	EventGroupCreated       EventType = "group.created"
+	EventGroupUpdated       EventType = "group.updated"
+	EventGroupDeleted       EventType = "group.deleted"
+	EventGroupMemberAdded   EventType = "group.member_added"
+	EventGroupMemberUpdated EventType = "group.member_updated"
 	EventGroupMemberRemoved EventType = "group.member_removed"
 )
 
@@ -52,11 +55,11 @@ type Broker struct {
 	mu          sync.RWMutex
 	subscribers map[string]chan Event
 
-	histMu     sync.RWMutex
-	histBuf    []Event
-	histHead   int // next write index (ring)
-	histMax    int
-	histCount  int // total events published (not ring size)
+	histMu    sync.RWMutex
+	histBuf   []Event
+	histHead  int // next write index (ring)
+	histMax   int
+	histCount int // total events published (not ring size)
 }
 
 // NewBroker creates an empty broker with the default history buffer size.

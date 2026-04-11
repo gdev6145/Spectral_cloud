@@ -27,7 +27,7 @@ const groupKeyPrefix = "grp_"
 // Member is a single agent within a group.
 type Member struct {
 	AgentID string `json:"agent_id"`
-	Weight  int    `json:"weight"` // reserved for future weighted routing; 1 = normal
+	Weight  int    `json:"weight"` // weighted round-robin share; 1 = normal
 }
 
 // Group is a named collection of agents.
@@ -47,6 +47,25 @@ type Manager struct {
 	// rrIndex tracks round-robin position per group.
 	rrIndex map[string]*uint64
 	store   Persister
+}
+
+// UpdateParams describes a partial group update.
+type UpdateParams struct {
+	Name *string
+}
+
+func normalizeWeight(weight int) (int, error) {
+	if weight <= 0 {
+		return 0, fmt.Errorf("weight must be greater than zero")
+	}
+	return weight, nil
+}
+
+func memberWeight(weight int) int {
+	if weight <= 0 {
+		return 1
+	}
+	return weight
 }
 
 func New() *Manager {
@@ -153,6 +172,25 @@ func (m *Manager) Create(tenant, name string) (*Group, error) {
 	return g, nil
 }
 
+// Update mutates a group for the given tenant.
+func (m *Manager) Update(tenant, id string, params UpdateParams) (Group, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	g, ok := m.groups[id]
+	if !ok || g.Tenant != tenant {
+		return Group{}, false, nil
+	}
+	if params.Name != nil {
+		if *params.Name == "" {
+			return Group{}, true, fmt.Errorf("name is required")
+		}
+		g.Name = *params.Name
+	}
+	m.persist(g)
+	return *g, true, nil
+}
+
 // Delete removes a group by ID for the given tenant. Returns false if not found or belongs to another tenant.
 func (m *Manager) Delete(tenant, id string) bool {
 	m.mu.Lock()
@@ -194,8 +232,17 @@ func (m *Manager) List(tenant string) []Group {
 	return out
 }
 
-// AddMember adds agentID to the group. No-ops if already a member.
+// AddMember adds agentID to the group with default weight 1.
 func (m *Manager) AddMember(tenant, groupID, agentID string) error {
+	return m.AddMemberWithWeight(tenant, groupID, agentID, 1)
+}
+
+// AddMemberWithWeight adds agentID to the group. No-ops if already a member.
+func (m *Manager) AddMemberWithWeight(tenant, groupID, agentID string, weight int) error {
+	weight, err := normalizeWeight(weight)
+	if err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	g, ok := m.groups[groupID]
@@ -207,9 +254,31 @@ func (m *Manager) AddMember(tenant, groupID, agentID string) error {
 			return nil // already a member
 		}
 	}
-	g.Members = append(g.Members, Member{AgentID: agentID, Weight: 1})
+	g.Members = append(g.Members, Member{AgentID: agentID, Weight: weight})
 	m.persist(g)
 	return nil
+}
+
+// UpdateMemberWeight changes a member weight in place.
+func (m *Manager) UpdateMemberWeight(tenant, groupID, agentID string, weight int) (Group, bool, error) {
+	weight, err := normalizeWeight(weight)
+	if err != nil {
+		return Group{}, true, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	g, ok := m.groups[groupID]
+	if !ok || g.Tenant != tenant {
+		return Group{}, false, nil
+	}
+	for i := range g.Members {
+		if g.Members[i].AgentID == agentID {
+			g.Members[i].Weight = weight
+			m.persist(g)
+			return *g, true, nil
+		}
+	}
+	return Group{}, false, nil
 }
 
 // RemoveMember removes agentID from the group.
@@ -220,18 +289,24 @@ func (m *Manager) RemoveMember(tenant, groupID, agentID string) error {
 	if !ok || g.Tenant != tenant {
 		return fmt.Errorf("group %s not found", groupID)
 	}
+	removed := false
 	filtered := g.Members[:0]
 	for _, mem := range g.Members {
 		if mem.AgentID != agentID {
 			filtered = append(filtered, mem)
+			continue
 		}
+		removed = true
+	}
+	if !removed {
+		return fmt.Errorf("group member not found")
 	}
 	g.Members = filtered
 	m.persist(g)
 	return nil
 }
 
-// Next returns the next agentID in round-robin order for the group.
+// Next returns the next agentID in weighted round-robin order for the group.
 // allowFn, if non-nil, is called per candidate; skip if it returns false.
 // Returns ("", false) if group is empty or all members are blocked.
 func (m *Manager) Next(tenant, groupID string, allowFn func(agentID string) bool) (string, bool) {
@@ -246,11 +321,29 @@ func (m *Manager) Next(tenant, groupID string, allowFn func(agentID string) bool
 	copy(members, g.Members)
 	m.mu.RUnlock()
 
-	n := uint64(len(members))
+	totalWeight := 0
+	for _, mem := range members {
+		totalWeight += memberWeight(mem.Weight)
+	}
+	if totalWeight == 0 {
+		return "", false
+	}
+	n := uint64(totalWeight)
 	start := atomic.AddUint64(idxPtr, 1) - 1
 	for i := uint64(0); i < n; i++ {
-		idx := (start + i) % n
-		candidate := members[idx].AgentID
+		slot := int((start + i) % n)
+		cursor := 0
+		candidate := ""
+		for _, mem := range members {
+			cursor += memberWeight(mem.Weight)
+			if slot < cursor {
+				candidate = mem.AgentID
+				break
+			}
+		}
+		if candidate == "" {
+			continue
+		}
 		if allowFn == nil || allowFn(candidate) {
 			return candidate, true
 		}

@@ -8,13 +8,14 @@ import (
 	"time"
 
 	"github.com/gdev6145/Spectral_cloud/pkg/events"
+	"github.com/gdev6145/Spectral_cloud/pkg/store"
 )
 
 const testTenant = "t1"
 
 func TestAddList(t *testing.T) {
 	m := New()
-	r := m.Add(testTenant, "rule1", "http://example.com", "secret", []string{"agent.registered"})
+	r := m.Add(testTenant, "rule1", "http://example.com", "secret", []string{string(events.EventAgentRegistered)})
 	if r.ID == "" || r.Name != "rule1" || r.Tenant != testTenant {
 		t.Errorf("unexpected rule: %+v", r)
 	}
@@ -45,6 +46,116 @@ func TestDelete(t *testing.T) {
 	}
 }
 
+func TestGetUpdate(t *testing.T) {
+	m := New()
+	r := m.Add(testTenant, "r", "http://x.com", "old", []string{string(events.EventAgentRegistered)})
+
+	got, ok := m.Get(testTenant, r.ID)
+	if !ok {
+		t.Fatal("expected rule")
+	}
+	if got.Name != "r" {
+		t.Fatalf("unexpected rule: %+v", got)
+	}
+
+	name := "r2"
+	url := "http://y.com"
+	secret := "new"
+	eventTypes := []string{string(events.EventAgentHeartbeat)}
+	active := false
+	updated, ok, err := m.Update(testTenant, r.ID, UpdateParams{
+		Name:       &name,
+		WebhookURL: &url,
+		Secret:     &secret,
+		EventTypes: &eventTypes,
+		Active:     &active,
+	})
+	if err != nil {
+		t.Fatalf("update rule: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected updated rule")
+	}
+	if updated.Name != name || updated.WebhookURL != url || updated.Secret != secret || updated.Active {
+		t.Fatalf("unexpected updated rule: %+v", updated)
+	}
+	if len(updated.EventTypes) != 1 || updated.EventTypes[0] != string(events.EventAgentHeartbeat) {
+		t.Fatalf("unexpected event types: %+v", updated.EventTypes)
+	}
+}
+
+func TestUpdateValidationAndTenantScope(t *testing.T) {
+	m := New()
+	r := m.Add(testTenant, "r", "http://x.com", "", nil)
+
+	empty := ""
+	if _, ok, err := m.Update(testTenant, r.ID, UpdateParams{Name: &empty}); err == nil || !ok {
+		t.Fatal("expected validation error for empty name")
+	}
+	if _, ok := m.Get("other", r.ID); ok {
+		t.Fatal("wrong tenant should not get rule")
+	}
+	if _, ok, err := m.Update("other", r.ID, UpdateParams{}); err != nil || ok {
+		t.Fatal("wrong tenant should not update rule")
+	}
+}
+
+func TestLoadFromStoreRestoresRules(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	m1 := NewWithStore(db)
+	rule := m1.Add(testTenant, "persisted", "http://example.com", "secret", []string{string(events.EventAgentRegistered)})
+	active := false
+	if _, ok, err := m1.Update(testTenant, rule.ID, UpdateParams{Active: &active}); err != nil || !ok {
+		t.Fatalf("update persisted rule: ok=%v err=%v", ok, err)
+	}
+
+	m2 := NewWithStore(db)
+	n, err := m2.LoadFromStore(testTenant)
+	if err != nil {
+		t.Fatalf("load rules: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 restored rule, got %d", n)
+	}
+	got, ok := m2.Get(testTenant, rule.ID)
+	if !ok {
+		t.Fatal("expected restored rule")
+	}
+	if got.Name != "persisted" || got.Active {
+		t.Fatalf("unexpected restored rule: %+v", got)
+	}
+}
+
+func TestDeleteRemovesPersistedRule(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	m1 := NewWithStore(db)
+	rule := m1.Add(testTenant, "persisted", "http://example.com", "", nil)
+	if !m1.Delete(testTenant, rule.ID) {
+		t.Fatal("expected delete to succeed")
+	}
+
+	m2 := NewWithStore(db)
+	n, err := m2.LoadFromStore(testTenant)
+	if err != nil {
+		t.Fatalf("load rules: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected 0 restored rules, got %d", n)
+	}
+}
+
 func TestMatches(t *testing.T) {
 	m := New()
 	r := m.Add(testTenant, "r", "http://x.com", "", []string{"agent.registered"})
@@ -55,6 +166,19 @@ func TestMatches(t *testing.T) {
 	}
 	if m.matches(r, ev2) {
 		t.Error("expected no match")
+	}
+}
+
+func TestMatchesAcceptsSeparatorAliases(t *testing.T) {
+	m := New()
+	ruleDot := m.Add(testTenant, "dot", "http://x.com", "", []string{"agent.registered"})
+	if !m.matches(ruleDot, events.Event{Type: events.EventAgentRegistered, TenantID: testTenant}) {
+		t.Fatal("expected dotted rule to match underscored event")
+	}
+
+	ruleUnderscore := m.Add(testTenant, "underscore", "http://x.com", "", []string{string(events.EventAgentRegistered)})
+	if !m.matches(ruleUnderscore, events.Event{Type: "agent.registered", TenantID: testTenant}) {
+		t.Fatal("expected underscored rule to match dotted event")
 	}
 }
 

@@ -115,10 +115,18 @@ Example request:
 The schedule response includes the stored interval as `interval_ns`, the `active` flag, `last_run`, and `run_count`.
 
 `GET /schedules/{id}`
-Fetches a single schedule by ID.
+Fetches a single schedule by ID if it belongs to the resolved tenant.
+
+`PATCH /schedules/{id}`
+Partially updates a schedule for the resolved tenant. Supported JSON fields are `name`, `agent_id`, `capability`, `payload`, `interval_seconds`, and `active`.
+
+Example request:
+```json
+{"name":"paused-sync","interval_seconds":7200,"active":false}
+```
 
 `DELETE /schedules/{id}`
-Deletes a schedule.
+Deletes a schedule if it belongs to the resolved tenant.
 
 ## Agent Groups
 
@@ -136,6 +144,14 @@ Example request:
 `GET /agent-groups/{id}`
 Fetches a single agent group if it belongs to the resolved tenant.
 
+`PATCH /agent-groups/{id}`
+Partially updates a tenant-scoped agent group. Supported JSON fields: `name`.
+
+Example request:
+```json
+{"name":"workers-east"}
+```
+
 `DELETE /agent-groups/{id}`
 Deletes a tenant-scoped agent group.
 
@@ -144,14 +160,22 @@ Adds an agent to a tenant-scoped group.
 
 Example request:
 ```json
-{"agent_id":"agent-1"}
+{"agent_id":"agent-1","weight":2}
+```
+
+`PATCH /agent-groups/{id}/members/{agentID}`
+Updates a group member for the resolved tenant. Supported JSON fields: `weight` (must be greater than zero).
+
+Example request:
+```json
+{"weight":3}
 ```
 
 `DELETE /agent-groups/{id}/members/{agentID}`
 Removes an agent from the group.
 
 `GET /agent-groups/{id}/next`
-Returns the next available group member using round-robin selection and the circuit breaker allow check.
+Returns the next available group member using weighted round-robin selection and the circuit breaker allow check.
 
 `POST /blockchain/add`
 Append a block with a JSON array of transactions.
@@ -166,6 +190,49 @@ Returns current route table as JSON.
 
 `POST /routes?destination=X&latency=1&throughput=10&ttlSeconds=60`
 Adds a route. `ttlSeconds` is optional.
+
+`GET /routes/{destination}`
+Fetches a single route by destination for the resolved tenant.
+
+`PATCH /routes/{destination}`
+Partially updates a route for the resolved tenant. Supported JSON fields are `latency`, `throughput`, `ttl_seconds`, `satellite`, and `tags`.
+
+Example request:
+```json
+{"latency":5,"throughput":250,"ttl_seconds":60,"satellite":true,"tags":{"region":"us"}}
+```
+
+`DELETE /routes/{destination}`
+Deletes a single route by destination for the resolved tenant.
+
+`GET /routes/best`
+Returns the best route for the resolved tenant using the route scoring model.
+Supports optional edge-oriented filters: `max_latency`, `min_throughput`, `satellite`, repeated `tag=key:value` parameters, and `satellite_penalty`.
+
+Example request:
+```text
+/routes/best?tag=region:us-west&tag=site:edge-a&max_latency=20&satellite_penalty=0
+```
+
+`GET /routes/stats`
+Returns aggregate route statistics for the resolved tenant, including edge-oriented `by_region` and `by_site` breakdowns derived from route tags. Supports the same optional route filters as `/routes/best` except `satellite_penalty`.
+
+`GET /routes/topology`
+Returns an edge topology view grouped by route `region` and `site` tags, including the best route for each region/site grouping. Supports the same optional route filters as `/routes/best` plus optional `satellite_penalty`.
+
+`GET /routes/resolve`
+Resolves the nearest edge route with fallback from exact `site` match to `region` match and finally an untagged global route. Supports `region`, `site`, and the same optional filters as `/routes/best`, including repeated `tag=key:value` parameters. Set `max_scope=site|region|global` to limit how far fallback may proceed. Set `explain=true` to include fallback attempts, candidate counts, and the selected scope in the response. Set `alternatives=N` to include up to `N` ranked backup routes from the selected scope.
+
+Example request:
+```text
+/routes/resolve?region=us-west&site=edge-a&tag=tier:premium&tag=region:us-west&max_scope=region&explain=true&alternatives=2
+```
+
+`POST /routes/resolve/batch`
+Resolves multiple edge route requests in one call. Each item can supply the same fields used by `GET /routes/resolve` (`region`, `site`, `max_scope`, `explain`, `alternatives`, `max_latency`, `min_throughput`, `satellite`, `tags`, `satellite_penalty`) plus an optional `id` echoed back in the result. The endpoint always returns a batch result list; each item includes its own `status`.
+
+`GET /routes/filter`
+Returns all routes matching the provided criteria. Supports `max_latency`, `min_throughput`, `satellite`, and repeated `tag=key:value` parameters that must all match.
 
 `POST /proto/data`
 Accepts a protobuf `DataMessage` and returns a protobuf `Ack`.
@@ -203,7 +270,18 @@ Creates a new notification rule for the resolved tenant.
 
 Example request:
 ```json
-{"name":"agent-events","webhook_url":"https://example.com/hook","event_types":["agent.registered"]}
+{"name":"agent-events","webhook_url":"https://example.com/hook","event_types":["agent_registered"]}
+```
+
+`GET /admin/notifications/{id}`
+Fetches a notification rule if it belongs to the resolved tenant.
+
+`PATCH /admin/notifications/{id}`
+Partially updates a notification rule for the resolved tenant. Supported JSON fields are `name`, `webhook_url`, `secret`, `event_types`, and `active`.
+
+Example request:
+```json
+{"name":"agent-events-paused","active":false,"event_types":["agent_heartbeat"]}
 ```
 
 `DELETE /admin/notifications/{id}`

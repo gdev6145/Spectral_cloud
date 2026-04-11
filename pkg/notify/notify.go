@@ -11,13 +11,24 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/gdev6145/Spectral_cloud/pkg/events"
 )
+
+const ruleKeyPrefix = "notify_"
+
+// Persister is the subset of store.Store methods that the notification manager needs.
+type Persister interface {
+	PutKV(tenant, key string, value []byte) error
+	DeleteKV(tenant, key string) error
+	ScanPrefix(tenant, prefix string, fn func(key, val []byte) error) error
+}
 
 // Rule describes a single notification subscription.
 type Rule struct {
@@ -32,12 +43,13 @@ type Rule struct {
 	FiredTotal uint64    `json:"fired_total"`
 }
 
-// Manager holds in-memory notification rules and dispatches webhooks.
+// Manager holds notification rules in memory and can persist them via a store.
 type Manager struct {
 	mu      sync.RWMutex
 	rules   map[string]*Rule
 	counter uint64
 	client  *http.Client
+	store   Persister
 }
 
 func New() *Manager {
@@ -45,6 +57,29 @@ func New() *Manager {
 		rules:  make(map[string]*Rule),
 		client: &http.Client{Timeout: 5 * time.Second},
 	}
+}
+
+// NewWithStore creates a manager that persists rules via p.
+func NewWithStore(p Persister) *Manager {
+	return &Manager{
+		rules:  make(map[string]*Rule),
+		client: &http.Client{Timeout: 5 * time.Second},
+		store:  p,
+	}
+}
+
+// UpdateParams describes a partial notification rule update.
+type UpdateParams struct {
+	Name       *string
+	WebhookURL *string
+	Secret     *string
+	EventTypes *[]string
+	Active     *bool
+}
+
+func canonicalEventType(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	return strings.ReplaceAll(value, ".", "_")
 }
 
 // Add registers a new rule for a tenant and returns it.
@@ -62,8 +97,54 @@ func (m *Manager) Add(tenant, name, webhookURL, secret string, eventTypes []stri
 	}
 	m.mu.Lock()
 	m.rules[id] = r
+	m.persist(r)
 	m.mu.Unlock()
 	return r
+}
+
+// Get returns a snapshot of a rule by tenant and ID.
+func (m *Manager) Get(tenant, id string) (Rule, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	r, ok := m.rules[id]
+	if !ok || r.Tenant != tenant {
+		return Rule{}, false
+	}
+	return *r, true
+}
+
+// Update mutates a rule in place for the given tenant.
+func (m *Manager) Update(tenant, id string, params UpdateParams) (Rule, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	r, ok := m.rules[id]
+	if !ok || r.Tenant != tenant {
+		return Rule{}, false, nil
+	}
+	if params.Name != nil {
+		if *params.Name == "" {
+			return Rule{}, true, fmt.Errorf("name is required")
+		}
+		r.Name = *params.Name
+	}
+	if params.WebhookURL != nil {
+		if *params.WebhookURL == "" {
+			return Rule{}, true, fmt.Errorf("webhook_url is required")
+		}
+		r.WebhookURL = *params.WebhookURL
+	}
+	if params.Secret != nil {
+		r.Secret = *params.Secret
+	}
+	if params.EventTypes != nil {
+		r.EventTypes = *params.EventTypes
+	}
+	if params.Active != nil {
+		r.Active = *params.Active
+	}
+	m.persist(r)
+	return *r, true, nil
 }
 
 // Delete removes a rule by ID for the given tenant. Returns false if not found or wrong tenant.
@@ -74,8 +155,71 @@ func (m *Manager) Delete(tenant, id string) bool {
 	if !ok || r.Tenant != tenant {
 		return false
 	}
+	m.unpersist(r)
 	delete(m.rules, id)
 	return true
+}
+
+// LoadFromStore reads persisted rules for a tenant and restores them.
+func (m *Manager) LoadFromStore(tenant string) (int, error) {
+	if m.store == nil {
+		return 0, nil
+	}
+	var loaded []Rule
+	if err := m.store.ScanPrefix(tenant, ruleKeyPrefix, func(_, val []byte) error {
+		var r Rule
+		if err := json.Unmarshal(val, &r); err != nil {
+			log.Printf("warn: skipping corrupted persisted notification rule for tenant %q: %v", tenant, err)
+			return nil
+		}
+		loaded = append(loaded, r)
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range loaded {
+		r := loaded[i]
+		if n := parseRuleNum(r.ID); n > m.counter {
+			m.counter = n
+		}
+		rCopy := r
+		m.rules[r.ID] = &rCopy
+	}
+	return len(loaded), nil
+}
+
+func parseRuleNum(id string) uint64 {
+	if !strings.HasPrefix(id, "rule-") {
+		return 0
+	}
+	var n uint64
+	fmt.Sscanf(id[5:], "%d", &n)
+	return n
+}
+
+func (m *Manager) persist(r *Rule) {
+	if m.store == nil {
+		return
+	}
+	data, err := json.Marshal(r)
+	if err != nil {
+		log.Printf("warn: failed to marshal notification rule %q for tenant %q: %v", r.ID, r.Tenant, err)
+		return
+	}
+	if err := m.store.PutKV(r.Tenant, ruleKeyPrefix+r.ID, data); err != nil {
+		log.Printf("warn: failed to persist notification rule %q for tenant %q: %v", r.ID, r.Tenant, err)
+	}
+}
+
+func (m *Manager) unpersist(r *Rule) {
+	if m.store == nil {
+		return
+	}
+	if err := m.store.DeleteKV(r.Tenant, ruleKeyPrefix+r.ID); err != nil {
+		log.Printf("warn: failed to delete persisted notification rule %q for tenant %q: %v", r.ID, r.Tenant, err)
+	}
 }
 
 // List returns a snapshot of rules for the given tenant, sorted by created time.
@@ -142,9 +286,9 @@ func (m *Manager) matches(r *Rule, ev events.Event) bool {
 	if len(r.EventTypes) == 0 {
 		return true
 	}
-	evType := string(ev.Type)
+	evType := canonicalEventType(string(ev.Type))
 	for _, t := range r.EventTypes {
-		if t == evType {
+		if canonicalEventType(t) == evType {
 			return true
 		}
 	}
@@ -184,6 +328,7 @@ func (m *Manager) fire(r *Rule, ev events.Event) {
 	m.mu.Lock()
 	if live, ok := m.rules[r.ID]; ok {
 		atomic.AddUint64(&live.FiredTotal, 1)
+		m.persist(live)
 	}
 	m.mu.Unlock()
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -14,7 +15,6 @@ import (
 	"github.com/gdev6145/Spectral_cloud/pkg/agentgroup"
 	"github.com/gdev6145/Spectral_cloud/pkg/auth"
 	"github.com/gdev6145/Spectral_cloud/pkg/blockchain"
-	"github.com/gdev6145/Spectral_cloud/pkg/routing"
 	"github.com/gdev6145/Spectral_cloud/pkg/circuit"
 	"github.com/gdev6145/Spectral_cloud/pkg/events"
 	"github.com/gdev6145/Spectral_cloud/pkg/jobs"
@@ -22,6 +22,7 @@ import (
 	"github.com/gdev6145/Spectral_cloud/pkg/mesh"
 	"github.com/gdev6145/Spectral_cloud/pkg/notify"
 	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
+	"github.com/gdev6145/Spectral_cloud/pkg/routing"
 	"github.com/gdev6145/Spectral_cloud/pkg/scheduler"
 	"github.com/gdev6145/Spectral_cloud/pkg/store"
 	"github.com/prometheus/client_golang/prometheus"
@@ -42,11 +43,18 @@ func makeHandler(db *store.Store, counter *prometheus.CounterVec, auth authConfi
 	agentReg := agent.NewRegistry()
 	broker := events.NewBroker()
 	kvStore := kv.New()
-	notifyMgr := notify.New()
+	notifyMgr := notify.NewWithStore(db)
+	groupMgr := agentgroup.NewWithStore(db)
 	jq := jobs.NewQueue()
+	sched := scheduler.NewWithStore(jq, db)
+	if tenantNames, err := db.TenantNames(); err == nil {
+		for _, tn := range tenantNames {
+			_, _ = notifyMgr.LoadFromStore(tn)
+			_, _ = groupMgr.LoadFromStore(tn)
+			_, _ = sched.LoadFromStore(context.Background(), tn)
+		}
+	}
 	circuitMgr := circuit.New(5, 30*time.Second)
-	groupMgr := agentgroup.New()
-	sched := scheduler.New(jq)
 	return newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist, auth, 100, 200, 0, 0, tenantLimits{}, status, meshNode, anomalyState, agentReg, corsConfig{}, false, broker, nil, "", jq, nil, kvStore, notifyMgr, circuitMgr, groupMgr, sched)
 }
 
@@ -176,6 +184,140 @@ func TestRoutesEndpoints(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestRouteItemEndpoints(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_route_item_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/routes?destination=node-item&latency=10&throughput=100", "text/plain", nil)
+	if err != nil {
+		t.Fatalf("create route: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+
+	getResp, err := http.Get(srv.URL + "/routes/node-item")
+	if err != nil {
+		t.Fatalf("get route: %v", err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", getResp.StatusCode)
+	}
+
+	patchReq, _ := http.NewRequest(http.MethodPatch, srv.URL+"/routes/node-item", bytes.NewBufferString(`{"latency":5,"throughput":250,"ttl_seconds":60,"satellite":true,"tags":{"region":"us"}}`))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchResp, err := http.DefaultClient.Do(patchReq)
+	if err != nil {
+		t.Fatalf("patch route: %v", err)
+	}
+	defer patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", patchResp.StatusCode)
+	}
+	var route struct {
+		Destination string `json:"destination"`
+		Metric      struct {
+			Latency    int `json:"latency"`
+			Throughput int `json:"throughput"`
+		} `json:"metric"`
+		Satellite bool              `json:"satellite"`
+		Tags      map[string]string `json:"tags"`
+		ExpiresAt *time.Time        `json:"expires_at"`
+	}
+	if err := json.NewDecoder(patchResp.Body).Decode(&route); err != nil {
+		t.Fatalf("decode route: %v", err)
+	}
+	if route.Destination != "node-item" || route.Metric.Latency != 5 || route.Metric.Throughput != 250 || !route.Satellite {
+		t.Fatalf("unexpected updated route: %+v", route)
+	}
+	if route.Tags["region"] != "us" || route.ExpiresAt == nil {
+		t.Fatalf("expected tags and ttl on updated route: %+v", route)
+	}
+
+	deleteReq, _ := http.NewRequest(http.MethodDelete, srv.URL+"/routes/node-item", nil)
+	deleteResp, err := http.DefaultClient.Do(deleteReq)
+	if err != nil {
+		t.Fatalf("delete route: %v", err)
+	}
+	defer deleteResp.Body.Close()
+	if deleteResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", deleteResp.StatusCode)
+	}
+}
+
+func TestRouteItemEndpointsAreTenantScoped(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_route_item_tenant_scope_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	tenantKeys, err := auth.NewManagerFromEnv("tenant-a:key-a,tenant-b:key-b")
+	if err != nil {
+		t.Fatalf("tenant key manager: %v", err)
+	}
+	handler := makeHandler(db, counter, authConfig{tenantKeys: tenantKeys, defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	createReq, _ := http.NewRequest(http.MethodPost, srv.URL+"/routes?destination=node-a&latency=1&throughput=2", nil)
+	createReq.Header.Set("X-API-Key", "key-a")
+	createResp, err := http.DefaultClient.Do(createReq)
+	if err != nil {
+		t.Fatalf("create route: %v", err)
+	}
+	createResp.Body.Close()
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", createResp.StatusCode)
+	}
+
+	getReq, _ := http.NewRequest(http.MethodGet, srv.URL+"/routes/node-a", nil)
+	getReq.Header.Set("X-API-Key", "key-b")
+	getResp, err := http.DefaultClient.Do(getReq)
+	if err != nil {
+		t.Fatalf("cross-tenant get: %v", err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", getResp.StatusCode)
+	}
+
+	patchReq, _ := http.NewRequest(http.MethodPatch, srv.URL+"/routes/node-a", bytes.NewBufferString(`{"latency":9}`))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchReq.Header.Set("X-API-Key", "key-b")
+	patchResp, err := http.DefaultClient.Do(patchReq)
+	if err != nil {
+		t.Fatalf("cross-tenant patch: %v", err)
+	}
+	defer patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", patchResp.StatusCode)
+	}
+
+	deleteReq, _ := http.NewRequest(http.MethodDelete, srv.URL+"/routes/node-a", nil)
+	deleteReq.Header.Set("X-API-Key", "key-b")
+	deleteResp, err := http.DefaultClient.Do(deleteReq)
+	if err != nil {
+		t.Fatalf("cross-tenant delete: %v", err)
+	}
+	defer deleteResp.Body.Close()
+	if deleteResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", deleteResp.StatusCode)
 	}
 }
 
@@ -849,6 +991,436 @@ func TestRoutesBestEndpoint(t *testing.T) {
 	}
 }
 
+func TestRoutesBestEndpointWithEdgeFilters(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_best_edge", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	_, _ = http.Post(srv.URL+"/routes?destination=edge-west&latency=15&throughput=80", "text/plain", nil)
+	patchReq, _ := http.NewRequest(http.MethodPatch, srv.URL+"/routes/edge-west", bytes.NewBufferString(`{"tags":{"region":"us-west","site":"edge-a"}}`))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchResp, err := http.DefaultClient.Do(patchReq)
+	if err != nil {
+		t.Fatalf("patch edge-west: %v", err)
+	}
+	patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", patchResp.StatusCode)
+	}
+
+	_, _ = http.Post(srv.URL+"/routes?destination=edge-west-sat&latency=5&throughput=90", "text/plain", nil)
+	patchReq, _ = http.NewRequest(http.MethodPatch, srv.URL+"/routes/edge-west-sat", bytes.NewBufferString(`{"satellite":true,"tags":{"region":"us-west","site":"edge-b"}}`))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchResp, err = http.DefaultClient.Do(patchReq)
+	if err != nil {
+		t.Fatalf("patch edge-west-sat: %v", err)
+	}
+	patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", patchResp.StatusCode)
+	}
+
+	_, _ = http.Post(srv.URL+"/routes?destination=edge-east&latency=2&throughput=120", "text/plain", nil)
+	patchReq, _ = http.NewRequest(http.MethodPatch, srv.URL+"/routes/edge-east", bytes.NewBufferString(`{"tags":{"region":"us-east","site":"edge-c"}}`))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchResp, err = http.DefaultClient.Do(patchReq)
+	if err != nil {
+		t.Fatalf("patch edge-east: %v", err)
+	}
+	patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", patchResp.StatusCode)
+	}
+
+	resp, err := http.Get(srv.URL + "/routes/best?tag=region:us-west")
+	if err != nil {
+		t.Fatalf("get filtered best: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var best map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&best); err != nil {
+		t.Fatalf("decode filtered best: %v", err)
+	}
+	resp.Body.Close()
+	if best["destination"] != "edge-west" {
+		t.Fatalf("expected terrestrial west edge route, got %v", best["destination"])
+	}
+
+	resp, err = http.Get(srv.URL + "/routes/best?tag=region:us-west&satellite_penalty=0")
+	if err != nil {
+		t.Fatalf("get zero-penalty best: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&best); err != nil {
+		t.Fatalf("decode zero-penalty best: %v", err)
+	}
+	resp.Body.Close()
+	if best["destination"] != "edge-west-sat" {
+		t.Fatalf("expected satellite west edge route with zero penalty, got %v", best["destination"])
+	}
+
+	resp, err = http.Get(srv.URL + "/routes/best?tag=region:us-west&max_latency=10")
+	if err != nil {
+		t.Fatalf("get constrained best: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&best); err != nil {
+		t.Fatalf("decode constrained best: %v", err)
+	}
+	resp.Body.Close()
+	if best["destination"] != "edge-west-sat" {
+		t.Fatalf("expected low-latency west edge route, got %v", best["destination"])
+	}
+
+	resp, err = http.Get(srv.URL + "/routes/best?tag=region:eu-central")
+	if err != nil {
+		t.Fatalf("get missing best: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+
+	resp, err = http.Get(srv.URL + "/routes/best?tag=region:us-west&tag=site:edge-b")
+	if err != nil {
+		t.Fatalf("get multi-tag best: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&best); err != nil {
+		t.Fatalf("decode multi-tag best: %v", err)
+	}
+	resp.Body.Close()
+	if best["destination"] != "edge-west-sat" {
+		t.Fatalf("expected exact site route from multi-tag filter, got %v", best["destination"])
+	}
+
+	resp, err = http.Get(srv.URL + "/routes/best?tag=invalid")
+	if err != nil {
+		t.Fatalf("get invalid tag best: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid tag filter, got %d", resp.StatusCode)
+	}
+}
+
+func TestRoutesResolveEndpoint(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_resolve_edge", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	_, _ = http.Post(srv.URL+"/routes?destination=west-a&latency=20&throughput=80", "text/plain", nil)
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/routes/west-a", bytes.NewBufferString(`{"tags":{"region":"us-west","site":"edge-a","tier":"standard"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	resp.Body.Close()
+
+	_, _ = http.Post(srv.URL+"/routes?destination=west-b&latency=10&throughput=90", "text/plain", nil)
+	req, _ = http.NewRequest(http.MethodPatch, srv.URL+"/routes/west-b", bytes.NewBufferString(`{"tags":{"region":"us-west","site":"edge-b","tier":"premium"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+
+	_, _ = http.Post(srv.URL+"/routes?destination=west-c&latency=14&throughput=85", "text/plain", nil)
+	req, _ = http.NewRequest(http.MethodPatch, srv.URL+"/routes/west-c", bytes.NewBufferString(`{"tags":{"region":"us-west","site":"edge-c","tier":"premium"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+
+	_, _ = http.Post(srv.URL+"/routes?destination=global-fast&latency=5&throughput=50", "text/plain", nil)
+
+	resp, err = http.Get(srv.URL + "/routes/resolve?region=us-west&site=edge-a")
+	if err != nil {
+		t.Fatalf("resolve site: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var resolved struct {
+		Scope string         `json:"scope"`
+		Route map[string]any `json:"route"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resolved); err != nil {
+		t.Fatalf("decode site resolve: %v", err)
+	}
+	resp.Body.Close()
+	if resolved.Scope != "site" || resolved.Route["destination"] != "west-a" {
+		t.Fatalf("unexpected site resolution: %+v", resolved)
+	}
+
+	resp, err = http.Get(srv.URL + "/routes/resolve?region=us-west&site=missing")
+	if err != nil {
+		t.Fatalf("resolve region fallback: %v", err)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resolved); err != nil {
+		t.Fatalf("decode region resolve: %v", err)
+	}
+	resp.Body.Close()
+	if resolved.Scope != "region" || resolved.Route["destination"] != "west-b" {
+		t.Fatalf("unexpected region fallback: %+v", resolved)
+	}
+
+	resp, err = http.Get(srv.URL + "/routes/resolve?region=eu-central")
+	if err != nil {
+		t.Fatalf("resolve global fallback: %v", err)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resolved); err != nil {
+		t.Fatalf("decode global resolve: %v", err)
+	}
+	resp.Body.Close()
+	if resolved.Scope != "global" || resolved.Route["destination"] != "global-fast" {
+		t.Fatalf("unexpected global fallback: %+v", resolved)
+	}
+
+	resp, err = http.Get(srv.URL + "/routes/resolve?region=us-west&tag=tier:premium")
+	if err != nil {
+		t.Fatalf("resolve filtered region fallback: %v", err)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resolved); err != nil {
+		t.Fatalf("decode filtered resolve: %v", err)
+	}
+	resp.Body.Close()
+	if resolved.Scope != "region" || resolved.Route["destination"] != "west-b" {
+		t.Fatalf("unexpected filtered resolve: %+v", resolved)
+	}
+
+	resp, err = http.Get(srv.URL + "/routes/resolve?region=us-west&tag=tier:premium&tag=site:edge-b")
+	if err != nil {
+		t.Fatalf("resolve multi-tag region fallback: %v", err)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resolved); err != nil {
+		t.Fatalf("decode multi-tag resolve: %v", err)
+	}
+	resp.Body.Close()
+	if resolved.Scope != "region" || resolved.Route["destination"] != "west-b" {
+		t.Fatalf("unexpected multi-tag resolve: %+v", resolved)
+	}
+
+	resp, err = http.Get(srv.URL + "/routes/resolve?region=us-west&site=missing&tag=tier:premium&explain=true")
+	if err != nil {
+		t.Fatalf("resolve explained fallback: %v", err)
+	}
+	var explained struct {
+		Scope       string         `json:"scope"`
+		Route       map[string]any `json:"route"`
+		Explanation struct {
+			Requested map[string]any   `json:"requested"`
+			Attempts  []map[string]any `json:"attempts"`
+		} `json:"explanation"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&explained); err != nil {
+		t.Fatalf("decode explained resolve: %v", err)
+	}
+	resp.Body.Close()
+	if explained.Scope != "region" || explained.Route["destination"] != "west-b" {
+		t.Fatalf("unexpected explained resolve: %+v", explained)
+	}
+	if len(explained.Explanation.Attempts) != 2 {
+		t.Fatalf("expected 2 fallback attempts before selection, got %+v", explained.Explanation.Attempts)
+	}
+	if explained.Explanation.Attempts[0]["scope"] != "site" || explained.Explanation.Attempts[0]["selected"] != nil {
+		t.Fatalf("expected unselected site attempt, got %+v", explained.Explanation.Attempts[0])
+	}
+	if explained.Explanation.Attempts[1]["scope"] != "region" || explained.Explanation.Attempts[1]["selected"] != true {
+		t.Fatalf("expected selected region attempt, got %+v", explained.Explanation.Attempts[1])
+	}
+
+	resp, err = http.Get(srv.URL + "/routes/resolve?region=ap-south&tag=tier:premium&explain=true")
+	if err != nil {
+		t.Fatalf("resolve explained miss: %v", err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+	var miss struct {
+		Error       string `json:"error"`
+		Explanation struct {
+			Attempts []map[string]any `json:"attempts"`
+		} `json:"explanation"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&miss); err != nil {
+		t.Fatalf("decode explained miss: %v", err)
+	}
+	resp.Body.Close()
+	if miss.Error != "no routes available" {
+		t.Fatalf("unexpected explained miss error: %+v", miss)
+	}
+	if len(miss.Explanation.Attempts) != 2 {
+		t.Fatalf("expected region and global attempts on miss, got %+v", miss.Explanation.Attempts)
+	}
+	if miss.Explanation.Attempts[0]["scope"] != "region" || miss.Explanation.Attempts[1]["scope"] != "global" {
+		t.Fatalf("unexpected attempt order on miss: %+v", miss.Explanation.Attempts)
+	}
+
+	resp, err = http.Get(srv.URL + "/routes/resolve?region=us-west&tag=tier:premium&alternatives=2")
+	if err != nil {
+		t.Fatalf("resolve alternatives: %v", err)
+	}
+	var ranked struct {
+		Scope        string           `json:"scope"`
+		Route        map[string]any   `json:"route"`
+		Alternatives []map[string]any `json:"alternatives"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&ranked); err != nil {
+		t.Fatalf("decode resolve alternatives: %v", err)
+	}
+	resp.Body.Close()
+	if ranked.Scope != "region" || ranked.Route["destination"] != "west-b" {
+		t.Fatalf("unexpected ranked resolve winner: %+v", ranked)
+	}
+	if len(ranked.Alternatives) != 1 || ranked.Alternatives[0]["destination"] != "west-c" {
+		t.Fatalf("unexpected ranked resolve alternatives: %+v", ranked.Alternatives)
+	}
+
+	resp, err = http.Get(srv.URL + "/routes/resolve?region=us-west&site=missing&max_scope=region")
+	if err != nil {
+		t.Fatalf("resolve region-limited fallback: %v", err)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resolved); err != nil {
+		t.Fatalf("decode region-limited resolve: %v", err)
+	}
+	resp.Body.Close()
+	if resolved.Scope != "region" || resolved.Route["destination"] != "west-b" {
+		t.Fatalf("unexpected region-limited resolve: %+v", resolved)
+	}
+
+	resp, err = http.Get(srv.URL + "/routes/resolve?region=us-west&site=missing&max_scope=site&explain=true")
+	if err != nil {
+		t.Fatalf("resolve site-only miss: %v", err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for site-only miss, got %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&miss); err != nil {
+		t.Fatalf("decode site-only miss: %v", err)
+	}
+	resp.Body.Close()
+	if len(miss.Explanation.Attempts) != 1 || miss.Explanation.Attempts[0]["scope"] != "site" {
+		t.Fatalf("expected only site attempt for site-only miss, got %+v", miss.Explanation.Attempts)
+	}
+
+	resp, err = http.Get(srv.URL + "/routes/resolve?alternatives=bad")
+	if err != nil {
+		t.Fatalf("resolve invalid alternatives: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid alternatives, got %d", resp.StatusCode)
+	}
+
+	resp, err = http.Get(srv.URL + "/routes/resolve?region=us-west&max_scope=site")
+	if err != nil {
+		t.Fatalf("resolve invalid max_scope: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid max_scope combination, got %d", resp.StatusCode)
+	}
+}
+
+func TestRoutesResolveBatchEndpoint(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_resolve_batch", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	handler := makeHandler(db, counter, authConfig{}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	_, _ = http.Post(srv.URL+"/routes?destination=west-b&latency=10&throughput=90", "text/plain", nil)
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/routes/west-b", bytes.NewBufferString(`{"tags":{"region":"us-west","site":"edge-b","tier":"premium"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	resp.Body.Close()
+
+	_, _ = http.Post(srv.URL+"/routes?destination=west-c&latency=14&throughput=85", "text/plain", nil)
+	req, _ = http.NewRequest(http.MethodPatch, srv.URL+"/routes/west-c", bytes.NewBufferString(`{"tags":{"region":"us-west","site":"edge-c","tier":"premium"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+
+	_, _ = http.Post(srv.URL+"/routes?destination=global-fast&latency=5&throughput=50", "text/plain", nil)
+
+	body := `{"requests":[{"id":"premium-west","region":"us-west","tags":{"tier":"premium"},"alternatives":2},{"id":"site-only-miss","region":"us-west","site":"missing","max_scope":"site","explain":true},{"id":"bad-scope","region":"us-west","max_scope":"bogus"}]}`
+	resp, err = http.Post(srv.URL+"/routes/resolve/batch", "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("batch resolve: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var result struct {
+		Count   int              `json:"count"`
+		Results []map[string]any `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode batch resolve: %v", err)
+	}
+	if result.Count != 3 || len(result.Results) != 3 {
+		t.Fatalf("unexpected batch result count: %+v", result)
+	}
+	if result.Results[0]["id"] != "premium-west" || result.Results[0]["status"].(float64) != 200 || result.Results[0]["scope"] != "region" {
+		t.Fatalf("unexpected first batch result: %+v", result.Results[0])
+	}
+	firstRoute, ok := result.Results[0]["route"].(map[string]any)
+	if !ok || firstRoute["destination"] != "west-b" {
+		t.Fatalf("unexpected first batch route: %+v", result.Results[0]["route"])
+	}
+	firstAlternatives, ok := result.Results[0]["alternatives"].([]any)
+	if !ok || len(firstAlternatives) != 1 {
+		t.Fatalf("unexpected first batch alternatives: %+v", result.Results[0]["alternatives"])
+	}
+	altRoute, ok := firstAlternatives[0].(map[string]any)
+	if !ok || altRoute["destination"] != "west-c" {
+		t.Fatalf("unexpected first batch alternative route: %+v", firstAlternatives[0])
+	}
+
+	if result.Results[1]["id"] != "site-only-miss" || result.Results[1]["status"].(float64) != 404 || result.Results[1]["error"] != "no routes available" {
+		t.Fatalf("unexpected second batch result: %+v", result.Results[1])
+	}
+	secondExplanation, ok := result.Results[1]["explanation"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected explanation on second batch result, got %+v", result.Results[1]["explanation"])
+	}
+	secondAttempts, ok := secondExplanation["attempts"].([]any)
+	if !ok || len(secondAttempts) != 1 {
+		t.Fatalf("unexpected second batch attempts: %+v", secondExplanation["attempts"])
+	}
+
+	if result.Results[2]["id"] != "bad-scope" || result.Results[2]["status"].(float64) != 400 {
+		t.Fatalf("unexpected third batch result: %+v", result.Results[2])
+	}
+	if result.Results[2]["error"] != "max_scope must be one of: site, region, global" {
+		t.Fatalf("unexpected third batch error: %+v", result.Results[2])
+	}
+}
+
 func TestBlockchainListEndpoint(t *testing.T) {
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_bclist", Help: "test"}, []string{"path", "method", "code"})
 	tmp := t.TempDir()
@@ -1175,6 +1747,21 @@ func TestJobAndGroupEventsHistoryTenantScoped(t *testing.T) {
 	}
 	resp.Body.Close()
 
+	req, err = http.NewRequest(http.MethodPost, srv.URL+"/agent-groups/"+group.ID+"/members", bytes.NewBufferString(`{"agent_id":"worker-a"}`))
+	if err != nil {
+		t.Fatalf("duplicate add member request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "key-a")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("duplicate add member: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
 	req, err = http.NewRequest(http.MethodDelete, srv.URL+"/agent-groups/"+group.ID+"/members/worker-a", nil)
 	if err != nil {
 		t.Fatalf("remove member request: %v", err)
@@ -1230,11 +1817,13 @@ func TestJobAndGroupEventsHistoryTenantScoped(t *testing.T) {
 		t.Fatal("expected tenant-a history entries")
 	}
 	seen := map[string]bool{}
+	eventCounts := map[string]int{}
 	for _, ev := range history.Events {
 		if ev.TenantID != "tenant-a" {
 			t.Fatalf("unexpected tenant in history: %+v", ev)
 		}
 		seen[ev.Type] = true
+		eventCounts[ev.Type]++
 	}
 	for _, want := range []string{
 		string(events.EventJobCreated),
@@ -1248,6 +1837,9 @@ func TestJobAndGroupEventsHistoryTenantScoped(t *testing.T) {
 		if !seen[want] {
 			t.Fatalf("expected event type %q in history, got %v", want, seen)
 		}
+	}
+	if eventCounts[string(events.EventGroupMemberAdded)] != 1 {
+		t.Fatalf("expected exactly 1 group.member_added event, got %d", eventCounts[string(events.EventGroupMemberAdded)])
 	}
 
 	req, err = http.NewRequest(http.MethodGet, srv.URL+"/events/history?limit=10&type="+string(events.EventJobCreated), nil)
@@ -1821,7 +2413,9 @@ func TestAgentRouteEndpoint(t *testing.T) {
 	}
 	var res struct {
 		Count  int `json:"count"`
-		Agents []struct{ ID string `json:"id"` } `json:"agents"`
+		Agents []struct {
+			ID string `json:"id"`
+		} `json:"agents"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -1877,7 +2471,9 @@ func TestJobsEndpoints(t *testing.T) {
 	if resp.StatusCode != 201 {
 		t.Fatalf("expected 201, got %d", resp.StatusCode)
 	}
-	var submitted struct{ ID string `json:"id"` }
+	var submitted struct {
+		ID string `json:"id"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&submitted); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -1954,7 +2550,9 @@ func TestJobsClaimAndCancel(t *testing.T) {
 	// Submit a job — auto-dispatched to worker-1.
 	jResp, _ := http.Post(srv.URL+"/agents/jobs", "application/json",
 		bytes.NewBufferString(`{"capability":"ocr","payload":{"file":"doc.pdf"}}`))
-	var submitted struct{ ID string `json:"id"` }
+	var submitted struct {
+		ID string `json:"id"`
+	}
 	_ = json.NewDecoder(jResp.Body).Decode(&submitted)
 	_ = jResp.Body.Close()
 	if submitted.ID == "" {
@@ -1964,7 +2562,9 @@ func TestJobsClaimAndCancel(t *testing.T) {
 	// Submit a second job for cancel test.
 	jResp2, _ := http.Post(srv.URL+"/agents/jobs", "application/json",
 		bytes.NewBufferString(`{"capability":"ocr"}`))
-	var submitted2 struct{ ID string `json:"id"` }
+	var submitted2 struct {
+		ID string `json:"id"`
+	}
 	_ = json.NewDecoder(jResp2.Body).Decode(&submitted2)
 	_ = jResp2.Body.Close()
 
@@ -2038,7 +2638,9 @@ func TestJobItemEndpointsAreTenantScoped(t *testing.T) {
 	if postResp.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", postResp.StatusCode)
 	}
-	var submitted struct{ ID string `json:"id"` }
+	var submitted struct {
+		ID string `json:"id"`
+	}
 	if err := json.NewDecoder(postResp.Body).Decode(&submitted); err != nil {
 		t.Fatalf("decode submitted job: %v", err)
 	}
@@ -2306,7 +2908,9 @@ func TestKVEndpoints(t *testing.T) {
 
 	gr, _ := http.Get(srv.URL + "/kv/mykey")
 	defer gr.Body.Close()
-	var entry struct{ Value string `json:"value"` }
+	var entry struct {
+		Value string `json:"value"`
+	}
 	json.NewDecoder(gr.Body).Decode(&entry)
 	if entry.Value != "hello" {
 		t.Errorf("expected hello, got %s", entry.Value)
@@ -2337,7 +2941,9 @@ func TestSearchEndpoint(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 	var result struct {
-		Routes []struct{ Destination string `json:"destination"` } `json:"routes"`
+		Routes []struct {
+			Destination string `json:"destination"`
+		} `json:"routes"`
 	}
 	json.NewDecoder(resp.Body).Decode(&result)
 	if len(result.Routes) != 1 || result.Routes[0].Destination != "alpha-node" {
@@ -2354,20 +2960,165 @@ func TestNotificationRuleEndpoints(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	body := `{"name":"r1","webhook_url":"http://example.com/hook","event_types":["agent.registered"]}`
+	body := `{"name":"r1","webhook_url":"http://example.com/hook","event_types":["agent_registered"]}`
 	cr, _ := http.Post(srv.URL+"/admin/notifications", "application/json", bytes.NewBufferString(body))
 	defer cr.Body.Close()
 	if cr.StatusCode != http.StatusCreated {
 		t.Fatalf("POST expected 201, got %d", cr.StatusCode)
 	}
-	var rule struct{ ID string `json:"id"` }
+	var rule struct {
+		ID string `json:"id"`
+	}
 	json.NewDecoder(cr.Body).Decode(&rule)
+
+	gr, _ := http.Get(srv.URL + "/admin/notifications/" + rule.ID)
+	defer gr.Body.Close()
+	if gr.StatusCode != http.StatusOK {
+		t.Fatalf("GET expected 200, got %d", gr.StatusCode)
+	}
+
+	patchReq, _ := http.NewRequest(http.MethodPatch, srv.URL+"/admin/notifications/"+rule.ID, bytes.NewBufferString(`{"name":"r2","active":false,"event_types":["agent_heartbeat"]}`))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchResp, _ := http.DefaultClient.Do(patchReq)
+	defer patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH expected 200, got %d", patchResp.StatusCode)
+	}
+	var updated struct {
+		Name       string   `json:"name"`
+		Active     bool     `json:"active"`
+		EventTypes []string `json:"event_types"`
+	}
+	if err := json.NewDecoder(patchResp.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode updated rule: %v", err)
+	}
+	if updated.Name != "r2" || updated.Active {
+		t.Fatalf("unexpected updated rule: %+v", updated)
+	}
+	if len(updated.EventTypes) != 1 || updated.EventTypes[0] != "agent_heartbeat" {
+		t.Fatalf("unexpected updated event types: %+v", updated.EventTypes)
+	}
 
 	dr, _ := http.NewRequest(http.MethodDelete, srv.URL+"/admin/notifications/"+rule.ID, nil)
 	delResp, _ := http.DefaultClient.Do(dr)
 	defer delResp.Body.Close()
 	if delResp.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE expected 204, got %d", delResp.StatusCode)
+	}
+}
+
+func TestNotificationRulesPersistAcrossHandlerRestart(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_notif_persist_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	handler1 := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv1 := httptest.NewServer(handler1)
+	body := `{"name":"persisted","webhook_url":"http://example.com/hook","event_types":["agent_registered"]}`
+	resp, err := http.Post(srv1.URL+"/admin/notifications", "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("create rule: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	srv1.Close()
+
+	handler2 := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv2 := httptest.NewServer(handler2)
+	t.Cleanup(srv2.Close)
+
+	listResp, err := http.Get(srv2.URL + "/admin/notifications")
+	if err != nil {
+		t.Fatalf("list rules after restart: %v", err)
+	}
+	defer listResp.Body.Close()
+	var listed struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if listed.Count != 1 {
+		t.Fatalf("expected 1 restored rule, got %d", listed.Count)
+	}
+}
+
+func TestNotificationRuleItemEndpointsAreTenantScoped(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_notif_tenant_scope_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	tenantKeys, err := auth.NewManagerFromEnv("tenant-a:key-a,tenant-b:key-b")
+	if err != nil {
+		t.Fatalf("tenant key manager: %v", err)
+	}
+	handler := makeHandler(db, counter, authConfig{tenantKeys: tenantKeys, defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	postReq, err := http.NewRequest(http.MethodPost, srv.URL+"/admin/notifications", bytes.NewBufferString(`{"name":"tenant-a","webhook_url":"http://example.com/hook","event_types":["agent_registered"]}`))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	postReq.Header.Set("Content-Type", "application/json")
+	postReq.Header.Set("X-API-Key", "key-a")
+	postResp, err := http.DefaultClient.Do(postReq)
+	if err != nil {
+		t.Fatalf("create rule: %v", err)
+	}
+	defer postResp.Body.Close()
+	if postResp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", postResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(postResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created rule: %v", err)
+	}
+
+	getReq, _ := http.NewRequest(http.MethodGet, srv.URL+"/admin/notifications/"+created.ID, nil)
+	getReq.Header.Set("X-API-Key", "key-b")
+	getResp, err := http.DefaultClient.Do(getReq)
+	if err != nil {
+		t.Fatalf("cross-tenant get: %v", err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", getResp.StatusCode)
+	}
+
+	patchReq, _ := http.NewRequest(http.MethodPatch, srv.URL+"/admin/notifications/"+created.ID, bytes.NewBufferString(`{"active":false}`))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchReq.Header.Set("X-API-Key", "key-b")
+	patchResp, err := http.DefaultClient.Do(patchReq)
+	if err != nil {
+		t.Fatalf("cross-tenant patch: %v", err)
+	}
+	defer patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", patchResp.StatusCode)
+	}
+
+	deleteReq, _ := http.NewRequest(http.MethodDelete, srv.URL+"/admin/notifications/"+created.ID, nil)
+	deleteReq.Header.Set("X-API-Key", "key-b")
+	deleteResp, err := http.DefaultClient.Do(deleteReq)
+	if err != nil {
+		t.Fatalf("cross-tenant delete: %v", err)
+	}
+	defer deleteResp.Body.Close()
+	if deleteResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", deleteResp.StatusCode)
 	}
 }
 
@@ -2399,7 +3150,9 @@ func TestCircuitBreakerEndpoints(t *testing.T) {
 	// List breakers.
 	lr, _ := http.Get(srv.URL + "/circuit")
 	defer lr.Body.Close()
-	var list struct{ Count int `json:"count"` }
+	var list struct {
+		Count int `json:"count"`
+	}
 	json.NewDecoder(lr.Body).Decode(&list)
 	if list.Count != 1 {
 		t.Errorf("expected 1 breaker, got %d", list.Count)
@@ -2408,7 +3161,9 @@ func TestCircuitBreakerEndpoints(t *testing.T) {
 	// Reset.
 	rr, _ := http.Post(srv.URL+"/circuit/reset?agent_id=agent-x", "application/json", nil)
 	defer rr.Body.Close()
-	var reset struct{ Failures int `json:"failures"` }
+	var reset struct {
+		Failures int `json:"failures"`
+	}
 	json.NewDecoder(rr.Body).Decode(&reset)
 	if reset.Failures != 0 {
 		t.Errorf("expected 0 after reset, got %d", reset.Failures)
@@ -2430,15 +3185,61 @@ func TestAgentGroupEndpoints(t *testing.T) {
 	if cr.StatusCode != http.StatusCreated {
 		t.Fatalf("POST expected 201, got %d", cr.StatusCode)
 	}
-	var g struct{ ID string `json:"id"` }
+	var g struct {
+		ID string `json:"id"`
+	}
 	json.NewDecoder(cr.Body).Decode(&g)
+
+	patchReq, _ := http.NewRequest(http.MethodPatch, srv.URL+"/agent-groups/"+g.ID, bytes.NewBufferString(`{"name":"workers-v2"}`))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchResp, _ := http.DefaultClient.Do(patchReq)
+	defer patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH expected 200, got %d", patchResp.StatusCode)
+	}
+	var patched struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(patchResp.Body).Decode(&patched); err != nil {
+		t.Fatalf("decode patched group: %v", err)
+	}
+	if patched.Name != "workers-v2" {
+		t.Fatalf("unexpected patched group: %+v", patched)
+	}
 
 	// Add member.
 	mr, _ := http.Post(srv.URL+"/agent-groups/"+g.ID+"/members", "application/json",
-		bytes.NewBufferString(`{"agent_id":"agent-1"}`))
+		bytes.NewBufferString(`{"agent_id":"agent-1","weight":2}`))
 	defer mr.Body.Close()
 	if mr.StatusCode != 200 {
 		t.Fatalf("add member expected 200, got %d", mr.StatusCode)
+	}
+
+	memberPatchReq, _ := http.NewRequest(http.MethodPatch, srv.URL+"/agent-groups/"+g.ID+"/members/agent-1", bytes.NewBufferString(`{"weight":3}`))
+	memberPatchReq.Header.Set("Content-Type", "application/json")
+	memberPatchResp, _ := http.DefaultClient.Do(memberPatchReq)
+	defer memberPatchResp.Body.Close()
+	if memberPatchResp.StatusCode != 200 {
+		t.Fatalf("patch member expected 200, got %d", memberPatchResp.StatusCode)
+	}
+	var patchedMembers struct {
+		Members []struct {
+			AgentID string `json:"agent_id"`
+			Weight  int    `json:"weight"`
+		} `json:"members"`
+	}
+	if err := json.NewDecoder(memberPatchResp.Body).Decode(&patchedMembers); err != nil {
+		t.Fatalf("decode patched group: %v", err)
+	}
+	if len(patchedMembers.Members) != 1 || patchedMembers.Members[0].Weight != 3 {
+		t.Fatalf("unexpected patched members: %+v", patchedMembers.Members)
+	}
+
+	missingDeleteReq, _ := http.NewRequest(http.MethodDelete, srv.URL+"/agent-groups/"+g.ID+"/members/missing", nil)
+	missingDeleteResp, _ := http.DefaultClient.Do(missingDeleteReq)
+	defer missingDeleteResp.Body.Close()
+	if missingDeleteResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("delete missing member expected 404, got %d", missingDeleteResp.StatusCode)
 	}
 
 	// Get next (round-robin).
@@ -2447,7 +3248,9 @@ func TestAgentGroupEndpoints(t *testing.T) {
 	if nr.StatusCode != 200 {
 		t.Fatalf("next expected 200, got %d", nr.StatusCode)
 	}
-	var next struct{ AgentID string `json:"agent_id"` }
+	var next struct {
+		AgentID string `json:"agent_id"`
+	}
 	json.NewDecoder(nr.Body).Decode(&next)
 	if next.AgentID != "agent-1" {
 		t.Errorf("expected agent-1, got %s", next.AgentID)
@@ -2459,6 +3262,70 @@ func TestAgentGroupEndpoints(t *testing.T) {
 	defer dr.Body.Close()
 	if dr.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE expected 204, got %d", dr.StatusCode)
+	}
+}
+
+func TestAgentGroupsPersistAcrossHandlerRestart(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_group_persist_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	handler1 := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv1 := httptest.NewServer(handler1)
+
+	createResp, err := http.Post(srv1.URL+"/agent-groups", "application/json", bytes.NewBufferString(`{"name":"workers"}`))
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", createResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created group: %v", err)
+	}
+	createResp.Body.Close()
+
+	memberResp, err := http.Post(srv1.URL+"/agent-groups/"+created.ID+"/members", "application/json", bytes.NewBufferString(`{"agent_id":"agent-1","weight":2}`))
+	if err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	memberResp.Body.Close()
+	if memberResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", memberResp.StatusCode)
+	}
+	srv1.Close()
+
+	handler2 := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv2 := httptest.NewServer(handler2)
+	t.Cleanup(srv2.Close)
+
+	getResp, err := http.Get(srv2.URL + "/agent-groups/" + created.ID)
+	if err != nil {
+		t.Fatalf("get persisted group: %v", err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", getResp.StatusCode)
+	}
+	var restored struct {
+		Name    string `json:"name"`
+		Members []struct {
+			AgentID string `json:"agent_id"`
+			Weight  int    `json:"weight"`
+		} `json:"members"`
+	}
+	if err := json.NewDecoder(getResp.Body).Decode(&restored); err != nil {
+		t.Fatalf("decode restored group: %v", err)
+	}
+	if restored.Name != "workers" || len(restored.Members) != 1 || restored.Members[0].AgentID != "agent-1" || restored.Members[0].Weight != 2 {
+		t.Fatalf("unexpected restored group: %+v", restored)
 	}
 }
 
@@ -2532,6 +3399,36 @@ func TestAgentGroupEndpointsAreTenantScoped(t *testing.T) {
 		t.Fatalf("expected 404, got %d", getResp.StatusCode)
 	}
 
+	patchReq, err := http.NewRequest(http.MethodPatch, srv.URL+"/agent-groups/"+group.ID+"/members/ghost", bytes.NewBufferString(`{"weight":2}`))
+	if err != nil {
+		t.Fatalf("cross-tenant member patch request: %v", err)
+	}
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchReq.Header.Set("X-API-Key", "key-b")
+	patchResp, err := http.DefaultClient.Do(patchReq)
+	if err != nil {
+		t.Fatalf("cross-tenant member patch: %v", err)
+	}
+	defer patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", patchResp.StatusCode)
+	}
+
+	groupPatchReq, err := http.NewRequest(http.MethodPatch, srv.URL+"/agent-groups/"+group.ID, bytes.NewBufferString(`{"name":"other"}`))
+	if err != nil {
+		t.Fatalf("cross-tenant patch request: %v", err)
+	}
+	groupPatchReq.Header.Set("Content-Type", "application/json")
+	groupPatchReq.Header.Set("X-API-Key", "key-b")
+	groupPatchResp, err := http.DefaultClient.Do(groupPatchReq)
+	if err != nil {
+		t.Fatalf("cross-tenant patch group: %v", err)
+	}
+	defer groupPatchResp.Body.Close()
+	if groupPatchResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", groupPatchResp.StatusCode)
+	}
+
 	listReq, err := http.NewRequest(http.MethodGet, srv.URL+"/agent-groups", nil)
 	if err != nil {
 		t.Fatalf("list request: %v", err)
@@ -2597,16 +3494,40 @@ func TestSchedulerEndpoints(t *testing.T) {
 	if cr.StatusCode != http.StatusCreated {
 		t.Fatalf("POST expected 201, got %d", cr.StatusCode)
 	}
-	var s struct{ ID string `json:"id"`; Name string `json:"name"` }
+	var s struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
 	json.NewDecoder(cr.Body).Decode(&s)
 	if s.Name != "hourly-sync" || s.ID == "" {
 		t.Errorf("unexpected schedule: %+v", s)
 	}
 
+	patchReq, _ := http.NewRequest(http.MethodPatch, srv.URL+"/schedules/"+s.ID, bytes.NewBufferString(`{"name":"paused-sync","interval_seconds":7200,"active":false}`))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchResp, _ := http.DefaultClient.Do(patchReq)
+	defer patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH expected 200, got %d", patchResp.StatusCode)
+	}
+	var updated struct {
+		Name     string `json:"name"`
+		Active   bool   `json:"active"`
+		Interval int64  `json:"interval_ns"`
+	}
+	if err := json.NewDecoder(patchResp.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode patched schedule: %v", err)
+	}
+	if updated.Name != "paused-sync" || updated.Active || updated.Interval != int64(2*time.Hour) {
+		t.Fatalf("unexpected patched schedule: %+v", updated)
+	}
+
 	// List.
 	lr, _ := http.Get(srv.URL + "/schedules")
 	defer lr.Body.Close()
-	var list struct{ Count int `json:"count"` }
+	var list struct {
+		Count int `json:"count"`
+	}
 	json.NewDecoder(lr.Body).Decode(&list)
 	if list.Count != 1 {
 		t.Errorf("expected 1, got %d", list.Count)
@@ -2618,6 +3539,155 @@ func TestSchedulerEndpoints(t *testing.T) {
 	defer dr.Body.Close()
 	if dr.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE expected 204, got %d", dr.StatusCode)
+	}
+}
+
+func TestScheduleItemEndpointsAreTenantScoped(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_sched_tenant_scope_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	tenantKeys, err := auth.NewManagerFromEnv("tenant-a:key-a,tenant-b:key-b")
+	if err != nil {
+		t.Fatalf("tenant key manager: %v", err)
+	}
+	handler := makeHandler(db, counter, authConfig{tenantKeys: tenantKeys, defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	postReq, err := http.NewRequest(http.MethodPost, srv.URL+"/schedules", bytes.NewBufferString(`{"name":"tenant-a-sync","capability":"sync","interval_seconds":3600}`))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	postReq.Header.Set("Content-Type", "application/json")
+	postReq.Header.Set("X-API-Key", "key-a")
+	postResp, err := http.DefaultClient.Do(postReq)
+	if err != nil {
+		t.Fatalf("create schedule: %v", err)
+	}
+	defer postResp.Body.Close()
+	if postResp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", postResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(postResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created schedule: %v", err)
+	}
+
+	getReq, err := http.NewRequest(http.MethodGet, srv.URL+"/schedules/"+created.ID, nil)
+	if err != nil {
+		t.Fatalf("get request: %v", err)
+	}
+	getReq.Header.Set("X-API-Key", "key-b")
+	getResp, err := http.DefaultClient.Do(getReq)
+	if err != nil {
+		t.Fatalf("cross-tenant get: %v", err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", getResp.StatusCode)
+	}
+
+	patchReq, err := http.NewRequest(http.MethodPatch, srv.URL+"/schedules/"+created.ID, bytes.NewBufferString(`{"active":false}`))
+	if err != nil {
+		t.Fatalf("patch request: %v", err)
+	}
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchReq.Header.Set("X-API-Key", "key-b")
+	patchResp, err := http.DefaultClient.Do(patchReq)
+	if err != nil {
+		t.Fatalf("cross-tenant patch: %v", err)
+	}
+	defer patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", patchResp.StatusCode)
+	}
+
+	deleteReq, err := http.NewRequest(http.MethodDelete, srv.URL+"/schedules/"+created.ID, nil)
+	if err != nil {
+		t.Fatalf("delete request: %v", err)
+	}
+	deleteReq.Header.Set("X-API-Key", "key-b")
+	deleteResp, err := http.DefaultClient.Do(deleteReq)
+	if err != nil {
+		t.Fatalf("cross-tenant delete: %v", err)
+	}
+	defer deleteResp.Body.Close()
+	if deleteResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", deleteResp.StatusCode)
+	}
+}
+
+func TestSchedulesPersistAcrossHandlerRestart(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_schedule_persist_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	handler1 := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv1 := httptest.NewServer(handler1)
+
+	createResp, err := http.Post(srv1.URL+"/schedules", "application/json", bytes.NewBufferString(`{"name":"persisted-sync","capability":"sync","interval_seconds":3600}`))
+	if err != nil {
+		t.Fatalf("create schedule: %v", err)
+	}
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", createResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created schedule: %v", err)
+	}
+	createResp.Body.Close()
+
+	pauseReq, err := http.NewRequest(http.MethodPatch, srv1.URL+"/schedules/"+created.ID, bytes.NewBufferString(`{"active":false}`))
+	if err != nil {
+		t.Fatalf("pause request: %v", err)
+	}
+	pauseReq.Header.Set("Content-Type", "application/json")
+	pauseResp, err := http.DefaultClient.Do(pauseReq)
+	if err != nil {
+		t.Fatalf("pause schedule: %v", err)
+	}
+	pauseResp.Body.Close()
+	if pauseResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", pauseResp.StatusCode)
+	}
+	srv1.Close()
+
+	handler2 := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv2 := httptest.NewServer(handler2)
+	t.Cleanup(srv2.Close)
+
+	getResp, err := http.Get(srv2.URL + "/schedules/" + created.ID)
+	if err != nil {
+		t.Fatalf("get persisted schedule: %v", err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", getResp.StatusCode)
+	}
+	var restored struct {
+		Name     string `json:"name"`
+		Active   bool   `json:"active"`
+		Interval int64  `json:"interval_ns"`
+	}
+	if err := json.NewDecoder(getResp.Body).Decode(&restored); err != nil {
+		t.Fatalf("decode restored schedule: %v", err)
+	}
+	if restored.Name != "persisted-sync" || restored.Active || restored.Interval != int64(time.Hour) {
+		t.Fatalf("unexpected restored schedule: %+v", restored)
 	}
 }
 
@@ -2668,293 +3738,491 @@ func TestScheduleExecutionCreatesJobs(t *testing.T) {
 }
 
 func TestBlockchainHeightEndpoint(t *testing.T) {
-counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_bc_height_total", Help: "test"}, []string{"path", "method", "code"})
-tmp := t.TempDir()
-db, _ := store.Open(store.DBPath(tmp))
-defer db.Close()
-handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
-srv := httptest.NewServer(handler)
-t.Cleanup(srv.Close)
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_bc_height_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
 
-resp, _ := http.Get(srv.URL + "/blockchain/height")
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusOK {
-t.Fatalf("expected 200, got %d", resp.StatusCode)
-}
-var result map[string]int
-json.NewDecoder(resp.Body).Decode(&result)
-if _, ok := result["height"]; !ok {
-t.Fatal("expected 'height' field in response")
-}
+	resp, _ := http.Get(srv.URL + "/blockchain/height")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var result map[string]int
+	json.NewDecoder(resp.Body).Decode(&result)
+	if _, ok := result["height"]; !ok {
+		t.Fatal("expected 'height' field in response")
+	}
 }
 
 func TestRoutesStatsEndpoint(t *testing.T) {
-counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_rt_stats_total", Help: "test"}, []string{"path", "method", "code"})
-tmp := t.TempDir()
-db, _ := store.Open(store.DBPath(tmp))
-defer db.Close()
-handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
-srv := httptest.NewServer(handler)
-t.Cleanup(srv.Close)
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_rt_stats_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
 
-resp, _ := http.Get(srv.URL + "/routes/stats")
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusOK {
-t.Fatalf("expected 200, got %d", resp.StatusCode)
+	_, _ = http.Post(srv.URL+"/routes?destination=edge-a&latency=10&throughput=100", "text/plain", nil)
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/routes/edge-a", bytes.NewBufferString(`{"tags":{"region":"us-west","site":"edge-a"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	resp.Body.Close()
+
+	_, _ = http.Post(srv.URL+"/routes?destination=edge-b&latency=20&throughput=80", "text/plain", nil)
+	req, _ = http.NewRequest(http.MethodPatch, srv.URL+"/routes/edge-b", bytes.NewBufferString(`{"satellite":true,"tags":{"region":"us-west","site":"edge-b"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+
+	resp, _ = http.Get(srv.URL + "/routes/stats")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var result map[string]any
+	json.NewDecoder(resp.Body).Decode(&result)
+	if _, ok := result["total"]; !ok {
+		t.Fatal("expected 'total' in routes/stats")
+	}
+	if result["total"].(float64) != 2 {
+		t.Fatalf("expected total=2, got %v", result["total"])
+	}
+	byRegion, ok := result["by_region"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected by_region map, got %#v", result["by_region"])
+	}
+	regionStats, ok := byRegion["us-west"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected us-west stats, got %#v", byRegion)
+	}
+	if regionStats["count"].(float64) != 2 || regionStats["satellite"].(float64) != 1 {
+		t.Fatalf("unexpected us-west stats: %#v", regionStats)
+	}
+	bySite, ok := result["by_site"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected by_site map, got %#v", result["by_site"])
+	}
+	if _, ok := bySite["edge-a"].(map[string]any); !ok {
+		t.Fatalf("expected edge-a site stats, got %#v", bySite)
+	}
+
+	filteredResp, _ := http.Get(srv.URL + "/routes/stats?tag=site:edge-a")
+	defer filteredResp.Body.Close()
+	if filteredResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", filteredResp.StatusCode)
+	}
+	var filtered map[string]any
+	if err := json.NewDecoder(filteredResp.Body).Decode(&filtered); err != nil {
+		t.Fatalf("decode filtered stats: %v", err)
+	}
+	if filtered["total"].(float64) != 1 {
+		t.Fatalf("expected filtered total=1, got %v", filtered["total"])
+	}
+	filteredBySite, ok := filtered["by_site"].(map[string]any)
+	if !ok || len(filteredBySite) != 1 {
+		t.Fatalf("expected single filtered site, got %#v", filtered["by_site"])
+	}
+	if _, ok := filteredBySite["edge-a"].(map[string]any); !ok {
+		t.Fatalf("expected filtered edge-a site stats, got %#v", filteredBySite)
+	}
 }
-var result map[string]any
-json.NewDecoder(resp.Body).Decode(&result)
-if _, ok := result["total"]; !ok {
-t.Fatal("expected 'total' in routes/stats")
-}
+
+func TestRoutesTopologyEndpoint(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_rt_topology_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	_, _ = http.Post(srv.URL+"/routes?destination=west-primary&latency=15&throughput=90", "text/plain", nil)
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/routes/west-primary", bytes.NewBufferString(`{"tags":{"region":"us-west","site":"edge-a"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	resp.Body.Close()
+
+	_, _ = http.Post(srv.URL+"/routes?destination=west-sat&latency=5&throughput=60", "text/plain", nil)
+	req, _ = http.NewRequest(http.MethodPatch, srv.URL+"/routes/west-sat", bytes.NewBufferString(`{"satellite":true,"tags":{"region":"us-west","site":"edge-b"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+
+	_, _ = http.Post(srv.URL+"/routes?destination=east-primary&latency=8&throughput=100", "text/plain", nil)
+	req, _ = http.NewRequest(http.MethodPatch, srv.URL+"/routes/east-primary", bytes.NewBufferString(`{"tags":{"region":"us-east","site":"edge-c"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+
+	_, _ = http.Post(srv.URL+"/routes?destination=untagged&latency=3&throughput=20", "text/plain", nil)
+
+	resp, _ = http.Get(srv.URL + "/routes/topology")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode topology: %v", err)
+	}
+	if result["total"].(float64) != 4 {
+		t.Fatalf("expected total=4, got %v", result["total"])
+	}
+	regions, ok := result["regions"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected regions map, got %#v", result["regions"])
+	}
+	west, ok := regions["us-west"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected us-west region, got %#v", regions)
+	}
+	westBest, ok := west["best_route"].(map[string]any)
+	if !ok || westBest["destination"] != "west-primary" {
+		t.Fatalf("expected west-primary best route, got %#v", west["best_route"])
+	}
+	westSites, ok := west["sites"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected site map, got %#v", west["sites"])
+	}
+	edgeB, ok := westSites["edge-b"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected edge-b site, got %#v", westSites)
+	}
+	edgeBBest, ok := edgeB["best_route"].(map[string]any)
+	if !ok || edgeBBest["destination"] != "west-sat" {
+		t.Fatalf("expected west-sat site best route, got %#v", edgeB["best_route"])
+	}
+	untagged, ok := result["untagged"].(map[string]any)
+	if !ok || untagged["count"].(float64) != 1 {
+		t.Fatalf("expected untagged summary, got %#v", result["untagged"])
+	}
+
+	filteredResp, _ := http.Get(srv.URL + "/routes/topology?tag=region:us-west&tag=site:edge-b")
+	defer filteredResp.Body.Close()
+	if filteredResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", filteredResp.StatusCode)
+	}
+	var filtered map[string]any
+	if err := json.NewDecoder(filteredResp.Body).Decode(&filtered); err != nil {
+		t.Fatalf("decode filtered topology: %v", err)
+	}
+	if filtered["total"].(float64) != 1 {
+		t.Fatalf("expected filtered total=1, got %v", filtered["total"])
+	}
+	filteredRegions, ok := filtered["regions"].(map[string]any)
+	if !ok || len(filteredRegions) != 1 {
+		t.Fatalf("expected single filtered region, got %#v", filtered["regions"])
+	}
+	filteredWest, ok := filteredRegions["us-west"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected filtered us-west region, got %#v", filteredRegions)
+	}
+	filteredSites, ok := filteredWest["sites"].(map[string]any)
+	if !ok || len(filteredSites) != 1 {
+		t.Fatalf("expected single filtered site, got %#v", filteredWest["sites"])
+	}
+	filteredEdgeB, ok := filteredSites["edge-b"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected filtered edge-b site, got %#v", filteredSites)
+	}
+	filteredBest, ok := filteredEdgeB["best_route"].(map[string]any)
+	if !ok || filteredBest["destination"] != "west-sat" {
+		t.Fatalf("expected filtered west-sat best route, got %#v", filteredEdgeB["best_route"])
+	}
+	if filtered["untagged"] != nil {
+		t.Fatalf("expected no untagged bucket after filtering, got %#v", filtered["untagged"])
+	}
 }
 
 func TestAgentsStatsEndpoint(t *testing.T) {
-counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_ag_stats_total", Help: "test"}, []string{"path", "method", "code"})
-tmp := t.TempDir()
-db, _ := store.Open(store.DBPath(tmp))
-defer db.Close()
-handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
-srv := httptest.NewServer(handler)
-t.Cleanup(srv.Close)
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_ag_stats_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
 
-resp, _ := http.Get(srv.URL + "/agents/stats")
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusOK {
-t.Fatalf("expected 200, got %d", resp.StatusCode)
-}
-var result map[string]any
-json.NewDecoder(resp.Body).Decode(&result)
-if _, ok := result["total"]; !ok {
-t.Fatal("expected 'total' in agents/stats")
-}
+	resp, _ := http.Get(srv.URL + "/agents/stats")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var result map[string]any
+	json.NewDecoder(resp.Body).Decode(&result)
+	if _, ok := result["total"]; !ok {
+		t.Fatal("expected 'total' in agents/stats")
+	}
 }
 
 func TestBlockchainStatsEndpoint(t *testing.T) {
-counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_bc_stats_total", Help: "test"}, []string{"path", "method", "code"})
-tmp := t.TempDir()
-db, _ := store.Open(store.DBPath(tmp))
-defer db.Close()
-handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
-srv := httptest.NewServer(handler)
-t.Cleanup(srv.Close)
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_bc_stats_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
 
-resp, _ := http.Get(srv.URL + "/blockchain/stats")
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusOK {
-t.Fatalf("expected 200, got %d", resp.StatusCode)
-}
-var result map[string]any
-json.NewDecoder(resp.Body).Decode(&result)
-if _, ok := result["height"]; !ok {
-t.Fatal("expected 'height' in blockchain/stats")
-}
+	resp, _ := http.Get(srv.URL + "/blockchain/stats")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var result map[string]any
+	json.NewDecoder(resp.Body).Decode(&result)
+	if _, ok := result["height"]; !ok {
+		t.Fatal("expected 'height' in blockchain/stats")
+	}
 }
 
 func TestSystemInfoEndpoint(t *testing.T) {
-counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_sysinfo_total", Help: "test"}, []string{"path", "method", "code"})
-tmp := t.TempDir()
-db, _ := store.Open(store.DBPath(tmp))
-defer db.Close()
-handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
-srv := httptest.NewServer(handler)
-t.Cleanup(srv.Close)
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_sysinfo_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
 
-resp, _ := http.Get(srv.URL + "/system/info")
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusOK {
-t.Fatalf("expected 200, got %d", resp.StatusCode)
-}
-var result map[string]any
-json.NewDecoder(resp.Body).Decode(&result)
-if _, ok := result["version"]; !ok {
-t.Fatal("expected 'version' in system/info")
-}
-if _, ok := result["goroutines"]; !ok {
-t.Fatal("expected 'goroutines' in system/info")
-}
+	resp, _ := http.Get(srv.URL + "/system/info")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var result map[string]any
+	json.NewDecoder(resp.Body).Decode(&result)
+	if _, ok := result["version"]; !ok {
+		t.Fatal("expected 'version' in system/info")
+	}
+	if _, ok := result["goroutines"]; !ok {
+		t.Fatal("expected 'goroutines' in system/info")
+	}
 }
 
 func TestAgentsHealthEndpoint(t *testing.T) {
-counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_ag_health_total", Help: "test"}, []string{"path", "method", "code"})
-tmp := t.TempDir()
-db, _ := store.Open(store.DBPath(tmp))
-defer db.Close()
-handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
-srv := httptest.NewServer(handler)
-t.Cleanup(srv.Close)
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_ag_health_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
 
-resp, _ := http.Get(srv.URL + "/agents/health")
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusOK {
-t.Fatalf("expected 200, got %d", resp.StatusCode)
-}
-var result map[string]any
-json.NewDecoder(resp.Body).Decode(&result)
-if _, ok := result["status"]; !ok {
-t.Fatal("expected 'status' in agents/health")
-}
+	resp, _ := http.Get(srv.URL + "/agents/health")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var result map[string]any
+	json.NewDecoder(resp.Body).Decode(&result)
+	if _, ok := result["status"]; !ok {
+		t.Fatal("expected 'status' in agents/health")
+	}
 }
 
 func TestMetricsTimeseriesEndpoint(t *testing.T) {
-counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_mts_total", Help: "test"}, []string{"path", "method", "code"})
-tmp := t.TempDir()
-db, _ := store.Open(store.DBPath(tmp))
-defer db.Close()
-handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
-srv := httptest.NewServer(handler)
-t.Cleanup(srv.Close)
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_mts_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
 
-resp, _ := http.Get(srv.URL + "/metrics/timeseries?n=5")
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusOK {
-t.Fatalf("expected 200, got %d", resp.StatusCode)
-}
+	resp, _ := http.Get(srv.URL + "/metrics/timeseries?n=5")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
 }
 
 func TestRoutesFilterEndpoint(t *testing.T) {
-counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_rfilt_total", Help: "test"}, []string{"path", "method", "code"})
-tmp := t.TempDir()
-db, _ := store.Open(store.DBPath(tmp))
-defer db.Close()
-handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
-srv := httptest.NewServer(handler)
-t.Cleanup(srv.Close)
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_rfilt_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
 
-// First add a route
-body := `{"destination":"10.0.0.1:9000","metric":{"latency":10,"throughput":100}}`
-pr, _ := http.Post(srv.URL+"/routes", "application/json", bytes.NewBufferString(body))
-defer pr.Body.Close()
+	// First add a route
+	body := `{"destination":"10.0.0.1:9000","metric":{"latency":10,"throughput":100}}`
+	pr, _ := http.Post(srv.URL+"/routes", "application/json", bytes.NewBufferString(body))
+	defer pr.Body.Close()
 
-// Filter with max_latency
-resp, _ := http.Get(srv.URL + "/routes/filter?max_latency=50")
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusOK {
-t.Fatalf("expected 200, got %d", resp.StatusCode)
+	// Filter with max_latency
+	resp, _ := http.Get(srv.URL + "/routes/filter?max_latency=50")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var result map[string]any
+	json.NewDecoder(resp.Body).Decode(&result)
+	if _, ok := result["routes"]; !ok {
+		t.Fatal("expected 'routes' key")
+	}
 }
-var result map[string]any
-json.NewDecoder(resp.Body).Decode(&result)
-if _, ok := result["routes"]; !ok {
-t.Fatal("expected 'routes' key")
-}
+
+func TestRoutesFilterEndpointWithMultipleTags(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_rfilt_multi_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	_, _ = http.Post(srv.URL+"/routes?destination=edge-a&latency=10&throughput=100", "text/plain", nil)
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/routes/edge-a", bytes.NewBufferString(`{"tags":{"region":"us-west","site":"edge-a","tier":"standard"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	resp.Body.Close()
+
+	_, _ = http.Post(srv.URL+"/routes?destination=edge-b&latency=12&throughput=110", "text/plain", nil)
+	req, _ = http.NewRequest(http.MethodPatch, srv.URL+"/routes/edge-b", bytes.NewBufferString(`{"tags":{"region":"us-west","site":"edge-b","tier":"premium"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+
+	resp, _ = http.Get(srv.URL + "/routes/filter?tag=region:us-west&tag=site:edge-b")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var result struct {
+		Routes []map[string]any `json:"routes"`
+		Count  int              `json:"count"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if result.Count != 1 || len(result.Routes) != 1 || result.Routes[0]["destination"] != "edge-b" {
+		t.Fatalf("unexpected multi-tag filter result: %+v", result)
+	}
 }
 
 func TestAdminBackupList_NilStatus(t *testing.T) {
-counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_bkup_list_total", Help: "test"}, []string{"path", "method", "code"})
-tmp := t.TempDir()
-db, _ := store.Open(store.DBPath(tmp))
-defer db.Close()
-handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
-srv := httptest.NewServer(handler)
-t.Cleanup(srv.Close)
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_bkup_list_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
 
-resp, _ := http.Get(srv.URL + "/admin/backup/list")
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusOK {
-t.Fatalf("expected 200 with nil status, got %d", resp.StatusCode)
-}
-var result map[string]any
-json.NewDecoder(resp.Body).Decode(&result)
-if result["backups"] == nil {
-t.Fatal("expected 'backups' key")
-}
+	resp, _ := http.Get(srv.URL + "/admin/backup/list")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 with nil status, got %d", resp.StatusCode)
+	}
+	var result map[string]any
+	json.NewDecoder(resp.Body).Decode(&result)
+	if result["backups"] == nil {
+		t.Fatal("expected 'backups' key")
+	}
 }
 
 func TestAdminBackup_NilStatus(t *testing.T) {
-counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_bkup_nil_total", Help: "test"}, []string{"path", "method", "code"})
-tmp := t.TempDir()
-db, _ := store.Open(store.DBPath(tmp))
-defer db.Close()
-handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
-srv := httptest.NewServer(handler)
-t.Cleanup(srv.Close)
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_bkup_nil_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
 
-resp, _ := http.Post(srv.URL+"/admin/backup", "application/json", nil)
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusServiceUnavailable {
-t.Fatalf("expected 503 with nil status, got %d", resp.StatusCode)
-}
+	resp, _ := http.Post(srv.URL+"/admin/backup", "application/json", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 with nil status, got %d", resp.StatusCode)
+	}
 }
 
 func TestAdminCompact_NilStatus(t *testing.T) {
-counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_cmp_nil_total", Help: "test"}, []string{"path", "method", "code"})
-tmp := t.TempDir()
-db, _ := store.Open(store.DBPath(tmp))
-defer db.Close()
-handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
-srv := httptest.NewServer(handler)
-t.Cleanup(srv.Close)
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_cmp_nil_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
 
-resp, _ := http.Post(srv.URL+"/admin/compact", "application/json", nil)
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusServiceUnavailable {
-t.Fatalf("expected 503 with nil status, got %d", resp.StatusCode)
-}
+	resp, _ := http.Post(srv.URL+"/admin/compact", "application/json", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 with nil status, got %d", resp.StatusCode)
+	}
 }
 
 func TestAdminMeshEndpoint(t *testing.T) {
-counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_mesh_ep_total", Help: "test"}, []string{"path", "method", "code"})
-tmp := t.TempDir()
-db, _ := store.Open(store.DBPath(tmp))
-defer db.Close()
-handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
-srv := httptest.NewServer(handler)
-t.Cleanup(srv.Close)
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_mesh_ep_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
 
-resp, _ := http.Get(srv.URL + "/admin/mesh")
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusOK {
-t.Fatalf("expected 200, got %d", resp.StatusCode)
-}
+	resp, _ := http.Get(srv.URL + "/admin/mesh")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
 }
 
 func TestBlockchainHeightMethodNotAllowed(t *testing.T) {
-counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_bc_ht_405_total", Help: "test"}, []string{"path", "method", "code"})
-tmp := t.TempDir()
-db, _ := store.Open(store.DBPath(tmp))
-defer db.Close()
-handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
-srv := httptest.NewServer(handler)
-t.Cleanup(srv.Close)
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_bc_ht_405_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
 
-resp, _ := http.Post(srv.URL+"/blockchain/height", "application/json", nil)
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusMethodNotAllowed {
-t.Fatalf("expected 405, got %d", resp.StatusCode)
-}
+	resp, _ := http.Post(srv.URL+"/blockchain/height", "application/json", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", resp.StatusCode)
+	}
 }
 
 func TestJobsSubmitWithPriority(t *testing.T) {
-counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_jobs_prio_total", Help: "test"}, []string{"path", "method", "code"})
-tmp := t.TempDir()
-db, _ := store.Open(store.DBPath(tmp))
-defer db.Close()
-handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
-srv := httptest.NewServer(handler)
-t.Cleanup(srv.Close)
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_jobs_prio_total", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, _ := store.Open(store.DBPath(tmp))
+	defer db.Close()
+	handler := makeHandler(db, counter, authConfig{defaultTenant: "default"}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
 
-// Register agent first
-regBody := `{"id":"prio-agent","tenant_id":"default","capabilities":["compute"],"status":"healthy"}`
-rr, _ := http.Post(srv.URL+"/agents/register", "application/json", bytes.NewBufferString(regBody))
-io.ReadAll(rr.Body)
-rr.Body.Close()
+	// Register agent first
+	regBody := `{"id":"prio-agent","tenant_id":"default","capabilities":["compute"],"status":"healthy"}`
+	rr, _ := http.Post(srv.URL+"/agents/register", "application/json", bytes.NewBufferString(regBody))
+	io.ReadAll(rr.Body)
+	rr.Body.Close()
 
-// Submit with priority
-body := `{"agent_id":"prio-agent","capability":"compute","priority":5,"ttl_seconds":3600}`
-resp, _ := http.Post(srv.URL+"/agents/jobs", "application/json", bytes.NewBufferString(body))
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusCreated {
-bodyBytes, _ := io.ReadAll(resp.Body)
-t.Fatalf("expected 201, got %d: %s", resp.StatusCode, string(bodyBytes))
-}
-var job map[string]any
-json.NewDecoder(resp.Body).Decode(&job)
-if job["id"] == nil {
-t.Fatal("expected id field in response")
-}
-if job["expires_at"] == nil {
-t.Fatal("expected expires_at field for ttl_seconds=3600")
-}
+	// Submit with priority
+	body := `{"agent_id":"prio-agent","capability":"compute","priority":5,"ttl_seconds":3600}`
+	resp, _ := http.Post(srv.URL+"/agents/jobs", "application/json", bytes.NewBufferString(body))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+	var job map[string]any
+	json.NewDecoder(resp.Body).Decode(&job)
+	if job["id"] == nil {
+		t.Fatal("expected id field in response")
+	}
+	if job["expires_at"] == nil {
+		t.Fatal("expected expires_at field for ttl_seconds=3600")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -2965,428 +4233,428 @@ t.Fatal("expected expires_at field for ttl_seconds=3600")
 // ---------------------------------------------------------------------------
 
 func TestParseKeyList_EmptyMain(t *testing.T) {
-if got := parseKeyList(""); got != nil {
-t.Fatalf("expected nil, got %v", got)
-}
+	if got := parseKeyList(""); got != nil {
+		t.Fatalf("expected nil, got %v", got)
+	}
 }
 
 func TestParseKeyList_Single(t *testing.T) {
-got := parseKeyList("abc")
-if len(got) != 1 || got[0] != "abc" {
-t.Fatalf("unexpected: %v", got)
-}
+	got := parseKeyList("abc")
+	if len(got) != 1 || got[0] != "abc" {
+		t.Fatalf("unexpected: %v", got)
+	}
 }
 
 func TestParseKeyList_Multiple(t *testing.T) {
-got := parseKeyList("a, b, c")
-if len(got) != 3 {
-t.Fatalf("expected 3 keys, got: %v", got)
-}
+	got := parseKeyList("a, b, c")
+	if len(got) != 3 {
+		t.Fatalf("expected 3 keys, got: %v", got)
+	}
 }
 
 func TestParseKeyList_SpacesOnly(t *testing.T) {
-if got := parseKeyList("  ,  ,  "); got != nil && len(got) != 0 {
-t.Fatalf("expected empty, got: %v", got)
-}
+	if got := parseKeyList("  ,  ,  "); got != nil && len(got) != 0 {
+		t.Fatalf("expected empty, got: %v", got)
+	}
 }
 
 func TestParseTags_EmptyMain(t *testing.T) {
-if got := parseTags(nil); got != nil {
-t.Fatal("expected nil for empty input")
-}
+	if got := parseTags(nil); got != nil {
+		t.Fatal("expected nil for empty input")
+	}
 }
 
 func TestParseTags_ValidMain(t *testing.T) {
-got := parseTags([]string{"region:us-east", "tier:premium"})
-if got["region"] != "us-east" || got["tier"] != "premium" {
-t.Fatalf("unexpected tags: %v", got)
-}
+	got := parseTags([]string{"region:us-east", "tier:premium"})
+	if got["region"] != "us-east" || got["tier"] != "premium" {
+		t.Fatalf("unexpected tags: %v", got)
+	}
 }
 
 func TestParseTags_InvalidSkipped(t *testing.T) {
-got := parseTags([]string{"invalid", "key:value"})
-if _, ok := got["invalid"]; ok {
-t.Fatal("invalid entry should be skipped")
-}
-if got["key"] != "value" {
-t.Fatalf("expected 'key' -> 'value', got: %v", got)
-}
+	got := parseTags([]string{"invalid", "key:value"})
+	if _, ok := got["invalid"]; ok {
+		t.Fatal("invalid entry should be skipped")
+	}
+	if got["key"] != "value" {
+		t.Fatalf("expected 'key' -> 'value', got: %v", got)
+	}
 }
 
 func TestParseTags_AllInvalidMain(t *testing.T) {
-got := parseTags([]string{"nocolon", "alsonocolon"})
-if got != nil {
-t.Fatalf("expected nil when all invalid, got: %v", got)
-}
+	got := parseTags([]string{"nocolon", "alsonocolon"})
+	if got != nil {
+		t.Fatalf("expected nil when all invalid, got: %v", got)
+	}
 }
 
 func TestValidateTransactions_ValidMain(t *testing.T) {
-txs := []blockchain.Transaction{
-{Sender: "alice", Recipient: "bob", Amount: 10},
-}
-if err := validateTransactions(txs); err != nil {
-t.Fatalf("unexpected error: %v", err)
-}
+	txs := []blockchain.Transaction{
+		{Sender: "alice", Recipient: "bob", Amount: 10},
+	}
+	if err := validateTransactions(txs); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 func TestValidateTransactions_EmptySenderMain(t *testing.T) {
-txs := []blockchain.Transaction{{Sender: "", Recipient: "bob", Amount: 5}}
-if err := validateTransactions(txs); err == nil {
-t.Fatal("expected error for empty sender")
-}
+	txs := []blockchain.Transaction{{Sender: "", Recipient: "bob", Amount: 5}}
+	if err := validateTransactions(txs); err == nil {
+		t.Fatal("expected error for empty sender")
+	}
 }
 
 func TestValidateTransactions_NegativeAmountMain(t *testing.T) {
-txs := []blockchain.Transaction{{Sender: "alice", Recipient: "bob", Amount: -1}}
-if err := validateTransactions(txs); err == nil {
-t.Fatal("expected error for negative amount")
-}
+	txs := []blockchain.Transaction{{Sender: "alice", Recipient: "bob", Amount: -1}}
+	if err := validateTransactions(txs); err == nil {
+		t.Fatal("expected error for negative amount")
+	}
 }
 
 func TestValidateTransactions_TooManyMain(t *testing.T) {
-txs := make([]blockchain.Transaction, 1001)
-for i := range txs {
-txs[i] = blockchain.Transaction{Sender: "a", Recipient: "b", Amount: 1}
-}
-if err := validateTransactions(txs); err == nil {
-t.Fatal("expected error for too many transactions")
-}
+	txs := make([]blockchain.Transaction, 1001)
+	for i := range txs {
+		txs[i] = blockchain.Transaction{Sender: "a", Recipient: "b", Amount: 1}
+	}
+	if err := validateTransactions(txs); err == nil {
+		t.Fatal("expected error for too many transactions")
+	}
 }
 
 func TestGetEnvInt_Default(t *testing.T) {
-os.Unsetenv("TEST_ENV_INT")
-if got := getEnvInt("TEST_ENV_INT", 42); got != 42 {
-t.Fatalf("expected 42, got %d", got)
-}
+	os.Unsetenv("TEST_ENV_INT")
+	if got := getEnvInt("TEST_ENV_INT", 42); got != 42 {
+		t.Fatalf("expected 42, got %d", got)
+	}
 }
 
 func TestGetEnvInt_Set(t *testing.T) {
-os.Setenv("TEST_ENV_INT", "99")
-defer os.Unsetenv("TEST_ENV_INT")
-if got := getEnvInt("TEST_ENV_INT", 0); got != 99 {
-t.Fatalf("expected 99, got %d", got)
-}
+	os.Setenv("TEST_ENV_INT", "99")
+	defer os.Unsetenv("TEST_ENV_INT")
+	if got := getEnvInt("TEST_ENV_INT", 0); got != 99 {
+		t.Fatalf("expected 99, got %d", got)
+	}
 }
 
 func TestGetEnvInt_Invalid(t *testing.T) {
-os.Setenv("TEST_ENV_INT", "notanint")
-defer os.Unsetenv("TEST_ENV_INT")
-if got := getEnvInt("TEST_ENV_INT", 7); got != 7 {
-t.Fatalf("expected default 7, got %d", got)
-}
+	os.Setenv("TEST_ENV_INT", "notanint")
+	defer os.Unsetenv("TEST_ENV_INT")
+	if got := getEnvInt("TEST_ENV_INT", 7); got != 7 {
+		t.Fatalf("expected default 7, got %d", got)
+	}
 }
 
 func TestGetEnvFloat_Default(t *testing.T) {
-os.Unsetenv("TEST_ENV_F")
-if got := getEnvFloat("TEST_ENV_F", 3.14); got != 3.14 {
-t.Fatalf("expected 3.14, got %f", got)
-}
+	os.Unsetenv("TEST_ENV_F")
+	if got := getEnvFloat("TEST_ENV_F", 3.14); got != 3.14 {
+		t.Fatalf("expected 3.14, got %f", got)
+	}
 }
 
 func TestGetEnvFloat_Set(t *testing.T) {
-os.Setenv("TEST_ENV_F", "2.71")
-defer os.Unsetenv("TEST_ENV_F")
-if got := getEnvFloat("TEST_ENV_F", 0); got != 2.71 {
-t.Fatalf("expected 2.71, got %f", got)
-}
+	os.Setenv("TEST_ENV_F", "2.71")
+	defer os.Unsetenv("TEST_ENV_F")
+	if got := getEnvFloat("TEST_ENV_F", 0); got != 2.71 {
+		t.Fatalf("expected 2.71, got %f", got)
+	}
 }
 
 func TestGetEnvFloat_Invalid(t *testing.T) {
-os.Setenv("TEST_ENV_F", "bad")
-defer os.Unsetenv("TEST_ENV_F")
-if got := getEnvFloat("TEST_ENV_F", 1.5); got != 1.5 {
-t.Fatalf("expected 1.5, got %f", got)
-}
+	os.Setenv("TEST_ENV_F", "bad")
+	defer os.Unsetenv("TEST_ENV_F")
+	if got := getEnvFloat("TEST_ENV_F", 1.5); got != 1.5 {
+		t.Fatalf("expected 1.5, got %f", got)
+	}
 }
 
 func TestGetEnvBool_Default(t *testing.T) {
-os.Unsetenv("TEST_ENV_B")
-if got := getEnvBool("TEST_ENV_B", true); !got {
-t.Fatal("expected true default")
-}
+	os.Unsetenv("TEST_ENV_B")
+	if got := getEnvBool("TEST_ENV_B", true); !got {
+		t.Fatal("expected true default")
+	}
 }
 
 func TestGetEnvBool_True(t *testing.T) {
-for _, val := range []string{"1", "true", "yes", "y"} {
-os.Setenv("TEST_ENV_B", val)
-if got := getEnvBool("TEST_ENV_B", false); !got {
-t.Fatalf("expected true for value %q", val)
-}
-}
-os.Unsetenv("TEST_ENV_B")
+	for _, val := range []string{"1", "true", "yes", "y"} {
+		os.Setenv("TEST_ENV_B", val)
+		if got := getEnvBool("TEST_ENV_B", false); !got {
+			t.Fatalf("expected true for value %q", val)
+		}
+	}
+	os.Unsetenv("TEST_ENV_B")
 }
 
 func TestGetEnvBool_False(t *testing.T) {
-for _, val := range []string{"0", "false", "no", "n"} {
-os.Setenv("TEST_ENV_B", val)
-if got := getEnvBool("TEST_ENV_B", true); got {
-t.Fatalf("expected false for value %q", val)
-}
-}
-os.Unsetenv("TEST_ENV_B")
+	for _, val := range []string{"0", "false", "no", "n"} {
+		os.Setenv("TEST_ENV_B", val)
+		if got := getEnvBool("TEST_ENV_B", true); got {
+			t.Fatalf("expected false for value %q", val)
+		}
+	}
+	os.Unsetenv("TEST_ENV_B")
 }
 
 func TestGetEnvBool_Invalid(t *testing.T) {
-os.Setenv("TEST_ENV_B", "maybe")
-defer os.Unsetenv("TEST_ENV_B")
-if got := getEnvBool("TEST_ENV_B", true); !got {
-t.Fatal("expected default true for invalid value")
-}
+	os.Setenv("TEST_ENV_B", "maybe")
+	defer os.Unsetenv("TEST_ENV_B")
+	if got := getEnvBool("TEST_ENV_B", true); !got {
+		t.Fatal("expected default true for invalid value")
+	}
 }
 
 func TestGetEnvUint32_Default(t *testing.T) {
-os.Unsetenv("TEST_ENV_U32")
-if got := getEnvUint32("TEST_ENV_U32", 100); got != 100 {
-t.Fatalf("expected 100, got %d", got)
-}
+	os.Unsetenv("TEST_ENV_U32")
+	if got := getEnvUint32("TEST_ENV_U32", 100); got != 100 {
+		t.Fatalf("expected 100, got %d", got)
+	}
 }
 
 func TestGetEnvUint32_Set(t *testing.T) {
-os.Setenv("TEST_ENV_U32", "42")
-defer os.Unsetenv("TEST_ENV_U32")
-if got := getEnvUint32("TEST_ENV_U32", 0); got != 42 {
-t.Fatalf("expected 42, got %d", got)
-}
+	os.Setenv("TEST_ENV_U32", "42")
+	defer os.Unsetenv("TEST_ENV_U32")
+	if got := getEnvUint32("TEST_ENV_U32", 0); got != 42 {
+		t.Fatalf("expected 42, got %d", got)
+	}
 }
 
 func TestStringInSlice_Found(t *testing.T) {
-if !stringInSlice("b", []string{"a", "b", "c"}) {
-t.Fatal("expected true")
-}
+	if !stringInSlice("b", []string{"a", "b", "c"}) {
+		t.Fatal("expected true")
+	}
 }
 
 func TestStringInSlice_NotFound(t *testing.T) {
-if stringInSlice("x", []string{"a", "b", "c"}) {
-t.Fatal("expected false")
-}
+	if stringInSlice("x", []string{"a", "b", "c"}) {
+		t.Fatal("expected false")
+	}
 }
 
 func TestIsHTTPMethodMain(t *testing.T) {
-for _, m := range []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"} {
-if !isHTTPMethod(m) {
-t.Fatalf("expected true for %s", m)
-}
-}
-if isHTTPMethod("FETCH") {
-t.Fatal("expected false for FETCH")
-}
+	for _, m := range []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"} {
+		if !isHTTPMethod(m) {
+			t.Fatalf("expected true for %s", m)
+		}
+	}
+	if isHTTPMethod("FETCH") {
+		t.Fatal("expected false for FETCH")
+	}
 }
 
 func TestIsWriteMethodMain(t *testing.T) {
-for _, m := range []string{"POST", "PUT", "PATCH", "DELETE"} {
-if !isWriteMethod(m) {
-t.Fatalf("expected true for %s", m)
-}
-}
-if isWriteMethod("GET") {
-t.Fatal("expected false for GET")
-}
+	for _, m := range []string{"POST", "PUT", "PATCH", "DELETE"} {
+		if !isWriteMethod(m) {
+			t.Fatalf("expected true for %s", m)
+		}
+	}
+	if isWriteMethod("GET") {
+		t.Fatal("expected false for GET")
+	}
 }
 
 func TestSecureEquals(t *testing.T) {
-if !secureEquals("hello", "hello") {
-t.Fatal("expected true for equal strings")
-}
-if secureEquals("hello", "world") {
-t.Fatal("expected false for different strings")
-}
-if secureEquals("abc", "abcd") {
-t.Fatal("expected false for different lengths")
-}
+	if !secureEquals("hello", "hello") {
+		t.Fatal("expected true for equal strings")
+	}
+	if secureEquals("hello", "world") {
+		t.Fatal("expected false for different strings")
+	}
+	if secureEquals("abc", "abcd") {
+		t.Fatal("expected false for different lengths")
+	}
 }
 
 func TestPruneExpiredRoutes(t *testing.T) {
-past := time.Now().Add(-time.Hour)
-future := time.Now().Add(time.Hour)
-routes := []routing.Route{
-{Destination: "keep-future", ExpiresAt: &future},
-{Destination: "drop-past", ExpiresAt: &past},
-{Destination: "keep-noexpiry"},
-}
-result := pruneExpiredRoutes(routes)
-if len(result) != 2 {
-t.Fatalf("expected 2 routes, got %d", len(result))
-}
-for _, r := range result {
-if r.Destination == "drop-past" {
-t.Fatal("expired route should have been pruned")
-}
-}
+	past := time.Now().Add(-time.Hour)
+	future := time.Now().Add(time.Hour)
+	routes := []routing.Route{
+		{Destination: "keep-future", ExpiresAt: &future},
+		{Destination: "drop-past", ExpiresAt: &past},
+		{Destination: "keep-noexpiry"},
+	}
+	result := pruneExpiredRoutes(routes)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 routes, got %d", len(result))
+	}
+	for _, r := range result {
+		if r.Destination == "drop-past" {
+			t.Fatal("expired route should have been pruned")
+		}
+	}
 }
 
 func TestParseIntQuery_Missing(t *testing.T) {
-req := httptest.NewRequest("GET", "/?foo=bar", nil)
-v, ok, err := parseIntQuery(req, "missing")
-if v != 0 || ok || err != nil {
-t.Fatalf("expected 0, false, nil; got %d, %v, %v", v, ok, err)
-}
+	req := httptest.NewRequest("GET", "/?foo=bar", nil)
+	v, ok, err := parseIntQuery(req, "missing")
+	if v != 0 || ok || err != nil {
+		t.Fatalf("expected 0, false, nil; got %d, %v, %v", v, ok, err)
+	}
 }
 
 func TestParseIntQuery_Valid(t *testing.T) {
-req := httptest.NewRequest("GET", "/?limit=5", nil)
-v, ok, err := parseIntQuery(req, "limit")
-if v != 5 || !ok || err != nil {
-t.Fatalf("expected 5, true, nil; got %d, %v, %v", v, ok, err)
-}
+	req := httptest.NewRequest("GET", "/?limit=5", nil)
+	v, ok, err := parseIntQuery(req, "limit")
+	if v != 5 || !ok || err != nil {
+		t.Fatalf("expected 5, true, nil; got %d, %v, %v", v, ok, err)
+	}
 }
 
 func TestParseIntQuery_Invalid(t *testing.T) {
-req := httptest.NewRequest("GET", "/?limit=abc", nil)
-_, ok, err := parseIntQuery(req, "limit")
-if !ok || err == nil {
-t.Fatal("expected ok=true, err!=nil for invalid int")
-}
+	req := httptest.NewRequest("GET", "/?limit=abc", nil)
+	_, ok, err := parseIntQuery(req, "limit")
+	if !ok || err == nil {
+		t.Fatal("expected ok=true, err!=nil for invalid int")
+	}
 }
 
 func TestParseIntQueryMulti_FirstFound(t *testing.T) {
-req := httptest.NewRequest("GET", "/?n=10", nil)
-v, ok, err := parseIntQueryMulti(req, "count", "n", "limit")
-if v != 10 || !ok || err != nil {
-t.Fatalf("expected 10, true, nil; got %d, %v, %v", v, ok, err)
-}
+	req := httptest.NewRequest("GET", "/?n=10", nil)
+	v, ok, err := parseIntQueryMulti(req, "count", "n", "limit")
+	if v != 10 || !ok || err != nil {
+		t.Fatalf("expected 10, true, nil; got %d, %v, %v", v, ok, err)
+	}
 }
 
 func TestParseIntQueryMulti_NoneFound(t *testing.T) {
-req := httptest.NewRequest("GET", "/", nil)
-v, ok, err := parseIntQueryMulti(req, "a", "b")
-if v != 0 || ok || err != nil {
-t.Fatalf("expected 0, false, nil; got %d, %v, %v", v, ok, err)
-}
+	req := httptest.NewRequest("GET", "/", nil)
+	v, ok, err := parseIntQueryMulti(req, "a", "b")
+	if v != 0 || ok || err != nil {
+		t.Fatalf("expected 0, false, nil; got %d, %v, %v", v, ok, err)
+	}
 }
 
 func TestHasValidAPIKey_BearerMain(t *testing.T) {
-req := httptest.NewRequest("GET", "/", nil)
-req.Header.Set("Authorization", "Bearer mysecret")
-if !hasValidAPIKey(req, "mysecret") {
-t.Fatal("expected valid for Bearer token")
-}
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer mysecret")
+	if !hasValidAPIKey(req, "mysecret") {
+		t.Fatal("expected valid for Bearer token")
+	}
 }
 
 func TestHasValidAPIKey_XAPIKeyMain(t *testing.T) {
-req := httptest.NewRequest("GET", "/", nil)
-req.Header.Set("X-API-Key", "mysecret")
-if !hasValidAPIKey(req, "mysecret") {
-t.Fatal("expected valid for X-API-Key header")
-}
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-API-Key", "mysecret")
+	if !hasValidAPIKey(req, "mysecret") {
+		t.Fatal("expected valid for X-API-Key header")
+	}
 }
 
 func TestHasValidAPIKey_WrongMain(t *testing.T) {
-req := httptest.NewRequest("GET", "/", nil)
-req.Header.Set("Authorization", "Bearer wrong")
-if hasValidAPIKey(req, "mysecret") {
-t.Fatal("expected false for wrong token")
-}
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer wrong")
+	if hasValidAPIKey(req, "mysecret") {
+		t.Fatal("expected false for wrong token")
+	}
 }
 
 func TestHasValidAPIKey_MissingMain(t *testing.T) {
-req := httptest.NewRequest("GET", "/", nil)
-if hasValidAPIKey(req, "mysecret") {
-t.Fatal("expected false for missing token")
-}
+	req := httptest.NewRequest("GET", "/", nil)
+	if hasValidAPIKey(req, "mysecret") {
+		t.Fatal("expected false for missing token")
+	}
 }
 
 func TestMatchPathRules_ExactMain(t *testing.T) {
-rules := []pathRule{{value: "/health", prefix: false}}
-if !matchPathRules("/health", "GET", rules) {
-t.Fatal("expected match for exact path")
-}
-if matchPathRules("/healthz", "GET", rules) {
-t.Fatal("expected no match for different path")
-}
+	rules := []pathRule{{value: "/health", prefix: false}}
+	if !matchPathRules("/health", "GET", rules) {
+		t.Fatal("expected match for exact path")
+	}
+	if matchPathRules("/healthz", "GET", rules) {
+		t.Fatal("expected no match for different path")
+	}
 }
 
 func TestMatchPathRules_PrefixMain(t *testing.T) {
-rules := []pathRule{{value: "/admin/", prefix: true}}
-if !matchPathRules("/admin/backup", "POST", rules) {
-t.Fatal("expected prefix match")
-}
-if matchPathRules("/public/data", "GET", rules) {
-t.Fatal("expected no prefix match")
-}
+	rules := []pathRule{{value: "/admin/", prefix: true}}
+	if !matchPathRules("/admin/backup", "POST", rules) {
+		t.Fatal("expected prefix match")
+	}
+	if matchPathRules("/public/data", "GET", rules) {
+		t.Fatal("expected no prefix match")
+	}
 }
 
 func TestMatchPathRules_WithMethod(t *testing.T) {
-rules := []pathRule{{value: "/blockchain/add", prefix: false, method: "POST"}}
-if !matchPathRules("/blockchain/add", "POST", rules) {
-t.Fatal("expected match for POST")
-}
-if matchPathRules("/blockchain/add", "GET", rules) {
-t.Fatal("expected no match for GET")
-}
+	rules := []pathRule{{value: "/blockchain/add", prefix: false, method: "POST"}}
+	if !matchPathRules("/blockchain/add", "POST", rules) {
+		t.Fatal("expected match for POST")
+	}
+	if matchPathRules("/blockchain/add", "GET", rules) {
+		t.Fatal("expected no match for GET")
+	}
 }
 
 func TestMatchPathRules_Empty(t *testing.T) {
-if matchPathRules("/anything", "GET", nil) {
-t.Fatal("expected no match for empty rules")
-}
+	if matchPathRules("/anything", "GET", nil) {
+		t.Fatal("expected no match for empty rules")
+	}
 }
 
 func TestParsePeerKeys_EmptyMain(t *testing.T) {
-got, err := parsePeerKeys("")
-if err != nil || len(got) != 0 {
-t.Fatalf("expected empty map, got %v %v", got, err)
-}
+	got, err := parsePeerKeys("")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("expected empty map, got %v %v", got, err)
+	}
 }
 
 func TestParsePeerKeys_ValidMain(t *testing.T) {
-got, err := parsePeerKeys("node1=key1,node2=key2")
-if err != nil || got["node1"] != "key1" || got["node2"] != "key2" {
-t.Fatalf("unexpected: %v %v", got, err)
-}
+	got, err := parsePeerKeys("node1=key1,node2=key2")
+	if err != nil || got["node1"] != "key1" || got["node2"] != "key2" {
+		t.Fatalf("unexpected: %v %v", got, err)
+	}
 }
 
 func TestParsePeerKeys_Invalid(t *testing.T) {
-_, err := parsePeerKeys("badentry")
-if err == nil {
-t.Fatal("expected error for invalid peer key entry")
-}
+	_, err := parsePeerKeys("badentry")
+	if err == nil {
+		t.Fatal("expected error for invalid peer key entry")
+	}
 }
 
 func TestParseCIDRList_EmptyMain(t *testing.T) {
-got, err := parseCIDRList("")
-if err != nil || got != nil {
-t.Fatalf("expected nil, nil; got %v %v", got, err)
-}
+	got, err := parseCIDRList("")
+	if err != nil || got != nil {
+		t.Fatalf("expected nil, nil; got %v %v", got, err)
+	}
 }
 
 func TestParseCIDRList_ValidMain(t *testing.T) {
-got, err := parseCIDRList("192.168.0.0/24,10.0.0.0/8")
-if err != nil || len(got) != 2 {
-t.Fatalf("expected 2 CIDRs, got %v %v", got, err)
-}
+	got, err := parseCIDRList("192.168.0.0/24,10.0.0.0/8")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("expected 2 CIDRs, got %v %v", got, err)
+	}
 }
 
 func TestParseCIDRList_InvalidMain(t *testing.T) {
-_, err := parseCIDRList("notacidr")
-if err == nil {
-t.Fatal("expected error for invalid CIDR")
-}
+	_, err := parseCIDRList("notacidr")
+	if err == nil {
+		t.Fatal("expected error for invalid CIDR")
+	}
 }
 
 func TestParsePathRule_ExactMatch(t *testing.T) {
-rule, ok := parsePathRule("/health")
-if !ok || rule.value != "/health" || rule.prefix {
-t.Fatalf("unexpected: %+v %v", rule, ok)
-}
+	rule, ok := parsePathRule("/health")
+	if !ok || rule.value != "/health" || rule.prefix {
+		t.Fatalf("unexpected: %+v %v", rule, ok)
+	}
 }
 
 func TestParsePathRule_Prefix(t *testing.T) {
-rule, ok := parsePathRule("/admin/*")
-if !ok || rule.value != "/admin/" || !rule.prefix {
-t.Fatalf("unexpected: %+v %v", rule, ok)
-}
+	rule, ok := parsePathRule("/admin/*")
+	if !ok || rule.value != "/admin/" || !rule.prefix {
+		t.Fatalf("unexpected: %+v %v", rule, ok)
+	}
 }
 
 func TestParsePathRule_WithMethod(t *testing.T) {
-rule, ok := parsePathRule("POST:/blockchain/add")
-if !ok || rule.method != "POST" || rule.value != "/blockchain/add" {
-t.Fatalf("unexpected: %+v %v", rule, ok)
-}
+	rule, ok := parsePathRule("POST:/blockchain/add")
+	if !ok || rule.method != "POST" || rule.value != "/blockchain/add" {
+		t.Fatalf("unexpected: %+v %v", rule, ok)
+	}
 }
 
 func TestParsePathRule_EmptyMain(t *testing.T) {
-_, ok := parsePathRule("")
-if ok {
-t.Fatal("expected false for empty rule")
-}
+	_, ok := parsePathRule("")
+	if ok {
+		t.Fatal("expected false for empty rule")
+	}
 }

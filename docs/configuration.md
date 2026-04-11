@@ -34,7 +34,7 @@ This document lists the environment variables used by Spectral-Cloud and their d
 ## Storage
 - `DATA_DIR` (default `./data`, or `/data` in containers)
 - `DB_PATH` (default `${DATA_DIR}/spectral.db`)
-- BoltDB stores tenant-scoped blockchain data, routes, jobs, schedules, and agent groups; persisted jobs/schedules/groups are restored on startup.
+- BoltDB stores tenant-scoped blockchain data, routes, jobs, schedules, agent groups, and notification rules; persisted jobs/schedules/groups/notification rules are restored on startup.
 
 ## Backups
 - `BACKUP_RETENTION` (default `5`)

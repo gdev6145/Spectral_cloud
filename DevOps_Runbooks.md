@@ -18,8 +18,10 @@ This document serves as a comprehensive guide for DevOps teams to manage operati
    - Validate alert accuracy by checking `/health` and logs.
 
 3. **Backup and Recovery**
-   - This service is currently in-memory only; data is lost on restart.
-   - When persistence is added, run daily backups and verify restore monthly.
+   - Primary state is persisted in BoltDB at `DATA_DIR/spectral.db`.
+   - Run regular backups with `go run ./cmd/spectralctl backup --db-path ./data/spectral.db --out ./data/spectral.db.bak`.
+   - For encrypted backups, provide `--key <base64>` or configure `BACKUP_KEY_B64` for scheduled backups.
+   - Verify restore procedures regularly with `go run ./cmd/spectralctl restore --db-path ./data/spectral.restore.db --in ./data/spectral.db.bak [--key <base64>]`.
 
 4. **Deployment**
    - Docker Compose: `docker compose up --build`
