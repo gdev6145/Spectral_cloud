@@ -319,12 +319,15 @@ func init() {
 		if rawURL == "" {
 			return "", "payload.url is required"
 		}
-		// Only allow http/https schemes
-		if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
-			return "", "only http/https URLs allowed"
+		parsed, err := url.Parse(rawURL)
+		if err != nil {
+			return "", fmt.Sprintf("invalid url: %v", err)
 		}
-		client := &http.Client{Timeout: 8 * time.Second}
-		resp, err := client.Get(rawURL)
+		if err := validateFetchURL(context.Background(), parsed); err != nil {
+			return "", err.Error()
+		}
+		client := newFetchHTTPClient()
+		resp, err := client.Get(parsed.String())
 		if err != nil {
 			return "", fmt.Sprintf("fetch error: %v", err)
 		}
@@ -1204,6 +1207,83 @@ func finishJob(api *apiClient, id, status, result, errMsg string) {
 		return
 	}
 	log.Printf("[job] gave up updating %s after retries", id)
+}
+
+func newFetchHTTPClient() *http.Client {
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateFetchHost(ctx, host); err != nil {
+			return nil, err
+		}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(host, port))
+	}
+	return &http.Client{
+		Timeout:   8 * time.Second,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after %d redirects", len(via))
+			}
+			return validateFetchURL(req.Context(), req.URL)
+		},
+	}
+}
+
+func validateFetchURL(ctx context.Context, u *url.URL) error {
+	if u == nil {
+		return fmt.Errorf("url is required")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("only http/https URLs allowed")
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("url host is required")
+	}
+	return validateFetchHost(ctx, u.Hostname())
+}
+
+func validateFetchHost(ctx context.Context, host string) error {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return fmt.Errorf("url host is required")
+	}
+	if strings.EqualFold(host, "localhost") {
+		return fmt.Errorf("refusing to fetch from local or private network address")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if blockedFetchIP(ip) {
+			return fmt.Errorf("refusing to fetch from local or private network address")
+		}
+		return nil
+	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return fmt.Errorf("resolve host %q: %w", host, err)
+	}
+	if len(addrs) == 0 {
+		return fmt.Errorf("host %q did not resolve", host)
+	}
+	for _, addr := range addrs {
+		if blockedFetchIP(addr.IP) {
+			return fmt.Errorf("refusing to fetch from local or private network address")
+		}
+	}
+	return nil
+}
+
+func blockedFetchIP(ip net.IP) bool {
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() ||
+		ip.IsMulticast()
 }
 
 func truncate(s string, n int) string {

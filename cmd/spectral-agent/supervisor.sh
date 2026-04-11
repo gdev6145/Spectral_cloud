@@ -21,6 +21,7 @@ AGENT_BIN="${SPECTRAL_AGENT_BIN:-$REPO_ROOT/spectral-agent}"
 mkdir -p "$LOG_DIR"
 
 declare -a AGENT_CMD=()
+declare -a LAUNCH_PREFIX=()
 
 resolve_agent_cmd() {
   if [[ -x "$AGENT_BIN" ]]; then
@@ -33,6 +34,14 @@ resolve_agent_cmd() {
   fi
   echo "[supervisor] unable to find spectral-agent binary at $AGENT_BIN and 'go' is not on PATH" >&2
   exit 1
+}
+
+resolve_launch_prefix() {
+  if command -v setsid >/dev/null 2>&1; then
+    LAUNCH_PREFIX=(setsid)
+    return
+  fi
+  echo "[supervisor] 'setsid' not found; starting agents without session detachment" >&2
 }
 
 declare -A AGENT_DEFS=(
@@ -86,7 +95,7 @@ launch_agent() {
   echo "[supervisor] starting $id  caps=$caps"
   (
     cd "$REPO_ROOT"
-    exec setsid "${AGENT_CMD[@]}" \
+    exec "${LAUNCH_PREFIX[@]}" "${AGENT_CMD[@]}" \
       -id "$id" \
       -capabilities "$caps" \
       -tags "$tags" \
@@ -100,6 +109,7 @@ launch_agent() {
 }
 
 resolve_agent_cmd
+resolve_launch_prefix
 trap shutdown EXIT INT TERM
 
 # Initial launch

@@ -11,7 +11,7 @@ Spectral-Cloud is a decentralized, edge-optimized hosting environment for sovere
 **Quick Start**
 
 ```bash
-cd /root/Spectral_cloud
+cd /path/to/Spectral_cloud
 go run ./cmd/spectral-cloud
 ```
 
@@ -23,7 +23,7 @@ Quick links:
 **Standalone Agent**
 
 ```bash
-cd /root/Spectral_cloud
+cd /path/to/Spectral_cloud
 go run ./cmd/spectral-agent -server http://localhost:8080 -api-key <tenant-or-api-key> -id edge-01 -capabilities echo,hash
 ```
 
@@ -32,7 +32,7 @@ Use a tenant-scoped key when the control plane is running in multi-tenant mode s
 To launch the bundled multi-agent demo supervisor, build `spectral-agent` first or run it in an environment with `go` on `PATH`, then set `SPECTRAL_API_KEY` when the server requires auth:
 
 ```bash
-cd /root/Spectral_cloud
+cd /path/to/Spectral_cloud
 SPECTRAL_API_KEY=<tenant-or-api-key> ./cmd/spectral-agent/supervisor.sh http://localhost:8080 default
 ```
 
@@ -48,7 +48,7 @@ SPECTRAL_API_KEY=<tenant-or-api-key> ./cmd/spectral-agent/supervisor.sh http://l
 - `GET/PATCH/DELETE /agents/jobs/{id}` -> inspect, update, or cancel a single tenant-scoped job
 - `GET /agents/jobs/claim?agent_id=X&capability=Y` -> claim the next pending tenant job
 - `GET/POST /schedules` -> list or create interval-based scheduled jobs
-- `GET/DELETE /schedules/{id}` -> inspect or delete a schedule
+- `GET/PATCH/DELETE /schedules/{id}` -> inspect, update, pause/resume, or delete a schedule
 - `GET/POST /agent-groups` -> list or create tenant-scoped agent groups
 - `GET /agent-groups/{id}` -> fetch a tenant-scoped agent group
 - `GET /agent-groups/{id}/next` -> select the next available group member
