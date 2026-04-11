@@ -24,6 +24,7 @@ Quick links:
 - `GET /` -> basic banner
 - `GET /health` -> JSON health
 - `GET /ready` -> readiness (DB + server ready)
+- `GET /auth/whoami` -> resolved auth/tenant information for the presented credential
 - `GET /metrics` -> Prometheus metrics
 - `POST /blockchain/add` -> add block (JSON array of transactions)
 - `GET /routes` -> list routes
@@ -34,7 +35,7 @@ Quick links:
 - `GET /admin/mesh` -> mesh config/stats/anomaly state (admin-only)
 - `GET /admin/tenants` -> list tenants and per-tenant counts (admin-only)
 
-If `TENANT_KEYS` or `API_KEY` is set, include `Authorization: Bearer <key>` or `X-API-Key: <key>`.
+If `TENANT_KEYS`, `TENANT_WRITE_KEYS`, or `API_KEY` is set, include `Authorization: Bearer <key>` or `X-API-Key: <key>`.
 Multi-tenant mode uses `TENANT_KEYS=tenant:key` mappings and isolates blockchain/routes by tenant.
 
 **Docker Compose**

@@ -110,3 +110,23 @@ func tenantFromContext(ctx context.Context) (string, bool) {
 	tenant, ok := val.(string)
 	return tenant, ok
 }
+
+type requestAuth struct {
+	access string
+	tenant string
+}
+
+type requestAuthContextKey struct{}
+
+func withRequestAuth(ctx context.Context, info requestAuth) context.Context {
+	return context.WithValue(ctx, requestAuthContextKey{}, info)
+}
+
+func requestAuthFromContext(ctx context.Context) (requestAuth, bool) {
+	val := ctx.Value(requestAuthContextKey{})
+	if val == nil {
+		return requestAuth{}, false
+	}
+	info, ok := val.(requestAuth)
+	return info, ok
+}

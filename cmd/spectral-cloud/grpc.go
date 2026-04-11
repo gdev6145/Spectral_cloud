@@ -42,12 +42,15 @@ func startMeshGRPC(ctx context.Context, addr string, authManager *auth.Manager, 
 }
 
 func meshAuthManager(cfg authConfig) *auth.Manager {
+	if cfg.tenantWrite != nil {
+		return cfg.tenantWrite
+	}
 	if cfg.tenantKeys != nil {
 		return cfg.tenantKeys
 	}
-	key := cfg.apiKey
+	key := cfg.writeKey
 	if key == "" {
-		key = cfg.writeKey
+		key = cfg.apiKey
 	}
 	if key == "" || strings.TrimSpace(cfg.defaultTenant) == "" {
 		return nil

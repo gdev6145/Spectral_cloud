@@ -55,6 +55,12 @@ type healthResponse struct {
 	Routes    int    `json:"routes"`
 }
 
+type authWhoAmIResponse struct {
+	Authenticated bool   `json:"authenticated"`
+	Access        string `json:"access"`
+	Tenant        string `json:"tenant,omitempty"`
+}
+
 type statusSnapshot struct {
 	Now                 string  `json:"now"`
 	UptimeSeconds       int64   `json:"uptime_seconds"`
@@ -819,6 +825,35 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status":    "ready",
 			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		})
+	})
+
+	mux.HandleFunc("/auth/whoami", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodPost:
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		info, ok := requestAuthFromContext(r.Context())
+		if !ok {
+			info, ok = resolvePresentedCredential(r, auth)
+		}
+		if !ok && anyAuthConfigured(auth) {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		if !ok {
+			info = requestAuth{
+				access: "anonymous",
+				tenant: auth.defaultTenant,
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(authWhoAmIResponse{
+			Authenticated: ok,
+			Access:        info.access,
+			Tenant:        info.tenant,
 		})
 	})
 
@@ -3581,7 +3616,9 @@ func withAuth(next http.Handler, auth authConfig) http.Handler {
 			return
 		}
 		if matchPathRules(path, r.Method, auth.adminRules) {
-			if strings.TrimSpace(auth.adminKey) == "" && strings.TrimSpace(auth.apiKey) == "" {
+			if strings.TrimSpace(auth.adminKey) == "" &&
+				strings.TrimSpace(auth.apiKey) == "" &&
+				(!isWriteMethod(r.Method) || strings.TrimSpace(auth.adminWriteKey) == "") {
 				writeError(w, http.StatusForbidden, "admin endpoint requires API key")
 				return
 			}
@@ -3600,13 +3637,30 @@ func withAuth(next http.Handler, auth authConfig) http.Handler {
 				writeError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
+			if auth.defaultTenant != "" {
+				r = r.WithContext(withTenant(r.Context(), auth.defaultTenant))
+			}
+			access := "admin"
+			if isWriteMethod(r.Method) && strings.TrimSpace(auth.adminWriteKey) != "" {
+				access = "admin-write"
+			}
+			r = r.WithContext(withRequestAuth(r.Context(), requestAuth{
+				access: access,
+				tenant: auth.defaultTenant,
+			}))
 			next.ServeHTTP(w, r)
 			return
 		}
-		if auth.tenantKeys != nil {
+		if auth.tenantKeys != nil || (isWriteMethod(r.Method) && auth.tenantWrite != nil) {
 			manager := auth.tenantKeys
+			access := "tenant"
 			if isWriteMethod(r.Method) && auth.tenantWrite != nil {
 				manager = auth.tenantWrite
+				access = "tenant-write"
+			}
+			if manager == nil {
+				next.ServeHTTP(w, r)
+				return
 			}
 			tenant, ok := manager.TenantFromRequest(r)
 			if !ok {
@@ -3614,6 +3668,10 @@ func withAuth(next http.Handler, auth authConfig) http.Handler {
 				return
 			}
 			r = r.WithContext(withTenant(r.Context(), tenant))
+			r = r.WithContext(withRequestAuth(r.Context(), requestAuth{
+				access: access,
+				tenant: tenant,
+			}))
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -3625,6 +3683,10 @@ func withAuth(next http.Handler, auth authConfig) http.Handler {
 			if auth.defaultTenant != "" {
 				r = r.WithContext(withTenant(r.Context(), auth.defaultTenant))
 			}
+			r = r.WithContext(withRequestAuth(r.Context(), requestAuth{
+				access: "write",
+				tenant: auth.defaultTenant,
+			}))
 		} else if strings.TrimSpace(auth.apiKey) != "" {
 			if !hasValidAPIKey(r, auth.apiKey) {
 				writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -3633,6 +3695,10 @@ func withAuth(next http.Handler, auth authConfig) http.Handler {
 			if auth.defaultTenant != "" {
 				r = r.WithContext(withTenant(r.Context(), auth.defaultTenant))
 			}
+			r = r.WithContext(withRequestAuth(r.Context(), requestAuth{
+				access: "api",
+				tenant: auth.defaultTenant,
+			}))
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -3651,6 +3717,56 @@ func hasValidAPIKey(r *http.Request, apiKey string) bool {
 		return false
 	}
 	return secureEquals(token, apiKey)
+}
+
+func requestCredential(r *http.Request) string {
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(strings.ToLower(header), "bearer ") {
+		if token := strings.TrimSpace(header[7:]); token != "" {
+			return token
+		}
+	}
+	return strings.TrimSpace(r.Header.Get("X-API-Key"))
+}
+
+func resolvePresentedCredential(r *http.Request, auth authConfig) (requestAuth, bool) {
+	token := requestCredential(r)
+	if token == "" {
+		return requestAuth{}, false
+	}
+	defaultTenant := strings.TrimSpace(auth.defaultTenant)
+	if key := strings.TrimSpace(auth.adminWriteKey); key != "" && secureEquals(token, key) {
+		return requestAuth{access: "admin-write", tenant: defaultTenant}, true
+	}
+	if key := strings.TrimSpace(auth.adminKey); key != "" && secureEquals(token, key) {
+		return requestAuth{access: "admin", tenant: defaultTenant}, true
+	}
+	if auth.tenantWrite != nil {
+		if tenant, ok := auth.tenantWrite.TenantFromKey(token); ok {
+			return requestAuth{access: "tenant-write", tenant: tenant}, true
+		}
+	}
+	if auth.tenantKeys != nil {
+		if tenant, ok := auth.tenantKeys.TenantFromKey(token); ok {
+			return requestAuth{access: "tenant", tenant: tenant}, true
+		}
+	}
+	if key := strings.TrimSpace(auth.writeKey); key != "" && secureEquals(token, key) {
+		return requestAuth{access: "write", tenant: defaultTenant}, true
+	}
+	if key := strings.TrimSpace(auth.apiKey); key != "" && secureEquals(token, key) {
+		return requestAuth{access: "api", tenant: defaultTenant}, true
+	}
+	return requestAuth{}, false
+}
+
+func anyAuthConfigured(auth authConfig) bool {
+	return strings.TrimSpace(auth.apiKey) != "" ||
+		strings.TrimSpace(auth.writeKey) != "" ||
+		strings.TrimSpace(auth.adminKey) != "" ||
+		strings.TrimSpace(auth.adminWriteKey) != "" ||
+		auth.tenantKeys != nil ||
+		auth.tenantWrite != nil
 }
 
 func isLocalRequest(r *http.Request) bool {

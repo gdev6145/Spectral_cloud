@@ -14,7 +14,7 @@ This document lists the environment variables used by Spectral-Cloud and their d
 - `ADMIN_API_KEY` (optional; if set, required for admin paths)
 - `ADMIN_WRITE_KEY` (optional; if set, required for admin write methods on admin paths)
 - `TENANT_KEYS` (optional; `tenant:key` pairs for multi-tenant auth)
-- `TENANT_WRITE_KEYS` (optional; `tenant:key` pairs for write-only keys)
+- `TENANT_WRITE_KEYS` (optional; `tenant:key` pairs for write-only keys; can be used without `TENANT_KEYS` for write-only tenant auth)
 - `DEFAULT_TENANT` (default `default`; used when API_KEY/WRITE_API_KEY is used)
 - `PUBLIC_PATHS` (comma-separated paths, supports `*` suffix; can prefix `METHOD:` or `METHOD `; default `/health`)
 - `ADMIN_PATHS` (comma-separated paths, supports `*` suffix; can prefix `METHOD:` or `METHOD `; default `/admin/status`)

@@ -7,6 +7,7 @@ This document provides a concise summary of the HTTP API surface. All endpoints 
 - If `WRITE_API_KEY` is set, write endpoints require the write key.
 - If `ADMIN_API_KEY` is set, admin endpoints require the admin key (and may be restricted to local/CIDR allowlists).
 - If `TENANT_KEYS` is set, the API key maps to a tenant and all state is isolated per tenant.
+- If `TENANT_WRITE_KEYS` is set, write endpoints can use tenant-scoped write keys even when `TENANT_KEYS` is not configured.
 
 ## Core Endpoints
 
@@ -27,6 +28,14 @@ Returns readiness status (DB + server readiness).
 Example response:
 ```json
 {"status":"ready","timestamp":"2026-04-04T12:34:56Z"}
+```
+
+`GET /auth/whoami`
+Returns the tenant and access level resolved from the presented credential. If auth is configured and no valid credential is provided, returns `401`.
+
+Example response:
+```json
+{"authenticated":true,"access":"tenant-write","tenant":"tenant-a"}
 ```
 
 `GET /metrics`

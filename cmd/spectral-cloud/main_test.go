@@ -12,6 +12,7 @@ import (
 
 	"github.com/gdev6145/Spectral_cloud/pkg/agent"
 	"github.com/gdev6145/Spectral_cloud/pkg/agentgroup"
+	"github.com/gdev6145/Spectral_cloud/pkg/auth"
 	"github.com/gdev6145/Spectral_cloud/pkg/blockchain"
 	"github.com/gdev6145/Spectral_cloud/pkg/routing"
 	"github.com/gdev6145/Spectral_cloud/pkg/circuit"
@@ -519,6 +520,209 @@ func TestAdminWriteKey(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", resp.StatusCode)
 	}
+}
+
+func TestAdminWriteKeyStandalone(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_admin_write_only", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	handler := makeHandler(db, counter, authConfig{
+		adminWriteKey: "adminwrite",
+		defaultTenant: "default",
+		adminRules: []pathRule{
+			{value: "/routes", method: http.MethodPost},
+		},
+	}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/routes?destination=node-admin&latency=1&throughput=2", nil)
+	if err != nil {
+		t.Fatalf("new request failed: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer adminwrite")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("routes post failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+}
+
+func TestTenantWriteKeysStandaloneEnforced(t *testing.T) {
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_tenant_write", Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	tenantWrite, err := auth.NewManagerFromEnv("tenant-a:tenant-write-key")
+	if err != nil {
+		t.Fatalf("tenant write manager: %v", err)
+	}
+	handler := makeHandler(db, counter, authConfig{
+		tenantWrite:   tenantWrite,
+		defaultTenant: "default",
+		publicRules:   []pathRule{{value: "/health"}},
+	}, nil, nil)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/routes?destination=node-a&latency=1&throughput=2", "text/plain", nil)
+	if err != nil {
+		t.Fatalf("routes post failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", resp.StatusCode)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/routes?destination=node-a&latency=1&throughput=2", nil)
+	if err != nil {
+		t.Fatalf("new request failed: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer tenant-write-key")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("authorized routes post failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+
+	routes, err := db.ReadRoutesTenant("tenant-a")
+	if err != nil {
+		t.Fatalf("read tenant routes: %v", err)
+	}
+	if len(routes) != 1 || routes[0].Destination != "node-a" {
+		t.Fatalf("expected route to be stored for tenant-a, got %+v", routes)
+	}
+}
+
+func TestAuthWhoAmIEndpoint(t *testing.T) {
+	t.Run("requires auth when configured", func(t *testing.T) {
+		counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_whoami_auth", Help: "test"}, []string{"path", "method", "code"})
+		tmp := t.TempDir()
+		db, err := store.Open(store.DBPath(tmp))
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		handler := makeHandler(db, counter, authConfig{
+			apiKey:        "secret",
+			defaultTenant: "default",
+			publicRules:   []pathRule{{value: "/health"}},
+		}, nil, nil)
+		srv := httptest.NewServer(handler)
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/auth/whoami")
+		if err != nil {
+			t.Fatalf("whoami request failed: %v", err)
+		}
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d", resp.StatusCode)
+		}
+
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/auth/whoami", nil)
+		if err != nil {
+			t.Fatalf("new request failed: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer secret")
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("authorized whoami failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d", resp.StatusCode)
+		}
+		var body authWhoAmIResponse
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode failed: %v", err)
+		}
+		if !body.Authenticated || body.Access != "api" || body.Tenant != "default" {
+			t.Fatalf("unexpected body: %+v", body)
+		}
+	})
+
+	t.Run("resolves tenant write credentials on get", func(t *testing.T) {
+		counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_whoami_tenant_write", Help: "test"}, []string{"path", "method", "code"})
+		tmp := t.TempDir()
+		db, err := store.Open(store.DBPath(tmp))
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		tenantWrite, err := auth.NewManagerFromEnv("tenant-b:tenant-write-key")
+		if err != nil {
+			t.Fatalf("tenant write manager: %v", err)
+		}
+		handler := makeHandler(db, counter, authConfig{
+			tenantWrite: tenantWrite,
+		}, nil, nil)
+		srv := httptest.NewServer(handler)
+		t.Cleanup(srv.Close)
+
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/auth/whoami", nil)
+		if err != nil {
+			t.Fatalf("new request failed: %v", err)
+		}
+		req.Header.Set("X-API-Key", "tenant-write-key")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("whoami request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d", resp.StatusCode)
+		}
+		var body authWhoAmIResponse
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode failed: %v", err)
+		}
+		if !body.Authenticated || body.Access != "tenant-write" || body.Tenant != "tenant-b" {
+			t.Fatalf("unexpected body: %+v", body)
+		}
+	})
+
+	t.Run("returns anonymous when auth is disabled", func(t *testing.T) {
+		counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_requests_total_whoami_anon", Help: "test"}, []string{"path", "method", "code"})
+		tmp := t.TempDir()
+		db, err := store.Open(store.DBPath(tmp))
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		handler := makeHandler(db, counter, authConfig{
+			defaultTenant: "default",
+		}, nil, nil)
+		srv := httptest.NewServer(handler)
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/auth/whoami")
+		if err != nil {
+			t.Fatalf("whoami request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d", resp.StatusCode)
+		}
+		var body authWhoAmIResponse
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode failed: %v", err)
+		}
+		if body.Authenticated || body.Access != "anonymous" || body.Tenant != "default" {
+			t.Fatalf("unexpected body: %+v", body)
+		}
+	})
 }
 
 func TestPersistenceBackwardCompat(t *testing.T) {
