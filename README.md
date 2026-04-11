@@ -20,6 +20,15 @@ Quick links:
 - API reference: `docs/api.md`
 - Configuration reference: `docs/configuration.md`
 
+**Standalone Agent**
+
+```bash
+cd /root/Spectral_cloud
+go run ./cmd/spectral-agent -server http://localhost:8080 -api-key <tenant-or-api-key> -id edge-01 -capabilities echo,hash
+```
+
+Use a tenant-scoped key when the control plane is running in multi-tenant mode so the agent binds to the intended tenant.
+
 **Core Endpoints**
 - `GET /` -> basic banner
 - `GET /health` -> JSON health
