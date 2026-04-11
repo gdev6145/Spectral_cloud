@@ -355,7 +355,23 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
 .plan-pro        { background: rgba(108,99,255,.2); color: var(--accent); }
 .plan-enterprise { background: rgba(251,191,36,.15); color: #f59e0b; }
 
-/* ── AI STREAMING ────────────────────────────────────────────────────────── */
+/* ── PULL-TO-REFRESH ─────────────────────────────────────────────────────── */
+#ptr-indicator {
+  position: fixed;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 5px 14px;
+  font-size: 12px;
+  color: var(--muted);
+  z-index: 200;
+  display: none;
+  transition: opacity .2s;
+  pointer-events: none;
+}
 .ai-result-box { background: var(--input); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; min-height: 60px; max-height: 400px; overflow-y: auto; }
 .ai-cursor { display: inline-block; width: 2px; height: 1em; background: var(--accent); animation: blink 0.9s step-start infinite; vertical-align: text-bottom; }
 @keyframes blink { 50% { opacity: 0; } }
@@ -1036,7 +1052,7 @@ async function renderOverview(rid, identityPromise) {
     <span style="display:flex;align-items:center;gap:5px;font-size:12px"><span class="status-dot ${meshPeers.length>0?'ok':'err'}"></span>Mesh (${meshPeers.length} peer${meshPeers.length!==1?'s':''})</span>
     <span style="display:flex;align-items:center;gap:5px;font-size:12px"><span class="status-dot ${(metrics.jobs||0)===0?'ok':'err'}"></span>Job queue: ${metrics.jobs||0}</span>
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+  <div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
     <div class="section" style="margin:0">
       <div class="section-title">Best Route</div>
       ${(()=>{ const b=bestRouteRes.value; return b ? `<div class="card" style="max-width:320px"><div class="card-label">Best Hop</div><div style="font-size:15px;font-weight:600;margin:4px 0">${esc(b.destination)}</div><div class="card-sub">latency ${b.metric?b.metric.latency:"—"}ms</div></div>` : `<div class="card-sub">No routes available</div>`; })()}
@@ -1164,7 +1180,7 @@ async function renderBlockchain(rid) {
       </table>
     </div>
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+  <div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
     <div class="section">
       <div class="section-title">Transaction Builder</div>
       <div class="card">
@@ -1189,7 +1205,7 @@ async function renderBlockchain(rid) {
       </div>
     </div>
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+  <div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
     <div class="section">
       <div class="section-title">Search Transactions</div>
       <div class="card">
@@ -1298,7 +1314,7 @@ async function renderRoutes(rid) {
       const [bg, fg] = lat <= 10 ? ['#166534','#4ade80'] : lat <= 50 ? ['#713f12','#fbbf24'] : lat <= 200 ? ['#7c2d12','#fb923c'] : ['#7f1d1d','#f87171'];
       return `<div class="heatmap-cell" style="background:${bg}20;color:${fg};border:1px solid ${bg}40">${esc(r.destination)}<br><small>${lat}ms</small></div>`;
     }).join('')}</div></div>` : '';
-  const breakdownHtml = routeStats ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+  const breakdownHtml = routeStats ? `<div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
     ${renderRouteBuckets('By Region', routeStats.by_region)}
     ${renderRouteBuckets('By Site', routeStats.by_site)}
   </div>` : '';
@@ -1372,7 +1388,7 @@ async function renderRoutes(rid) {
       </table>
     </div>
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+  <div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
     <div class="section">
       <div class="section-title">Add Route</div>
       <div class="card">
@@ -1659,7 +1675,7 @@ async function renderAgents(rid) {
       </div>
     </div>
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+  <div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
     <div class="section">
       <div class="section-title">Capability Routing</div>
       <div class="card">
@@ -2177,7 +2193,7 @@ async function renderAdmin(rid, identityPromise) {
 
   document.getElementById('content').innerHTML = `
   ${sysInfoHtml}
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+  <div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
     <div>
       <div class="section">
         <div class="section-title">System Status</div>
@@ -2387,7 +2403,7 @@ async function renderAdmin(rid, identityPromise) {
       Protocol Debug <span id="proto-debug-arrow" style="font-size:12px;color:var(--muted)">▶ expand</span>
     </div>
     <div class="collapsible-body" id="proto-debug-body">
-      <div style="padding-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div class="two-col" style="padding-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
         <div class="card">
           <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px">Send Data</div>
           <div class="form-group" style="margin-bottom:8px"><label>Peer ID</label><input id="proto-data-peer" placeholder="peer-01" style="width:100%;margin-top:4px"></div>
@@ -3430,7 +3446,7 @@ let aiChatSessionId = null;
 async function renderAI(rid) {
   if (rid && rid !== currentRenderId) return;
   document.getElementById('content').innerHTML = `
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+  <div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
     <div>
       <div class="section">
         <div class="section-title">AI Inference</div>
@@ -3646,7 +3662,9 @@ async function sendChatMessage() {
   if (!feed) return;
   // Determine or create session ID
   if (!aiChatSessionId) {
-    aiChatSessionId = 'session-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    const arr = new Uint32Array(3);
+    crypto.getRandomValues(arr);
+    aiChatSessionId = 'session-' + Array.from(arr).map(n => n.toString(36)).join('');
     const sel = document.getElementById('ai-session-select');
     if (sel) {
       const opt = document.createElement('option');
@@ -3716,7 +3734,7 @@ async function renderTenant(rid) {
   }).join('');
 
   document.getElementById('content').innerHTML = `
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+  <div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
     <div>
       <div class="section">
         <div class="section-title">Tenant Profile</div>
@@ -3800,14 +3818,19 @@ async function revokeSubKey(id) {
 
 // ── pull-to-refresh (mobile) ──────────────────────────────────────────────────
 (function() {
+  // Named constants for pull-to-refresh thresholds.
+  const PTR_SHOW_THRESHOLD = 48;   // px drag to show indicator
+  const PTR_RELEASE_THRESHOLD = 90; // px drag to trigger refresh
+  const PTR_SCROLL_TOLERANCE = 4;  // px of scroll allowed before disabling (avoids accidental trigger)
+
   let startY = 0, pulling = false;
   let indicator = null;
 
   function getIndicator() {
     if (!indicator) {
+      // The element is styled via #ptr-indicator CSS rule; no inline styles needed.
       indicator = document.createElement('div');
       indicator.id = 'ptr-indicator';
-      indicator.style.cssText = 'position:fixed;top:52px;left:50%;transform:translateX(-50%);background:var(--card);border:1px solid var(--border);border-radius:20px;padding:5px 14px;font-size:12px;color:var(--muted);z-index:200;display:none;transition:opacity .2s';
       indicator.textContent = '↓ Pull to refresh';
       document.body.appendChild(indicator);
     }
@@ -3825,10 +3848,10 @@ async function revokeSubKey(id) {
   document.addEventListener('touchmove', function(e) {
     if (!pulling) return;
     const dy = e.touches[0].clientY - startY;
-    if (dy > 48) {
+    if (dy > PTR_SHOW_THRESHOLD) {
       const ind = getIndicator();
       ind.style.display = 'block';
-      ind.textContent = dy > 90 ? '↑ Release to refresh' : '↓ Pull to refresh';
+      ind.textContent = dy > PTR_RELEASE_THRESHOLD ? '↑ Release to refresh' : '↓ Pull to refresh';
     }
   }, {passive: true});
 
@@ -3838,9 +3861,9 @@ async function revokeSubKey(id) {
     const dy = e.changedTouches[0].clientY - startY;
     const ind = getIndicator();
     if (ind) ind.style.display = 'none';
-    if (dy > 90) {
+    if (dy > PTR_RELEASE_THRESHOLD) {
       const content = document.getElementById('content');
-      if (content && content.scrollTop <= 4) {
+      if (content && content.scrollTop <= PTR_SCROLL_TOLERANCE) {
         refresh();
       }
     }
