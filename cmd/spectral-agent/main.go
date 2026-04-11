@@ -1452,6 +1452,185 @@ func init() {
 		return string(out), ""
 	},
 
+	// ── inference-classify capability ─────────────────────────────────────────
+	// inference-classify — assign labels to text using Claude.
+	// Payload: {"text":"...", "labels":["a","b","c"], "multi_label":false,
+	//           "model":"...", "max_tokens":N}
+	"inference-classify": func(p map[string]any) (string, string) {
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		if apiKey == "" {
+			return "", "ANTHROPIC_API_KEY is not set"
+		}
+		text, _ := p["text"].(string)
+		if text == "" {
+			return "", "payload.text is required"
+		}
+		rawLabels, _ := p["labels"].([]any)
+		if len(rawLabels) == 0 {
+			return "", "payload.labels is required"
+		}
+		labels := make([]string, 0, len(rawLabels))
+		for _, l := range rawLabels {
+			if s, ok := l.(string); ok {
+				labels = append(labels, s)
+			}
+		}
+		multiLabel, _ := p["multi_label"].(bool)
+		model, _ := p["model"].(string)
+		if model == "" {
+			model = "claude-haiku-4-5-20251001"
+		}
+		maxTokens := 256
+		if v, ok := p["max_tokens"].(float64); ok && int(v) > 0 {
+			maxTokens = int(v)
+		}
+		mode := "exactly one label"
+		if multiLabel {
+			mode = "one or more labels as a JSON array"
+		}
+		prompt := fmt.Sprintf(
+			"Classify the text. Labels: %s\nReturn ONLY JSON: single-label: {\"label\":\"...\",\"confidence\":0-1}; multi-label: {\"labels\":[...],\"confidence\":{}}.\nSelect %s.\n\nText:\n%s",
+			strings.Join(labels, ", "), mode, text,
+		)
+		type msg struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}
+		type reqBody struct {
+			Model     string `json:"model"`
+			MaxTokens int    `json:"max_tokens"`
+			System    string `json:"system"`
+			Messages  []msg  `json:"messages"`
+		}
+		body, _ := json.Marshal(reqBody{
+			Model: model, MaxTokens: maxTokens,
+			System:   "You are a text classification engine. Return only valid JSON.",
+			Messages: []msg{{Role: "user", Content: prompt}},
+		})
+		req, _ := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", fmt.Sprintf("inference-classify: %v", err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		var ar struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			Error *struct{ Message string `json:"message"` } `json:"error"`
+		}
+		if err := json.Unmarshal(raw, &ar); err != nil {
+			return "", fmt.Sprintf("inference-classify: decode: %v", err)
+		}
+		if ar.Error != nil {
+			return "", "inference-classify: " + ar.Error.Message
+		}
+		var text2 string
+		for _, b := range ar.Content {
+			if b.Type == "text" {
+				text2 += b.Text
+			}
+		}
+		return text2, ""
+	},
+
+	// ── inference-translate capability ────────────────────────────────────────
+	// inference-translate — translate text to a target language.
+	// Payload: {"text":"...", "target_language":"French",
+	//           "source_language":"auto", "model":"...", "max_tokens":N}
+	"inference-translate": func(p map[string]any) (string, string) {
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		if apiKey == "" {
+			return "", "ANTHROPIC_API_KEY is not set"
+		}
+		text, _ := p["text"].(string)
+		if text == "" {
+			return "", "payload.text is required"
+		}
+		target, _ := p["target_language"].(string)
+		if target == "" {
+			return "", "payload.target_language is required"
+		}
+		source, _ := p["source_language"].(string)
+		model, _ := p["model"].(string)
+		if model == "" {
+			model = "claude-haiku-4-5-20251001"
+		}
+		maxTokens := 2048
+		if v, ok := p["max_tokens"].(float64); ok && int(v) > 0 {
+			maxTokens = int(v)
+		}
+		sourceLine := ""
+		if source != "" && source != "auto" {
+			sourceLine = fmt.Sprintf(" from %s", source)
+		}
+		prompt := fmt.Sprintf("Translate the following text%s to %s. Return only the translated text.\n\n%s", sourceLine, target, text)
+		type msg struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}
+		type reqBody struct {
+			Model     string `json:"model"`
+			MaxTokens int    `json:"max_tokens"`
+			System    string `json:"system"`
+			Messages  []msg  `json:"messages"`
+		}
+		body, _ := json.Marshal(reqBody{
+			Model: model, MaxTokens: maxTokens,
+			System:   "You are a professional translator. Return only the translated text.",
+			Messages: []msg{{Role: "user", Content: prompt}},
+		})
+		req, _ := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+		client := &http.Client{Timeout: 60 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", fmt.Sprintf("inference-translate: %v", err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		var ar struct {
+			Model   string `json:"model"`
+			Usage   struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			Error *struct{ Message string `json:"message"` } `json:"error"`
+		}
+		if err := json.Unmarshal(raw, &ar); err != nil {
+			return "", fmt.Sprintf("inference-translate: decode: %v", err)
+		}
+		if ar.Error != nil {
+			return "", "inference-translate: " + ar.Error.Message
+		}
+		var translated string
+		for _, b := range ar.Content {
+			if b.Type == "text" {
+				translated += b.Text
+			}
+		}
+		out, _ := json.Marshal(map[string]any{
+			"translation":     translated,
+			"target_language": target,
+			"model":           ar.Model,
+			"input_tokens":    ar.Usage.InputTokens,
+			"output_tokens":   ar.Usage.OutputTokens,
+		})
+		return string(out), ""
+	},
+
 	} // end map literal
 } // end init()
 

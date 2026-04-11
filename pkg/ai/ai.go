@@ -213,8 +213,10 @@ type StreamRequest struct {
 
 // Message is a single turn in a conversation.
 type Message struct {
-	Role    string `json:"role"`    // "user" or "assistant"
-	Content string `json:"content"`
+	Role         string `json:"role"`              // "user" or "assistant"
+	Content      string `json:"content"`
+	IsRaw        bool   `json:"is_raw,omitempty"`        // content is a JSON array of content blocks (assistant tool_use turn)
+	IsToolResult bool   `json:"is_tool_result,omitempty"` // content is a JSON array of tool_result blocks
 }
 
 // StreamChunk is a single SSE delta event emitted by Stream.
@@ -406,4 +408,202 @@ func (c *Client) InferMultiTurn(ctx context.Context, history []Message, system, 
 		InputTokens:  ar.Usage.InputTokens,
 		OutputTokens: ar.Usage.OutputTokens,
 	}, nil
+}
+
+// ── tool use ──────────────────────────────────────────────────────────────────
+
+// Tool describes a function Claude can call.
+type Tool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"input_schema"` // JSON Schema object
+}
+
+// ContentBlock is a single element of a Claude response (text or tool_use).
+type ContentBlock struct {
+	Type  string          `json:"type"`            // "text" or "tool_use"
+	Text  string          `json:"text,omitempty"`  // when type=="text"
+	ID    string          `json:"id,omitempty"`    // when type=="tool_use"
+	Name  string          `json:"name,omitempty"`  // when type=="tool_use"
+	Input json.RawMessage `json:"input,omitempty"` // when type=="tool_use"
+}
+
+// ToolResult is the caller's response to a tool_use block.
+type ToolResult struct {
+	ToolUseID string `json:"tool_use_id"`
+	Content   string `json:"content"`
+	IsError   bool   `json:"is_error,omitempty"`
+}
+
+// ToolsRequest is the input for an InferWithTools call.
+type ToolsRequest struct {
+	Messages  []Message `json:"messages"`
+	Tools     []Tool    `json:"tools"`
+	Model     string    `json:"model,omitempty"`
+	System    string    `json:"system,omitempty"`
+	MaxTokens int       `json:"max_tokens,omitempty"`
+}
+
+// ToolsResponse is the output of an InferWithTools call.
+type ToolsResponse struct {
+	Model        string         `json:"model"`
+	StopReason   string         `json:"stop_reason"` // "end_turn" or "tool_use"
+	Content      []ContentBlock `json:"content"`
+	InputTokens  int            `json:"input_tokens"`
+	OutputTokens int            `json:"output_tokens"`
+}
+
+// TextContent returns the concatenated text from all text content blocks.
+func (r ToolsResponse) TextContent() string {
+	var sb strings.Builder
+	for _, b := range r.Content {
+		if b.Type == "text" {
+			sb.WriteString(b.Text)
+		}
+	}
+	return sb.String()
+}
+
+// ToolUseCalls returns all tool_use blocks from the response.
+func (r ToolsResponse) ToolUseCalls() []ContentBlock {
+	var out []ContentBlock
+	for _, b := range r.Content {
+		if b.Type == "tool_use" {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// anthropicToolsRequest is the Anthropic API request with tools.
+type anthropicToolsRequest struct {
+	Model     string             `json:"model"`
+	MaxTokens int                `json:"max_tokens"`
+	System    any                `json:"system,omitempty"`
+	Tools     []Tool             `json:"tools"`
+	Messages  []anthropicToolMsg `json:"messages"`
+}
+
+// anthropicToolMsg supports both simple string content and tool_result arrays.
+type anthropicToolMsg struct {
+	Role    string `json:"role"`
+	Content any    `json:"content"` // string | []anthropicToolResultBlock
+}
+
+type anthropicToolResultBlock struct {
+	Type      string `json:"type"`       // "tool_result"
+	ToolUseID string `json:"tool_use_id"`
+	Content   string `json:"content"`
+	IsError   bool   `json:"is_error,omitempty"`
+}
+
+// InferWithTools sends a message with tool definitions and returns Claude's
+// response, which may include tool_use blocks requesting function calls.
+// The caller is responsible for executing tools and calling again with results.
+func (c *Client) InferWithTools(ctx context.Context, req ToolsRequest) (ToolsResponse, error) {
+	model := req.Model
+	if model == "" {
+		model = DefaultModel
+	}
+	maxTokens := req.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = DefaultMaxTokens
+	}
+
+	msgs := make([]anthropicToolMsg, len(req.Messages))
+	for i, m := range req.Messages {
+		if m.IsRaw || m.IsToolResult {
+			// Content is a JSON array — decode and pass as raw any.
+			var raw any
+			if err := json.Unmarshal([]byte(m.Content), &raw); err != nil {
+				return ToolsResponse{}, fmt.Errorf("ai: decode raw message %d: %w", i, err)
+			}
+			msgs[i] = anthropicToolMsg{Role: m.Role, Content: raw}
+		} else {
+			msgs[i] = anthropicToolMsg{Role: m.Role, Content: m.Content}
+		}
+	}
+
+	body := anthropicToolsRequest{
+		Model:     model,
+		MaxTokens: maxTokens,
+		System:    buildSystem(req.System, false),
+		Tools:     req.Tools,
+		Messages:  msgs,
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return ToolsResponse{}, fmt.Errorf("ai: marshal: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, messagesURL, bytes.NewReader(data))
+	if err != nil {
+		return ToolsResponse{}, fmt.Errorf("ai: build request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", c.apiKey)
+	httpReq.Header.Set("anthropic-version", anthropicVersion)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return ToolsResponse{}, fmt.Errorf("ai: http: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+
+	var ar struct {
+		Model      string `json:"model"`
+		StopReason string `json:"stop_reason"`
+		Usage      struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+		Content []struct {
+			Type  string          `json:"type"`
+			Text  string          `json:"text,omitempty"`
+			ID    string          `json:"id,omitempty"`
+			Name  string          `json:"name,omitempty"`
+			Input json.RawMessage `json:"input,omitempty"`
+		} `json:"content"`
+		Error *struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &ar); err != nil {
+		return ToolsResponse{}, fmt.Errorf("ai: decode: %w", err)
+	}
+	if ar.Error != nil {
+		return ToolsResponse{}, fmt.Errorf("ai: anthropic error (%s): %s", ar.Error.Type, ar.Error.Message)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return ToolsResponse{}, fmt.Errorf("ai: status %d: %s", resp.StatusCode, string(raw))
+	}
+
+	blocks := make([]ContentBlock, len(ar.Content))
+	for i, b := range ar.Content {
+		blocks[i] = ContentBlock{Type: b.Type, Text: b.Text, ID: b.ID, Name: b.Name, Input: b.Input}
+	}
+	return ToolsResponse{
+		Model:        ar.Model,
+		StopReason:   ar.StopReason,
+		Content:      blocks,
+		InputTokens:  ar.Usage.InputTokens,
+		OutputTokens: ar.Usage.OutputTokens,
+	}, nil
+}
+
+// AppendToolResults builds the next message list for a tool-calling round trip.
+// assistantContent is the raw content blocks from a ToolsResponse that had
+// StopReason=="tool_use"; results maps tool_use ID → result string.
+func AppendToolResults(history []Message, assistantBlocks []ContentBlock, results []ToolResult) []Message {
+	// The assistant's turn must be sent back as a raw content array.
+	// Encode the assistant's content blocks as JSON and store as a special marker.
+	// We use a sentinel to signal that this message needs raw content encoding.
+	assistantRaw, _ := json.Marshal(assistantBlocks)
+	history = append(history, Message{Role: "assistant", Content: string(assistantRaw), IsRaw: true})
+
+	// The user's turn carries tool_result blocks.
+	resultRaw, _ := json.Marshal(results)
+	history = append(history, Message{Role: "user", Content: string(resultRaw), IsToolResult: true})
+	return history
 }

@@ -4812,6 +4812,346 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				"output_tokens": result.OutputTokens,
 			})
 		})
+
+		// ── available models ──────────────────────────────────────────────────
+		// GET /ai/models — list Claude models available for use.
+		mux.HandleFunc("/ai/models", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			type modelInfo struct {
+				ID           string `json:"id"`
+				Name         string `json:"name"`
+				MaxTokens    int    `json:"max_tokens"`
+				Description  string `json:"description"`
+				InputCaching bool   `json:"prompt_caching"`
+			}
+			models := []modelInfo{
+				{ID: "claude-opus-4-6", Name: "Claude Opus 4.6", MaxTokens: 32000, Description: "Most capable model for complex tasks", InputCaching: true},
+				{ID: "claude-sonnet-4-6", Name: "Claude Sonnet 4.6", MaxTokens: 16000, Description: "Best balance of intelligence and speed", InputCaching: true},
+				{ID: "claude-haiku-4-5-20251001", Name: "Claude Haiku 4.5", MaxTokens: 8192, Description: "Fastest and most compact model", InputCaching: true},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": models, "count": len(models)})
+		})
+
+		// ── text classification ───────────────────────────────────────────────
+		// POST /ai/classify — assign one or more labels from a fixed set to text.
+		// Body: {"text":"...", "labels":["positive","negative","neutral"],
+		//        "multi_label":false, "model":"...", "max_tokens":N}
+		mux.HandleFunc("/ai/classify", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			if os.Getenv("ANTHROPIC_API_KEY") == "" {
+				writeError(w, http.StatusServiceUnavailable, "ANTHROPIC_API_KEY not configured")
+				return
+			}
+			var req struct {
+				Text       string   `json:"text"`
+				Labels     []string `json:"labels"`
+				MultiLabel bool     `json:"multi_label"`
+				Model      string   `json:"model,omitempty"`
+				MaxTokens  int      `json:"max_tokens,omitempty"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+			if strings.TrimSpace(req.Text) == "" {
+				writeError(w, http.StatusBadRequest, "text is required")
+				return
+			}
+			if len(req.Labels) == 0 {
+				writeError(w, http.StatusBadRequest, "labels is required")
+				return
+			}
+			mode := "exactly one label"
+			if req.MultiLabel {
+				mode = "one or more labels (as a JSON array)"
+			}
+			prompt := fmt.Sprintf(
+				"Classify the following text. Available labels: %s\n\n"+
+					"Return ONLY valid JSON: if multi-label, return {\"labels\":[...],\"confidence\":{\"label\":0-1,...}}; "+
+					"otherwise return {\"label\":\"...\",\"confidence\":0-1}.\n"+
+					"Select %s.\n\nText:\n%s",
+				strings.Join(req.Labels, ", "), mode, req.Text,
+			)
+			result, inferErr := aiClient.Infer(r.Context(), ai.InferRequest{
+				Prompt:      prompt,
+				Model:       req.Model,
+				System:      "You are a text classification engine. Return only valid JSON.",
+				MaxTokens:   req.MaxTokens,
+				CacheSystem: true,
+			})
+			if inferErr != nil {
+				writeError(w, http.StatusBadGateway, inferErr.Error())
+				return
+			}
+			var parsed any
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.Unmarshal([]byte(result.Content), &parsed); err != nil {
+				_ = json.NewEncoder(w).Encode(map[string]any{"raw": result.Content, "model": result.Model})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"result":        parsed,
+				"model":         result.Model,
+				"input_tokens":  result.InputTokens,
+				"output_tokens": result.OutputTokens,
+			})
+		})
+
+		// ── translation ───────────────────────────────────────────────────────
+		// POST /ai/translate — translate text between languages.
+		// Body: {"text":"...", "target_language":"French", "source_language":"auto",
+		//        "model":"...", "max_tokens":N}
+		mux.HandleFunc("/ai/translate", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			if os.Getenv("ANTHROPIC_API_KEY") == "" {
+				writeError(w, http.StatusServiceUnavailable, "ANTHROPIC_API_KEY not configured")
+				return
+			}
+			var req struct {
+				Text           string `json:"text"`
+				TargetLanguage string `json:"target_language"`
+				SourceLanguage string `json:"source_language,omitempty"`
+				Model          string `json:"model,omitempty"`
+				MaxTokens      int    `json:"max_tokens,omitempty"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+			if strings.TrimSpace(req.Text) == "" {
+				writeError(w, http.StatusBadRequest, "text is required")
+				return
+			}
+			if strings.TrimSpace(req.TargetLanguage) == "" {
+				writeError(w, http.StatusBadRequest, "target_language is required")
+				return
+			}
+			sourceLine := ""
+			if req.SourceLanguage != "" && req.SourceLanguage != "auto" {
+				sourceLine = fmt.Sprintf(" from %s", req.SourceLanguage)
+			}
+			prompt := fmt.Sprintf("Translate the following text%s to %s. Return only the translated text, nothing else.\n\n%s",
+				sourceLine, req.TargetLanguage, req.Text)
+			result, inferErr := aiClient.Infer(r.Context(), ai.InferRequest{
+				Prompt:    prompt,
+				Model:     req.Model,
+				System:    "You are a professional translator. Return only the translated text.",
+				MaxTokens: req.MaxTokens,
+			})
+			if inferErr != nil {
+				writeError(w, http.StatusBadGateway, inferErr.Error())
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"translation":     result.Content,
+				"target_language": req.TargetLanguage,
+				"model":           result.Model,
+				"input_tokens":    result.InputTokens,
+				"output_tokens":   result.OutputTokens,
+			})
+		})
+
+		// ── agentic loop ──────────────────────────────────────────────────────
+		// POST /ai/loop — give Claude a goal; it autonomously calls built-in
+		// Spectral Cloud tools (list_agents, submit_job, get_job, list_routes)
+		// until the goal is achieved or max_iterations is reached.
+		// Body: {"goal":"...", "model":"...", "max_tokens":N, "max_iterations":10}
+		mux.HandleFunc("/ai/loop", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			if os.Getenv("ANTHROPIC_API_KEY") == "" {
+				writeError(w, http.StatusServiceUnavailable, "ANTHROPIC_API_KEY not configured")
+				return
+			}
+			if jobQueue == nil {
+				writeError(w, http.StatusServiceUnavailable, "job queue unavailable")
+				return
+			}
+			_, tenant, err := getState(r)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load tenant")
+				return
+			}
+			var req struct {
+				Goal          string `json:"goal"`
+				Model         string `json:"model,omitempty"`
+				MaxTokens     int    `json:"max_tokens,omitempty"`
+				MaxIterations int    `json:"max_iterations,omitempty"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+			if strings.TrimSpace(req.Goal) == "" {
+				writeError(w, http.StatusBadRequest, "goal is required")
+				return
+			}
+			if req.MaxIterations <= 0 {
+				req.MaxIterations = 10
+			}
+
+			// Define built-in tools Claude can call.
+			tools := []ai.Tool{
+				{
+					Name:        "list_agents",
+					Description: "List registered agents for this tenant with their capabilities and status.",
+					InputSchema: json.RawMessage(`{"type":"object","properties":{"capability":{"type":"string","description":"Filter by capability (optional)"}}}`),
+				},
+				{
+					Name:        "submit_job",
+					Description: "Submit a job to the queue for an agent with a specific capability.",
+					InputSchema: json.RawMessage(`{"type":"object","properties":{"capability":{"type":"string"},"payload":{"type":"object"}},"required":["capability"]}`),
+				},
+				{
+					Name:        "get_job",
+					Description: "Get the status and result of a job by ID.",
+					InputSchema: json.RawMessage(`{"type":"object","properties":{"job_id":{"type":"string"}},"required":["job_id"]}`),
+				},
+				{
+					Name:        "list_routes",
+					Description: "List the current routing table entries.",
+					InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+				},
+			}
+
+			// Tool executor — runs the tool and returns a result string.
+			execTool := func(name string, input json.RawMessage) string {
+				var args map[string]any
+				_ = json.Unmarshal(input, &args)
+
+				switch name {
+				case "list_agents":
+					cap, _ := args["capability"].(string)
+					var list []agent.Agent
+					if cap != "" {
+						list = agentReg.ListByCapability(tenant, cap)
+					} else {
+						list = agentReg.List(tenant)
+					}
+					b, _ := json.Marshal(list)
+					return string(b)
+
+				case "submit_job":
+					cap, _ := args["capability"].(string)
+					if cap == "" {
+						return `{"error":"capability is required"}`
+					}
+					payload, _ := args["payload"].(map[string]any)
+					if payload == nil {
+						payload = map[string]any{}
+					}
+					best, ok := agentReg.FindBest(tenant, cap)
+					if !ok {
+						return fmt.Sprintf(`{"error":"no healthy agent available for capability %q"}`, cap)
+					}
+					j := jobQueue.Submit(tenant, best.ID, cap, payload)
+					if eventBroker != nil {
+						eventBroker.Publish(events.Event{Type: events.EventJobCreated, TenantID: tenant, Data: j})
+					}
+					b, _ := json.Marshal(j)
+					return string(b)
+
+				case "get_job":
+					id, _ := args["job_id"].(string)
+					if id == "" {
+						return `{"error":"job_id is required"}`
+					}
+					j, ok := jobQueue.Get(id)
+					if !ok {
+						return `{"error":"job not found"}`
+					}
+					b, _ := json.Marshal(j)
+					return string(b)
+
+				case "list_routes":
+					state, _, _ := getState(r)
+					if state == nil {
+						return `{"error":"state unavailable"}`
+					}
+					b, _ := json.Marshal(state.router.ListRoutes())
+					return string(b)
+
+				default:
+					return fmt.Sprintf(`{"error":"unknown tool %q"}`, name)
+				}
+			}
+
+			type stepRecord struct {
+				Iteration int    `json:"iteration"`
+				Tool      string `json:"tool,omitempty"`
+				Input     any    `json:"input,omitempty"`
+				Result    string `json:"result,omitempty"`
+				Text      string `json:"text,omitempty"`
+			}
+
+			history := []ai.Message{{Role: "user", Content: req.Goal}}
+			var trace []stepRecord
+			var finalText string
+			totalIn, totalOut := 0, 0
+
+			for iter := 0; iter < req.MaxIterations; iter++ {
+				resp, loopErr := aiClient.InferWithTools(r.Context(), ai.ToolsRequest{
+					Messages:  history,
+					Tools:     tools,
+					Model:     req.Model,
+					System:    "You are an autonomous Spectral Cloud agent. Use the provided tools to accomplish the user's goal. When done, provide a concise summary of what you did.",
+					MaxTokens: req.MaxTokens,
+				})
+				if loopErr != nil {
+					writeError(w, http.StatusBadGateway, loopErr.Error())
+					return
+				}
+				totalIn += resp.InputTokens
+				totalOut += resp.OutputTokens
+
+				if resp.StopReason == "end_turn" || len(resp.ToolUseCalls()) == 0 {
+					finalText = resp.TextContent()
+					if t := resp.TextContent(); t != "" {
+						trace = append(trace, stepRecord{Iteration: iter, Text: t})
+					}
+					break
+				}
+
+				// Execute all tool calls in this turn.
+				var results []ai.ToolResult
+				for _, call := range resp.ToolUseCalls() {
+					toolResult := execTool(call.Name, call.Input)
+					results = append(results, ai.ToolResult{ToolUseID: call.ID, Content: toolResult})
+					var inputParsed any
+					_ = json.Unmarshal(call.Input, &inputParsed)
+					trace = append(trace, stepRecord{
+						Iteration: iter,
+						Tool:      call.Name,
+						Input:     inputParsed,
+						Result:    toolResult,
+					})
+				}
+				history = ai.AppendToolResults(history, resp.Content, results)
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"goal":          req.Goal,
+				"result":        finalText,
+				"trace":         trace,
+				"iterations":    len(trace),
+				"input_tokens":  totalIn,
+				"output_tokens": totalOut,
+			})
+		})
 	}
 
 	// Serve the embedded web dashboard at /ui/.
