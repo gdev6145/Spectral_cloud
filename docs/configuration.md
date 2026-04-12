@@ -27,6 +27,9 @@ This document lists the environment variables used by Spectral-Cloud and their d
 - `TENANT_RATE_RPS` (default `0`; per-tenant RPS limit when > 0)
 - `TENANT_RATE_BURST` (default `0`; per-tenant burst when > 0)
 
+## AI
+- `ANTHROPIC_API_KEY` (optional; Anthropic API key; enables all `/ai/*` endpoints — without it every AI call returns `503`)
+
 ## Tenant Quotas
 - `TENANT_MAX_BLOCKS` (default `0`; max blocks per tenant when > 0)
 - `TENANT_MAX_ROUTES` (default `0`; max routes per tenant when > 0)

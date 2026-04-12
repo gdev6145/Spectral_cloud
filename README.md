@@ -73,9 +73,29 @@ SPECTRAL_API_KEY=<tenant-or-api-key> ./cmd/spectral-agent/supervisor.sh http://l
 - `GET /admin/status` -> backup/compaction status (admin-only)
 - `GET /admin/mesh` -> mesh config/stats/anomaly state (admin-only)
 - `GET /admin/tenants` -> list tenants and per-tenant counts (admin-only)
+- `POST /ai/infer[?mode=async&stream=true]` -> Claude inference; direct, streaming SSE, or async via job queue
+- `GET /ai/agents` -> list agents advertising the `inference` capability
+- `GET /ai/sessions` -> list active chat session IDs with turn counts for the resolved tenant
+- `POST /ai/chat/{id}` -> send a message to a persistent multi-turn chat session
+- `GET /ai/chat/{id}` -> retrieve chat session history
+- `DELETE /ai/chat/{id}` -> delete a chat session
+- `POST /ai/analyze` -> ask Claude to analyze live cluster health
+- `POST /ai/route` -> describe a task; Claude picks the best agent capability and submits a job
+- `POST /ai/extract` -> extract structured JSON from freeform text using a plain-English schema
+- `POST /ai/judge` -> score text against evaluation criteria (0–10 scale with reasoning)
+- `POST /ai/rerank` -> rank candidate strings by relevance to a query
+- `POST /ai/diff` -> explain differences between two text versions
+- `GET /ai/models` -> list available Claude models
+- `POST /ai/classify` -> assign one or more labels from a fixed set to text
+- `POST /ai/translate` -> translate text to a target language
+- `GET/POST /ai/templates` -> list or create named prompt templates with `{{variable}}` placeholders
+- `GET/DELETE /ai/templates/{name}` -> fetch or delete a prompt template
+- `POST /ai/templates/{name}/run` -> render template variables and run inference
+- `POST /ai/loop` -> run a goal-directed agentic loop (Claude calls built-in tools up to `max_iterations` times)
 
 If `TENANT_KEYS`, `TENANT_WRITE_KEYS`, or `API_KEY` is set, include `Authorization: Bearer <key>` or `X-API-Key: <key>`.
 Multi-tenant mode uses `TENANT_KEYS=tenant:key` mappings and isolates control-plane state such as blockchain data, routes, agents, jobs, groups, and notification rules by tenant.
+AI endpoints (`/ai/*`) require `ANTHROPIC_API_KEY` to be set; without it every AI call returns `503`.
 
 **Docker Compose**
 

@@ -309,6 +309,163 @@ Example request:
 `POST /circuit/reset?agent_id=X`
 Manually resets a breaker and returns the updated breaker state.
 
+## AI Endpoints
+
+All AI endpoints require `ANTHROPIC_API_KEY` to be set in the server environment. Requests that arrive when the key is absent receive `503 Service Unavailable`. AI state is tenant-scoped: chat sessions and prompt templates are isolated per tenant.
+
+`POST /ai/infer`
+Run a single Claude inference call. Supports three modes via the `mode` query parameter:
+- `mode=direct` (default) — synchronous; returns `{"content":"...","model":"...","input_tokens":N,"output_tokens":N}`.
+- `mode=async` — submits an inference job to the queue; returns the job record immediately.
+- `stream=true` (with `mode=direct`) — proxies Claude's SSE stream to the caller as `text/event-stream`.
+
+Example request:
+```json
+{"prompt":"Summarise this paragraph…","system":"You are a concise summariser.","model":"claude-3-5-haiku-latest","max_tokens":512}
+```
+
+`GET /ai/agents`
+Lists agents that advertise the `inference` capability for the resolved tenant.
+
+`GET /ai/sessions`
+Lists active chat session IDs for the resolved tenant along with turn counts and last-updated timestamps.
+
+Example response:
+```json
+{"count":2,"sessions":[{"session_id":"session-abc","turns":3,"updated_at":"2026-04-12T00:10:00Z"}]}
+```
+
+`POST /ai/chat/{session_id}`
+Send a user message to a persistent multi-turn chat session. The session is created automatically on first use.
+
+Example request:
+```json
+{"message":"What is the current cluster health?"}
+```
+
+`GET /ai/chat/{session_id}`
+Retrieve the full message history for a chat session.
+
+`DELETE /ai/chat/{session_id}`
+Delete a chat session and its history.
+
+`POST /ai/analyze`
+Ask Claude to analyze live cluster health and return a concise, actionable summary. Accepts an optional `question` field to focus the analysis.
+
+Example request:
+```json
+{"question":"Are there any degraded agents or routing concerns?"}
+```
+
+`POST /ai/route`
+Describe a task in natural language. Claude picks the best matching agent capability from the live agent registry and submits a job automatically.
+
+Example request:
+```json
+{"task":"Fetch the latest satellite telemetry and write a summary","payload":{"region":"us-west"}}
+```
+
+Example response:
+```json
+{"chosen_capability":"telemetry","agent_id":"agent-07","job":{...},"routing_model":"claude-3-5-haiku-latest"}
+```
+
+`POST /ai/extract`
+Extract structured data from freeform text using a plain-English schema description.
+
+Example request:
+```json
+{"text":"John Smith joined on 2024-01-15 as a senior engineer.","schema":"name (string), start_date (ISO date), role (string)"}
+```
+
+Example response:
+```json
+{"extracted":{"name":"John Smith","start_date":"2024-01-15","role":"senior engineer"},"model":"..."}
+```
+
+`POST /ai/judge`
+Score text against evaluation criteria on a 0–10 scale.
+
+Example request:
+```json
+{"text":"The agent responded within 50ms on every request.","criteria":"Responsiveness and reliability"}
+```
+
+Example response:
+```json
+{"score":9,"reasoning":"The agent demonstrated consistently low latency.","model":"..."}
+```
+
+`POST /ai/rerank`
+Rank a list of candidate strings by relevance to a query. Returns candidates ordered from most to least relevant with per-item scores.
+
+Example request:
+```json
+{"query":"lowest latency edge route for video","candidates":["route-a (50ms)","route-b (120ms)","route-c (30ms)"]}
+```
+
+`POST /ai/diff`
+Explain the differences between two text versions in plain English.
+
+Example request:
+```json
+{"before":"v1 config text","after":"v2 config text","context":"Nginx upstream block"}
+```
+
+`GET /ai/models`
+Returns the list of Claude models available for use in AI endpoints.
+
+`POST /ai/classify`
+Assign one or more labels from a fixed set to text. Set `multi_label: true` to allow multiple labels.
+
+Example request:
+```json
+{"text":"Agent is not responding to heartbeats.","labels":["info","warning","critical"],"multi_label":false}
+```
+
+`POST /ai/translate`
+Translate text to a target language. `source_language` defaults to automatic detection.
+
+Example request:
+```json
+{"text":"Hello, world!","target_language":"French","source_language":"English"}
+```
+
+`GET/POST /ai/templates`
+List or create named prompt templates. Templates support `{{variable}}` placeholders.
+
+`POST` example request:
+```json
+{"name":"summarise","system":"You are a concise summariser.","prompt":"Summarise the following in {{style}} style:\n{{text}}","max_tokens":256}
+```
+
+`GET /ai/templates/{name}`
+Fetch a single prompt template by name.
+
+`DELETE /ai/templates/{name}`
+Delete a prompt template.
+
+`POST /ai/templates/{name}/run`
+Render a template's `{{variable}}` placeholders with supplied values and run the inference.
+
+Example request body (key/value map of variable substitutions):
+```json
+{"style":"bullet points","text":"The deployment completed successfully after 3 retries."}
+```
+
+`POST /ai/loop`
+Run a goal-directed agentic loop. Claude iterates up to `max_iterations` times, calling built-in tools (`list_agents`, `submit_job`, `get_job`, `list_routes`) until the goal is met or the iteration limit is reached.
+
+Example request:
+```json
+{"goal":"Submit a diagnostic job to every degraded agent","max_iterations":10}
+```
+
+Example response:
+```json
+{"outcome":"completed","iterations":3,"steps":[{"action":"list_agents","result":"..."},...],"model":"..."}
+```
+
 ## Examples
 
 Send a `DataMessage` (Protobuf):
