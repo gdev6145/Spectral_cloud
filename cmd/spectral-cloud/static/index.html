@@ -413,6 +413,14 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
       Billing
     </a>
+    <a onclick="go('ai')" id="nav-ai">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a6 6 0 0 1 6 6v2a6 6 0 0 1-12 0V8a6 6 0 0 1 6-6z"/><path d="M6 10H4a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h2"/><path d="M18 10h2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2h-2"/><line x1="12" y1="20" x2="12" y2="22"/></svg>
+      AI Playground
+    </a>
+    <a onclick="go('health')" id="nav-health">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      Health Checks
+    </a>
   </div>
   <div class="nav-footer">
     <strong id="server-url">localhost</strong>
@@ -539,6 +547,8 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
           <tr><td class="mono">g &nbsp;g</td><td>Go to Agent Groups</td></tr>
           <tr><td class="mono">g &nbsp;l</td><td>Go to Pipelines</td></tr>
           <tr><td class="mono">g &nbsp;i</td><td>Go to Billing</td></tr>
+          <tr><td class="mono">g &nbsp;x</td><td>Go to AI Playground</td></tr>
+          <tr><td class="mono">g &nbsp;h</td><td>Go to Health Checks</td></tr>
           <tr><td class="mono">r</td><td>Refresh current page</td></tr>
           <tr><td class="mono">t</td><td>Toggle dark / light theme</td></tr>
           <tr><td class="mono">/</td><td>Jump to Search</td></tr>
@@ -610,7 +620,8 @@ const PAGE_NAMES = {
   jobs:'Jobs', events:'Events', kv:'KV Store', search:'Search',
   schedules:'Schedules', groups:'Agent Groups', circuit:'Circuit Breaker',
   audit:'Audit Log', admin:'Admin', notifs:'Notifications', mesh:'Mesh Peers',
-  stats:'Analytics', topology:'Topology', pipelines:'Pipelines', billing:'Billing'
+  stats:'Analytics', topology:'Topology', pipelines:'Pipelines', billing:'Billing',
+  ai:'AI Playground', health:'Health Checks'
 };
 let _skipHashUpdate = false;
 function go(page) {
@@ -925,6 +936,8 @@ async function render(page, rid) {
       case 'topology':   await renderTopology(rid); break;
       case 'pipelines':  await renderPipelines(rid); break;
       case 'billing':    await renderBilling(rid); break;
+      case 'ai':         await renderAI(rid); break;
+      case 'health':     await renderHealthChecks(rid); break;
     }
   } catch(e) {
     if (rid && rid !== currentRenderId) return;
@@ -1311,6 +1324,13 @@ async function renderRoutes(rid) {
   ${statsCards}
   ${heatmapHtml}
   ${breakdownHtml}
+  <div class="section" style="margin-bottom:16px">
+    <div class="flex" style="margin-bottom:8px">
+      <div class="section-title" style="margin:0">Route Topology (Region/Site)</div>
+      <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="loadRouteTopology()">↻ Load</button></div>
+    </div>
+    <div id="route-topology-panel" style="color:var(--muted);font-size:12px">Click ↻ Load to fetch topology from /routes/topology.</div>
+  </div>
   <div class="section">
     <div class="section-title">Route Resolver</div>
     <div class="card">
@@ -2877,6 +2897,39 @@ async function importRoutesFile(input) {
   } catch(e) { toast('Import failed: '+e.message, false); }
 }
 
+async function loadRouteTopology() {
+  const panel = document.getElementById('route-topology-panel');
+  if (!panel) return;
+  panel.innerHTML = '<span style="color:var(--muted)">Loading…</span>';
+  try {
+    const res = await api('/routes/topology');
+    const regions = Object.entries(res.regions || {});
+    const untagged = res.untagged || [];
+    if (regions.length === 0 && untagged.length === 0) {
+      panel.innerHTML = '<span style="color:var(--muted)">No region-tagged routes found.</span>';
+      return;
+    }
+    let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">';
+    regions.forEach(([region, data]) => {
+      const sites = Object.entries(data.sites || {});
+      const best = data.best_route;
+      html += `<div class="card" style="padding:12px">
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px">🌍 ${esc(region)}</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${data.count} route(s)${best?` · best: <strong>${esc(best.destination)}</strong> ${best.metric?best.metric.latency+'ms':''}`:''}</div>
+        ${sites.map(([site, sd]) => `<div style="padding:4px 0 4px 12px;border-left:2px solid var(--border);font-size:11px">
+          📍 <strong>${esc(site)}</strong> — ${sd.count} route(s)${sd.best_route?` · ${esc(sd.best_route.destination)} ${sd.best_route.metric?sd.best_route.metric.latency+'ms':''}`:''}</div>`).join('')}
+      </div>`;
+    });
+    if (untagged.length > 0) {
+      html += `<div class="card" style="padding:12px"><div style="font-weight:700;font-size:13px;margin-bottom:6px;color:var(--muted)">Untagged</div><div style="font-size:11px;color:var(--muted)">${untagged.length} route(s) without region tag</div></div>`;
+    }
+    html += '</div>';
+    panel.innerHTML = html;
+  } catch(e) {
+    panel.innerHTML = `<span style="color:var(--danger)">${esc(e.message)}</span>`;
+  }
+}
+
 // ── AGENTS HELPERS ────────────────────────────────────────────────────────────
 async function checkAgentsHealth() {
   try {
@@ -3082,7 +3135,7 @@ function closeShortcutsModal() {
 (function() {
   let _kbLastKey = '';
   let _kbLastTime = 0;
-  const _kbNavMap = {o:'overview', b:'blockchain', r:'routes', a:'agents', e:'events', k:'kv', s:'schedules', n:'notifs', m:'mesh', j:'jobs', c:'circuit', u:'audit', y:'stats', p:'topology', g:'groups', l:'pipelines', i:'billing'};
+  const _kbNavMap = {o:'overview', b:'blockchain', r:'routes', a:'agents', e:'events', k:'kv', s:'schedules', n:'notifs', m:'mesh', j:'jobs', c:'circuit', u:'audit', y:'stats', p:'topology', g:'groups', l:'pipelines', i:'billing', x:'ai', h:'health'};
   document.addEventListener('keydown', function(ev) {
     const tag = (ev.target.tagName||'').toLowerCase();
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
@@ -3469,6 +3522,590 @@ async function renderBilling(rid) {
 
   const el = document.getElementById('content');
   if (el) el.innerHTML = meCard + allTenantsHtml;
+}
+
+// ── HEALTH CHECKS PAGE ────────────────────────────────────────────────────────
+async function renderHealthChecks(rid) {
+  document.getElementById('content').innerHTML = skeletonCards(3);
+  const [hcRes, agentsRes] = await Promise.allSettled([
+    api('/agents/health').catch(() => ({results:[]})),
+    api('/agents').catch(() => [])
+  ]);
+  if (rid && rid !== currentRenderId) return;
+  const results = (hcRes.value||{}).results || [];
+  const agents = agentsRes.value || [];
+  const agentMap = {};
+  agents.forEach(a => { agentMap[a.id] = a; });
+
+  const statusCounts = {healthy:0, degraded:0, unknown:0};
+  results.forEach(r => { if (r.status in statusCounts) statusCounts[r.status]++; else statusCounts.unknown++; });
+
+  const summaryCards = `<div class="cards" style="margin-bottom:16px">
+    <div class="card green"><div class="card-label">Healthy</div><div class="card-value">${statusCounts.healthy}</div></div>
+    <div class="card"><div class="card-label">Degraded</div><div class="card-value" style="color:var(--danger)">${statusCounts.degraded}</div></div>
+    <div class="card"><div class="card-label">Unknown</div><div class="card-value" style="color:var(--muted)">${statusCounts.unknown}</div></div>
+    <div class="card accent"><div class="card-label">Total Checked</div><div class="card-value">${results.length}</div></div>
+  </div>`;
+
+  const tableHtml = `<div class="section">
+    <div class="flex" style="margin-bottom:12px">
+      <div class="section-title" style="margin:0">Health Check Results</div>
+      <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="renderHealthChecks(currentRenderId)">↻ Refresh</button></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Agent ID</th><th>Endpoint</th><th>Status</th><th>Latency</th><th>Last Check</th><th>Detail</th></tr></thead>
+        <tbody>
+          ${results.length === 0
+            ? '<tr><td colspan="6" class="empty">No health check results — checks run in the background every 30s</td></tr>'
+            : results.map(r => {
+                const agent = agentMap[r.agent_id] || {};
+                const statusClass = r.status === 'healthy' ? 'healthy' : r.status === 'degraded' ? 'degraded' : 'unknown';
+                return `<tr>
+                  <td><strong>${esc(r.agent_id)}</strong></td>
+                  <td class="mono" style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis" title="${esc(r.url||'')}">${esc(r.url||'—')}</td>
+                  <td><span class="pill ${statusClass}">${r.status === 'healthy' ? '✓' : '✗'} ${esc(r.status||'unknown')}</span></td>
+                  <td>${r.latency_ms != null ? r.latency_ms+'ms' : '—'}</td>
+                  <td class="mono">${fmtTime(r.checked_at)}</td>
+                  <td class="mono" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;color:${r.status==='healthy'?'var(--accent2)':'var(--danger)'}" title="${esc(r.detail||'')}">${esc(r.detail||'—')}</td>
+                </tr>`;
+              }).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+
+  const el = document.getElementById('content');
+  if (el) el.innerHTML = summaryCards + tableHtml;
+}
+
+// ── AI PLAYGROUND PAGE ────────────────────────────────────────────────────────
+let _aiTab = 'infer';
+let _aiModels = [];
+let _aiChatSessionId = '';
+let _aiChatHistory = [];
+
+async function renderAI(rid) {
+  document.getElementById('content').innerHTML = `<div class="section"><p style="color:var(--muted)">Loading AI Playground…</p></div>`;
+  // Load models once
+  try {
+    const modelsRes = await api('/ai/models').catch(() => ({models:[]}));
+    _aiModels = (modelsRes.models||[]);
+  } catch(_) {}
+  if (rid && rid !== currentRenderId) return;
+  _renderAIShell();
+}
+
+function _renderAIShell() {
+  const tabs = ['infer','analyze','chat','tools','templates','loop','models'];
+  const labels = {infer:'⚡ Infer', analyze:'🔍 Analyze', chat:'💬 Chat', tools:'🛠 Tools', templates:'📄 Templates', loop:'🔄 Loop', models:'📦 Models'};
+  const tabBar = tabs.map(t => `<button class="btn ${_aiTab===t?'btn-primary':'btn-outline'} btn-sm" onclick="aiTab('${t}')">${labels[t]}</button>`).join('');
+  document.getElementById('content').innerHTML = `
+  <div class="section">
+    <div class="flex" style="margin-bottom:16px;flex-wrap:wrap;gap:6px">
+      ${tabBar}
+    </div>
+    <div id="ai-tab-content"></div>
+  </div>`;
+  _renderAITab(_aiTab);
+}
+
+function aiTab(t) {
+  _aiTab = t;
+  const tabs = ['infer','analyze','chat','tools','templates','loop','models'];
+  const labels = {infer:'⚡ Infer', analyze:'🔍 Analyze', chat:'💬 Chat', tools:'🛠 Tools', templates:'📄 Templates', loop:'🔄 Loop', models:'📦 Models'};
+  document.querySelectorAll('#content .flex .btn').forEach((btn, i) => {
+    btn.className = 'btn ' + (tabs[i] === t ? 'btn-primary' : 'btn-outline') + ' btn-sm';
+  });
+  _renderAITab(t);
+}
+
+function _aiModelOptions(defaultModel) {
+  if (!_aiModels.length) return '<option value="">default</option>';
+  return _aiModels.map(m => `<option value="${esc(m.id)}" ${m.id===defaultModel?'selected':''}>${esc(m.name)}</option>`).join('');
+}
+
+function _renderAITab(tab) {
+  const c = document.getElementById('ai-tab-content');
+  if (!c) return;
+  switch(tab) {
+    case 'infer': c.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div>
+          <div class="form-group" style="margin-bottom:8px"><label>System prompt (optional)</label><textarea id="ai-infer-system" style="min-height:60px" placeholder="You are a helpful assistant."></textarea></div>
+          <div class="form-group" style="margin-bottom:8px"><label>Prompt</label><textarea id="ai-infer-prompt" style="min-height:120px" placeholder="Ask anything…"></textarea></div>
+          <div class="form-row">
+            <div class="form-group"><label>Model</label><select id="ai-infer-model" style="width:200px">${_aiModelOptions('')}</select></div>
+            <div class="form-group"><label>Max tokens</label><input id="ai-infer-tokens" type="number" value="1024" style="width:90px"></div>
+            <div class="form-group"><label>Mode</label><select id="ai-infer-mode" style="width:100px"><option value="direct">direct</option><option value="async">async</option></select></div>
+          </div>
+          <button class="btn btn-primary" onclick="aiInfer()">Run Inference</button>
+        </div>
+        <div>
+          <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Response</div>
+          <div id="ai-infer-result" style="background:var(--input);border:1px solid var(--border);border-radius:var(--radius);padding:14px;min-height:200px;font-size:12px;font-family:monospace;white-space:pre-wrap;word-break:break-word;overflow:auto;color:var(--text)">…</div>
+        </div>
+      </div>`; break;
+
+    case 'analyze': c.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div>
+          <div class="form-group" style="margin-bottom:8px"><label>Question (optional)</label><textarea id="ai-analyze-q" style="min-height:80px" placeholder="Analyze the cluster health and highlight any concerns."></textarea></div>
+          <div class="form-row">
+            <div class="form-group"><label>Model</label><select id="ai-analyze-model" style="width:200px">${_aiModelOptions('')}</select></div>
+            <div class="form-group"><label>Max tokens</label><input id="ai-analyze-tokens" type="number" value="1024" style="width:90px"></div>
+          </div>
+          <button class="btn btn-primary" onclick="aiAnalyze()">Analyze Cluster</button>
+        </div>
+        <div>
+          <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Analysis</div>
+          <div id="ai-analyze-result" style="background:var(--input);border:1px solid var(--border);border-radius:var(--radius);padding:14px;min-height:200px;font-size:12px;font-family:monospace;white-space:pre-wrap;word-break:break-word;overflow:auto;color:var(--text)">…</div>
+        </div>
+      </div>`; break;
+
+    case 'chat': c.innerHTML = `
+      <div style="display:grid;grid-template-columns:220px 1fr;gap:16px">
+        <div>
+          <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:8px">Sessions</div>
+          <div id="ai-sessions-list" style="margin-bottom:8px"><span style="color:var(--muted);font-size:12px">Loading…</span></div>
+          <div class="form-group"><label style="font-size:11px">New session ID</label><input id="ai-new-session-id" placeholder="my-chat-1" style="width:100%"></div>
+          <button class="btn btn-outline btn-sm" style="margin-top:4px;width:100%" onclick="aiNewChatSession()">+ New Session</button>
+          <button class="btn btn-outline btn-sm" style="margin-top:4px;width:100%" onclick="aiLoadSessions()">↻ Refresh</button>
+        </div>
+        <div>
+          <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:8px">
+            Chat <span id="ai-chat-session-label" style="font-weight:400;color:var(--muted);font-size:11px">(no session selected)</span>
+          </div>
+          <div id="ai-chat-messages" style="background:var(--input);border:1px solid var(--border);border-radius:var(--radius);padding:12px;min-height:200px;max-height:360px;overflow-y:auto;font-size:13px;margin-bottom:10px">
+            <span style="color:var(--muted)">Select or create a session to start chatting.</span>
+          </div>
+          <div class="flex" style="gap:8px">
+            <textarea id="ai-chat-input" style="flex:1;min-height:44px;resize:none;padding:8px" placeholder="Type a message… (Enter sends)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();aiChatSend();}"></textarea>
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <select id="ai-chat-model" style="width:160px;padding:4px">${_aiModelOptions('')}</select>
+              <button class="btn btn-primary" onclick="aiChatSend()">Send ↑</button>
+              <button class="btn btn-danger btn-sm" onclick="aiChatDelete()">🗑 Delete</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+      aiLoadSessions(); break;
+
+    case 'tools': c.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div>
+          <div class="card" style="margin-bottom:12px">
+            <div style="font-weight:700;font-size:12px;color:var(--muted);text-transform:uppercase;margin-bottom:8px">Classify Text</div>
+            <div class="form-group" style="margin-bottom:6px"><label>Text</label><textarea id="ai-cls-text" style="min-height:60px" placeholder="The product was amazing!"></textarea></div>
+            <div class="form-row">
+              <div class="form-group"><label>Labels (comma-sep)</label><input id="ai-cls-labels" placeholder="positive,negative,neutral" style="min-width:180px"></div>
+              <div class="form-group"><label>Multi-label</label><select id="ai-cls-multi" style="width:90px"><option value="false">No</option><option value="true">Yes</option></select></div>
+              <div class="form-group"><label>Model</label><select id="ai-cls-model" style="width:150px">${_aiModelOptions('')}</select></div>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="aiClassify()">Classify</button>
+            <div id="ai-cls-result" style="margin-top:8px;font-size:12px;font-family:monospace"></div>
+          </div>
+          <div class="card" style="margin-bottom:12px">
+            <div style="font-weight:700;font-size:12px;color:var(--muted);text-transform:uppercase;margin-bottom:8px">Extract Structured Data</div>
+            <div class="form-group" style="margin-bottom:6px"><label>Text</label><textarea id="ai-ext-text" style="min-height:60px" placeholder="John Doe, 42, works at Acme Corp"></textarea></div>
+            <div class="form-group" style="margin-bottom:6px"><label>Schema description</label><textarea id="ai-ext-schema" style="min-height:44px" placeholder='{"name":"string","age":"number","company":"string"}'></textarea></div>
+            <div class="form-group"><label>Model</label><select id="ai-ext-model" style="width:150px">${_aiModelOptions('')}</select></div>
+            <button class="btn btn-primary btn-sm" onclick="aiExtract()">Extract</button>
+            <div id="ai-ext-result" style="margin-top:8px;font-size:12px;font-family:monospace;white-space:pre-wrap"></div>
+          </div>
+        </div>
+        <div>
+          <div class="card" style="margin-bottom:12px">
+            <div style="font-weight:700;font-size:12px;color:var(--muted);text-transform:uppercase;margin-bottom:8px">Judge / Score Text</div>
+            <div class="form-group" style="margin-bottom:6px"><label>Text</label><textarea id="ai-judge-text" style="min-height:60px" placeholder="Text to score…"></textarea></div>
+            <div class="form-group" style="margin-bottom:6px"><label>Criteria</label><textarea id="ai-judge-criteria" style="min-height:44px" placeholder="Is the text professional, accurate, and concise?"></textarea></div>
+            <div class="form-group"><label>Model</label><select id="ai-judge-model" style="width:150px">${_aiModelOptions('')}</select></div>
+            <button class="btn btn-primary btn-sm" onclick="aiJudge()">Score</button>
+            <div id="ai-judge-result" style="margin-top:8px;font-size:12px;font-family:monospace"></div>
+          </div>
+          <div class="card" style="margin-bottom:12px">
+            <div style="font-weight:700;font-size:12px;color:var(--muted);text-transform:uppercase;margin-bottom:8px">Diff / Compare Texts</div>
+            <div class="form-group" style="margin-bottom:6px"><label>Text A</label><textarea id="ai-diff-a" style="min-height:50px" placeholder="Original text…"></textarea></div>
+            <div class="form-group" style="margin-bottom:6px"><label>Text B</label><textarea id="ai-diff-b" style="min-height:50px" placeholder="Revised text…"></textarea></div>
+            <div class="form-group"><label>Model</label><select id="ai-diff-model" style="width:150px">${_aiModelOptions('')}</select></div>
+            <button class="btn btn-primary btn-sm" onclick="aiDiff()">Explain Diff</button>
+            <div id="ai-diff-result" style="margin-top:8px;font-size:12px;font-family:monospace;white-space:pre-wrap"></div>
+          </div>
+          <div class="card" style="margin-bottom:12px">
+            <div style="font-weight:700;font-size:12px;color:var(--muted);text-transform:uppercase;margin-bottom:8px">Translate Text</div>
+            <div class="form-group" style="margin-bottom:6px"><label>Text</label><textarea id="ai-trans-text" style="min-height:50px" placeholder="Hello world"></textarea></div>
+            <div class="form-row">
+              <div class="form-group"><label>Target Language</label><input id="ai-trans-lang" placeholder="French" style="width:120px"></div>
+              <div class="form-group"><label>Model</label><select id="ai-trans-model" style="width:150px">${_aiModelOptions('')}</select></div>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="aiTranslate()">Translate</button>
+            <div id="ai-trans-result" style="margin-top:8px;font-size:12px;font-family:monospace"></div>
+          </div>
+          <div class="card">
+            <div style="font-weight:700;font-size:12px;color:var(--muted);text-transform:uppercase;margin-bottom:8px">Smart Route Task to Agent</div>
+            <div class="form-group" style="margin-bottom:6px"><label>Task description</label><textarea id="ai-route-task" style="min-height:50px" placeholder="Summarise these documents and return keywords"></textarea></div>
+            <div class="form-group"><label>Model</label><select id="ai-route-model" style="width:150px">${_aiModelOptions('')}</select></div>
+            <button class="btn btn-primary btn-sm" onclick="aiRouteTask()">Route & Dispatch Job</button>
+            <div id="ai-route-result" style="margin-top:8px;font-size:12px;font-family:monospace;white-space:pre-wrap"></div>
+          </div>
+        </div>
+      </div>`; break;
+
+    case 'templates': c.innerHTML = `
+      <div style="display:grid;grid-template-columns:220px 1fr;gap:16px">
+        <div>
+          <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:8px">Templates</div>
+          <div id="ai-tmpl-list" style="margin-bottom:8px"><span style="color:var(--muted);font-size:12px">Loading…</span></div>
+          <button class="btn btn-outline btn-sm" style="width:100%;margin-bottom:6px" onclick="aiLoadTemplates()">↻ Refresh</button>
+          <button class="btn btn-primary btn-sm" style="width:100%" onclick="aiShowNewTemplate()">+ New Template</button>
+        </div>
+        <div id="ai-tmpl-detail">
+          <div style="color:var(--muted);font-size:12px">Select a template or create a new one.</div>
+        </div>
+      </div>`;
+      aiLoadTemplates(); break;
+
+    case 'loop': c.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div>
+          <div class="form-group" style="margin-bottom:8px"><label>Goal</label><textarea id="ai-loop-goal" style="min-height:100px" placeholder="Find the healthiest agent and submit a job to it with capability 'inference'."></textarea></div>
+          <div class="form-row">
+            <div class="form-group"><label>Model</label><select id="ai-loop-model" style="width:200px">${_aiModelOptions('')}</select></div>
+            <div class="form-group"><label>Max iterations</label><input id="ai-loop-iters" type="number" value="5" min="1" max="20" style="width:90px"></div>
+          </div>
+          <button class="btn btn-primary" onclick="aiLoop()">▶ Run Agentic Loop</button>
+          <div style="font-size:11px;color:var(--muted);margin-top:8px">Claude will autonomously call list_agents, submit_job, get_job, and list_routes to achieve the goal.</div>
+        </div>
+        <div>
+          <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Loop Trace</div>
+          <div id="ai-loop-result" style="background:var(--input);border:1px solid var(--border);border-radius:var(--radius);padding:14px;min-height:200px;font-size:12px;font-family:monospace;white-space:pre-wrap;word-break:break-word;overflow:auto;color:var(--text)">…</div>
+        </div>
+      </div>`; break;
+
+    case 'models': {
+      const rows = _aiModels.length ? _aiModels.map(m => `<tr>
+        <td class="mono"><strong>${esc(m.id)}</strong></td>
+        <td>${esc(m.name)}</td>
+        <td>${m.max_tokens?.toLocaleString()}</td>
+        <td>${esc(m.description)}</td>
+        <td>${m.prompt_caching ? '<span class="pill healthy">Yes</span>' : '<span class="pill unknown">No</span>'}</td>
+      </tr>`).join('') : '<tr><td colspan="5" class="empty">No models returned</td></tr>';
+      c.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Model ID</th><th>Name</th><th>Max Tokens</th><th>Description</th><th>Prompt Caching</th></tr></thead><tbody>${rows}</tbody></table></div>
+        <div style="margin-top:8px;font-size:11px;color:var(--muted)">Requires ANTHROPIC_API_KEY. Models are static; click refresh on the AI page to reload.</div>`;
+      break;
+    }
+  }
+}
+
+async function aiInfer() {
+  const prompt = (document.getElementById('ai-infer-prompt')||{}).value||'';
+  if (!prompt.trim()) { toast('Prompt required', false); return; }
+  const system = (document.getElementById('ai-infer-system')||{}).value||'';
+  const model = (document.getElementById('ai-infer-model')||{}).value||'';
+  const maxTokens = parseInt((document.getElementById('ai-infer-tokens')||{}).value||'1024');
+  const mode = (document.getElementById('ai-infer-mode')||{}).value||'direct';
+  const res = document.getElementById('ai-infer-result');
+  if (res) res.textContent = '…';
+  try {
+    const data = await post('/ai/infer', {prompt, system, model, max_tokens:maxTokens, mode});
+    if (res) res.textContent = data.content || data.job?.id ? '[async job submitted: '+data.job.id+']' : JSON.stringify(data, null, 2);
+  } catch(e) {
+    if (res) res.textContent = 'Error: '+e.message;
+  }
+}
+
+async function aiAnalyze() {
+  const question = (document.getElementById('ai-analyze-q')||{}).value||'';
+  const model = (document.getElementById('ai-analyze-model')||{}).value||'';
+  const maxTokens = parseInt((document.getElementById('ai-analyze-tokens')||{}).value||'1024');
+  const res = document.getElementById('ai-analyze-result');
+  if (res) res.textContent = 'Analyzing cluster…';
+  try {
+    const data = await post('/ai/analyze', {question, model, max_tokens:maxTokens});
+    if (res) res.textContent = data.analysis || JSON.stringify(data, null, 2);
+  } catch(e) {
+    if (res) res.textContent = 'Error: '+e.message;
+  }
+}
+
+async function aiLoadSessions() {
+  try {
+    const data = await api('/ai/sessions');
+    const list = document.getElementById('ai-sessions-list');
+    if (!list) return;
+    const sessions = data.sessions || [];
+    if (!sessions.length) { list.innerHTML = '<span style="color:var(--muted);font-size:12px">No sessions</span>'; return; }
+    list.innerHTML = sessions.map(s => `<div style="display:flex;align-items:center;gap:4px;margin-bottom:4px">
+      <button class="btn btn-outline btn-sm" style="flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis" onclick="aiSelectSession('${esc(s.session_id)}')">${esc(s.session_id)} <span style="color:var(--muted);font-size:10px">(${s.turns} turns)</span></button>
+    </div>`).join('');
+  } catch(e) { }
+}
+
+async function aiSelectSession(id) {
+  _aiChatSessionId = id;
+  const label = document.getElementById('ai-chat-session-label');
+  if (label) label.textContent = id;
+  try {
+    const data = await api('/ai/chat/'+encodeURIComponent(id));
+    _aiChatHistory = data.messages || [];
+    _renderChatMessages();
+  } catch(e) { toast('Error loading chat: '+e.message, false); }
+}
+
+function _renderChatMessages() {
+  const container = document.getElementById('ai-chat-messages');
+  if (!container) return;
+  if (!_aiChatHistory.length) { container.innerHTML = '<span style="color:var(--muted)">No messages yet.</span>'; return; }
+  container.innerHTML = _aiChatHistory.map(m => {
+    const isUser = m.role === 'user';
+    return `<div style="margin-bottom:10px;${isUser ? 'text-align:right' : ''}">
+      <span style="display:inline-block;background:${isUser ? 'var(--accent)' : 'var(--card)'};color:${isUser ? '#fff' : 'var(--text)'};border-radius:10px;padding:7px 12px;max-width:80%;font-size:13px;white-space:pre-wrap;word-break:break-word;border:1px solid var(--border)">${esc(m.content)}</span>
+    </div>`;
+  }).join('');
+  container.scrollTop = container.scrollHeight;
+}
+
+async function aiNewChatSession() {
+  const id = ((document.getElementById('ai-new-session-id')||{}).value||'').trim() || ('chat-'+Date.now());
+  _aiChatSessionId = id;
+  _aiChatHistory = [];
+  const label = document.getElementById('ai-chat-session-label');
+  if (label) label.textContent = id;
+  _renderChatMessages();
+  aiLoadSessions();
+}
+
+async function aiChatSend() {
+  if (!_aiChatSessionId) { toast('Select or create a session first', false); return; }
+  const input = document.getElementById('ai-chat-input');
+  const msg = (input ? input.value : '').trim();
+  if (!msg) return;
+  const model = (document.getElementById('ai-chat-model')||{}).value||'';
+  if (input) input.value = '';
+  _aiChatHistory.push({role:'user', content:msg});
+  _renderChatMessages();
+  try {
+    const data = await post('/ai/chat/'+encodeURIComponent(_aiChatSessionId), {message:msg, model});
+    _aiChatHistory = data.messages || _aiChatHistory;
+    _renderChatMessages();
+  } catch(e) { toast('Chat error: '+e.message, false); }
+}
+
+async function aiChatDelete() {
+  if (!_aiChatSessionId) return;
+  try {
+    await fetch('/ai/chat/'+encodeURIComponent(_aiChatSessionId), {method:'DELETE', headers: apiKey ? {'X-API-Key':apiKey} : {}});
+    _aiChatSessionId = '';
+    _aiChatHistory = [];
+    const label = document.getElementById('ai-chat-session-label');
+    if (label) label.textContent = '(no session selected)';
+    _renderChatMessages();
+    aiLoadSessions();
+    toast('Session deleted');
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function aiClassify() {
+  const text = (document.getElementById('ai-cls-text')||{}).value||'';
+  const labelsStr = (document.getElementById('ai-cls-labels')||{}).value||'';
+  if (!text.trim() || !labelsStr.trim()) { toast('Text and labels required', false); return; }
+  const labels = labelsStr.split(',').map(s=>s.trim()).filter(Boolean);
+  const multi = (document.getElementById('ai-cls-multi')||{}).value === 'true';
+  const model = (document.getElementById('ai-cls-model')||{}).value||'';
+  const res = document.getElementById('ai-cls-result');
+  if (res) res.textContent = '…';
+  try {
+    const data = await post('/ai/classify', {text, labels, multi_label:multi, model});
+    if (res) res.textContent = JSON.stringify(data, null, 2);
+  } catch(e) { if (res) res.textContent = 'Error: '+e.message; }
+}
+
+async function aiExtract() {
+  const text = (document.getElementById('ai-ext-text')||{}).value||'';
+  const schema = (document.getElementById('ai-ext-schema')||{}).value||'';
+  if (!text.trim() || !schema.trim()) { toast('Text and schema required', false); return; }
+  const model = (document.getElementById('ai-ext-model')||{}).value||'';
+  const res = document.getElementById('ai-ext-result');
+  if (res) res.textContent = '…';
+  try {
+    const data = await post('/ai/extract', {text, schema, model});
+    if (res) res.textContent = JSON.stringify(data.extracted || data.raw, null, 2);
+  } catch(e) { if (res) res.textContent = 'Error: '+e.message; }
+}
+
+async function aiJudge() {
+  const text = (document.getElementById('ai-judge-text')||{}).value||'';
+  const criteria = (document.getElementById('ai-judge-criteria')||{}).value||'';
+  if (!text.trim() || !criteria.trim()) { toast('Text and criteria required', false); return; }
+  const model = (document.getElementById('ai-judge-model')||{}).value||'';
+  const res = document.getElementById('ai-judge-result');
+  if (res) res.textContent = '…';
+  try {
+    const data = await post('/ai/judge', {text, criteria, model});
+    if (res) res.textContent = JSON.stringify(data, null, 2);
+  } catch(e) { if (res) res.textContent = 'Error: '+e.message; }
+}
+
+async function aiDiff() {
+  const a = (document.getElementById('ai-diff-a')||{}).value||'';
+  const b = (document.getElementById('ai-diff-b')||{}).value||'';
+  if (!a.trim() || !b.trim()) { toast('Both texts required', false); return; }
+  const model = (document.getElementById('ai-diff-model')||{}).value||'';
+  const res = document.getElementById('ai-diff-result');
+  if (res) res.textContent = '…';
+  try {
+    const data = await post('/ai/diff', {text_a:a, text_b:b, model});
+    if (res) res.textContent = data.explanation || JSON.stringify(data, null, 2);
+  } catch(e) { if (res) res.textContent = 'Error: '+e.message; }
+}
+
+async function aiTranslate() {
+  const text = (document.getElementById('ai-trans-text')||{}).value||'';
+  const target = (document.getElementById('ai-trans-lang')||{}).value||'';
+  if (!text.trim() || !target.trim()) { toast('Text and target language required', false); return; }
+  const model = (document.getElementById('ai-trans-model')||{}).value||'';
+  const res = document.getElementById('ai-trans-result');
+  if (res) res.textContent = '…';
+  try {
+    const data = await post('/ai/translate', {text, target_language:target, model});
+    if (res) res.textContent = data.translation || JSON.stringify(data, null, 2);
+  } catch(e) { if (res) res.textContent = 'Error: '+e.message; }
+}
+
+async function aiRouteTask() {
+  const task = (document.getElementById('ai-route-task')||{}).value||'';
+  if (!task.trim()) { toast('Task description required', false); return; }
+  const model = (document.getElementById('ai-route-model')||{}).value||'';
+  const res = document.getElementById('ai-route-result');
+  if (res) res.textContent = '…';
+  try {
+    const data = await post('/ai/route', {task, model});
+    if (res) res.textContent = JSON.stringify(data, null, 2);
+  } catch(e) { if (res) res.textContent = 'Error: '+e.message; }
+}
+
+async function aiLoadTemplates() {
+  const list = document.getElementById('ai-tmpl-list');
+  if (!list) return;
+  try {
+    const data = await api('/ai/templates');
+    const tmpls = data.templates || [];
+    if (!tmpls.length) { list.innerHTML = '<span style="color:var(--muted);font-size:12px">No templates</span>'; return; }
+    list.innerHTML = tmpls.map(t => `<div style="display:flex;align-items:center;gap:4px;margin-bottom:4px">
+      <button class="btn btn-outline btn-sm" style="flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis" onclick="aiSelectTemplate('${esc(t.name)}')">${esc(t.name)}</button>
+      <button class="btn btn-danger btn-sm" style="padding:2px 6px;font-size:11px" onclick="aiDeleteTemplate('${esc(t.name)}')">✕</button>
+    </div>`).join('');
+  } catch(e) {}
+}
+
+async function aiSelectTemplate(name) {
+  const detail = document.getElementById('ai-tmpl-detail');
+  if (!detail) return;
+  try {
+    const data = await api('/ai/templates/'+encodeURIComponent(name));
+    detail.innerHTML = `
+      <div class="section-title" style="margin-bottom:8px">${esc(data.name||name)}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div class="form-group"><label>System</label><textarea id="ai-tmpl-system" style="min-height:50px">${esc(data.system||'')}</textarea></div>
+        <div class="form-group"><label>Prompt (use {{var}} placeholders)</label><textarea id="ai-tmpl-prompt" style="min-height:50px">${esc(data.prompt||'')}</textarea></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Model</label><select id="ai-tmpl-model" style="width:180px">${_aiModelOptions(data.model||'')}</select></div>
+        <div class="form-group"><label>Max tokens</label><input id="ai-tmpl-tokens" type="number" value="${data.max_tokens||512}" style="width:90px"></div>
+      </div>
+      <div class="form-group" style="margin-top:8px"><label>Variables for run (JSON key:value object)</label><textarea id="ai-tmpl-vars" style="min-height:44px" placeholder='{"name":"World"}'></textarea></div>
+      <div class="flex" style="gap:8px;margin-top:10px">
+        <button class="btn btn-primary" onclick="aiRunTemplate('${esc(name)}')">▶ Run Template</button>
+        <button class="btn btn-outline" onclick="aiSaveTemplate('${esc(name)}')">💾 Save Changes</button>
+      </div>
+      <div id="ai-tmpl-run-result" style="margin-top:12px;font-size:12px;font-family:monospace;white-space:pre-wrap;background:var(--input);border:1px solid var(--border);border-radius:var(--radius);padding:12px;min-height:80px"></div>`;
+  } catch(e) { detail.innerHTML = `<div class="alert err">${esc(e.message)}</div>`; }
+}
+
+function aiShowNewTemplate() {
+  const detail = document.getElementById('ai-tmpl-detail');
+  if (!detail) return;
+  detail.innerHTML = `
+    <div class="section-title" style="margin-bottom:8px">New Template</div>
+    <div class="form-group" style="margin-bottom:6px"><label>Name</label><input id="ai-new-tmpl-name" placeholder="my-template" style="width:100%"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      <div class="form-group"><label>System</label><textarea id="ai-new-tmpl-system" style="min-height:50px" placeholder="You are a helpful assistant."></textarea></div>
+      <div class="form-group"><label>Prompt</label><textarea id="ai-new-tmpl-prompt" style="min-height:50px" placeholder="Hello {{name}}, answer {{question}}."></textarea></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Model</label><select id="ai-new-tmpl-model" style="width:180px">${_aiModelOptions('')}</select></div>
+      <div class="form-group"><label>Max tokens</label><input id="ai-new-tmpl-tokens" type="number" value="512" style="width:90px"></div>
+    </div>
+    <button class="btn btn-primary" style="margin-top:10px" onclick="aiCreateTemplate()">Create Template</button>`;
+}
+
+async function aiCreateTemplate() {
+  const name = ((document.getElementById('ai-new-tmpl-name')||{}).value||'').trim();
+  const prompt = ((document.getElementById('ai-new-tmpl-prompt')||{}).value||'').trim();
+  if (!name || !prompt) { toast('Name and prompt required', false); return; }
+  try {
+    await post('/ai/templates', {
+      name,
+      system: ((document.getElementById('ai-new-tmpl-system')||{}).value||'').trim(),
+      prompt,
+      model: ((document.getElementById('ai-new-tmpl-model')||{}).value||'').trim(),
+      max_tokens: parseInt((document.getElementById('ai-new-tmpl-tokens')||{}).value||'512')
+    });
+    toast('Template created');
+    aiLoadTemplates();
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function aiSaveTemplate(name) {
+  const prompt = ((document.getElementById('ai-tmpl-prompt')||{}).value||'').trim();
+  if (!prompt) { toast('Prompt required', false); return; }
+  try {
+    await post('/ai/templates', {
+      name,
+      system: ((document.getElementById('ai-tmpl-system')||{}).value||'').trim(),
+      prompt,
+      model: ((document.getElementById('ai-tmpl-model')||{}).value||'').trim(),
+      max_tokens: parseInt((document.getElementById('ai-tmpl-tokens')||{}).value||'512')
+    });
+    toast('Template saved');
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function aiRunTemplate(name) {
+  let vars = {};
+  try { vars = JSON.parse((document.getElementById('ai-tmpl-vars')||{}).value||'{}'); } catch(_) {}
+  const res = document.getElementById('ai-tmpl-run-result');
+  if (res) res.textContent = 'Running…';
+  try {
+    const data = await post('/ai/templates/'+encodeURIComponent(name)+'/run', vars);
+    if (res) res.textContent = data.content || JSON.stringify(data, null, 2);
+  } catch(e) { if (res) res.textContent = 'Error: '+e.message; }
+}
+
+async function aiDeleteTemplate(name) {
+  try {
+    await fetch('/ai/templates/'+encodeURIComponent(name), {method:'DELETE', headers: apiKey ? {'X-API-Key':apiKey} : {}});
+    toast('Template deleted');
+    aiLoadTemplates();
+    const detail = document.getElementById('ai-tmpl-detail');
+    if (detail) detail.innerHTML = '<span style="color:var(--muted);font-size:12px">Template deleted.</span>';
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function aiLoop() {
+  const goal = (document.getElementById('ai-loop-goal')||{}).value||'';
+  if (!goal.trim()) { toast('Goal required', false); return; }
+  const model = (document.getElementById('ai-loop-model')||{}).value||'';
+  const maxIter = parseInt((document.getElementById('ai-loop-iters')||{}).value||'5');
+  const res = document.getElementById('ai-loop-result');
+  if (res) res.textContent = 'Running agentic loop…';
+  try {
+    const data = await post('/ai/loop', {goal, model, max_iterations:maxIter});
+    if (res) {
+      const lines = (data.trace||[]).map(t => `[iter ${t.iteration||''}] ${t.role||''}: ${typeof t.content === 'string' ? t.content : JSON.stringify(t.content)}`).join('\n');
+      res.textContent = lines || JSON.stringify(data, null, 2);
+    }
+  } catch(e) { if (res) res.textContent = 'Error: '+e.message; }
 }
 if (!apiKey) { setTimeout(showApiKeyModal, 600); }
 (function() {
