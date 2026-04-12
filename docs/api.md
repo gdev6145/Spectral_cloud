@@ -293,6 +293,57 @@ Returns mesh config, stats, and anomaly state.
 `GET /admin/tenants`
 Returns the list of tenants with per-tenant block/route counts.
 
+`PATCH /admin/tenants/{id}/plan`
+Upgrade or downgrade a tenant's subscription plan (admin-only).
+
+Example request:
+```json
+{"plan":"pro"}
+```
+
+`GET /admin/usage`
+Returns today's usage report across all tenants. Use `?tenant=X` to scope to a single tenant.
+
+## SaaS / Self-Service
+
+`POST /auth/signup`
+Register a new tenant and receive an initial API key. Returns `409 Conflict` if the tenant already exists.
+
+Example request:
+```json
+{"tenant_id":"acme","name":"Acme Corp","email":"admin@acme.com","plan":"pro"}
+```
+
+Example response:
+```json
+{"tenant_id":"acme","api_key":"sk-…","plan":"pro","quota":{...}}
+```
+
+`GET /tenant/me`
+Returns the authenticated tenant's profile, today's usage, and live agent count.
+
+`PATCH /tenant/me`
+Updates the authenticated tenant's `name` and/or `email`.
+
+Example request:
+```json
+{"name":"Acme Corp Updated","email":"ops@acme.com"}
+```
+
+`GET /tenant/keys`
+Lists all sub-keys for the authenticated tenant. The secret (`key`) field is always redacted.
+
+`POST /tenant/keys`
+Creates a new sub-key. The secret is shown once in the response.
+
+Example request:
+```json
+{"name":"ci-pipeline"}
+```
+
+`DELETE /tenant/keys/{id}`
+Revokes a sub-key by its ID.
+
 ## Circuit Breakers
 
 `GET /circuit`

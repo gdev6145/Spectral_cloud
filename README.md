@@ -73,6 +73,12 @@ SPECTRAL_API_KEY=<tenant-or-api-key> ./cmd/spectral-agent/supervisor.sh http://l
 - `GET /admin/status` -> backup/compaction status (admin-only)
 - `GET /admin/mesh` -> mesh config/stats/anomaly state (admin-only)
 - `GET /admin/tenants` -> list tenants and per-tenant counts (admin-only)
+- `PATCH /admin/tenants/{id}/plan` -> upgrade or downgrade a tenant's plan (admin-only)
+- `GET /admin/usage[?tenant=X]` -> today's usage report across all tenants (admin-only)
+- `POST /auth/signup` -> register a new tenant and receive an initial API key
+- `GET/PATCH /tenant/me` -> view or update the authenticated tenant's profile and usage
+- `GET/POST /tenant/keys` -> list or create tenant sub-keys
+- `DELETE /tenant/keys/{id}` -> revoke a tenant sub-key
 - `POST /ai/infer[?mode=async&stream=true]` -> Claude inference; direct, streaming SSE, or async via job queue
 - `GET /ai/agents` -> list agents advertising the `inference` capability
 - `GET /ai/sessions` -> list active chat session IDs with turn counts for the resolved tenant
