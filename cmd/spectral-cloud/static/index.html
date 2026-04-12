@@ -3446,84 +3446,337 @@ let aiChatSessionId = null;
 async function renderAI(rid) {
   if (rid && rid !== currentRenderId) return;
   document.getElementById('content').innerHTML = `
-  <div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-    <div>
-      <div class="section">
-        <div class="section-title">AI Inference</div>
-        <div class="card">
-          <div class="form-group" style="margin-bottom:8px">
-            <label>System Prompt (optional)</label>
-            <input id="ai-system" placeholder="You are a helpful assistant…">
-          </div>
-          <div class="form-group" style="margin-bottom:8px">
-            <label>Prompt</label>
-            <textarea id="ai-prompt" placeholder="Ask anything…" style="min-height:80px"></textarea>
-          </div>
-          <div class="form-row" style="margin-bottom:8px">
-            <div class="form-group">
-              <label>Model</label>
-              <select id="ai-model">
-                <option value="">server default</option>
-                <option value="claude-3-5-haiku-latest">claude-3-5-haiku-latest</option>
-                <option value="claude-3-5-sonnet-latest">claude-3-5-sonnet-latest</option>
-                <option value="claude-opus-4-5">claude-opus-4-5</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Max Tokens</label>
-              <input id="ai-max-tokens" type="number" value="1024" style="width:90px">
-            </div>
-          </div>
-          <div class="flex" style="gap:8px;margin-bottom:10px">
-            <button class="btn btn-primary" onclick="runAIInfer()">⚡ Infer</button>
-            <button class="btn btn-outline" onclick="runAIStream()">▶ Stream</button>
-            <button class="btn btn-outline" onclick="runAIAsync()">⬡ Async (Agent)</button>
-          </div>
-          <div id="ai-infer-result" class="ai-result-box" style="min-height:48px;display:none"></div>
+  <div class="tab-bar" id="ai-tab-bar">
+    <div class="tab active" onclick="switchAITab('chat')">💬 Chat</div>
+    <div class="tab" onclick="switchAITab('infer')">⚡ Infer</div>
+    <div class="tab" onclick="switchAITab('tools')">🔧 Tools</div>
+    <div class="tab" onclick="switchAITab('route')">🗺️ Route</div>
+    <div class="tab" onclick="switchAITab('templates')">📋 Templates</div>
+  </div>
+
+  <!-- CHAT TAB -->
+  <div id="ai-tab-chat">
+    <div class="section">
+      <div class="section-title">AI Chat Session</div>
+      <div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:12px;color:var(--muted)">Session:</span>
+          <select id="ai-session-select" style="flex:1;min-width:120px;padding:3px 8px;font-size:12px" onchange="selectChatSession(this.value)">
+            <option value="">— new session —</option>
+          </select>
+          <button class="btn btn-outline btn-sm" onclick="loadChatSessions()">↻</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteChatSession()">✕</button>
         </div>
-      </div>
-      <div class="section">
-        <div class="section-title">Cluster Analysis</div>
-        <div class="card">
-          <div class="form-group" style="margin-bottom:8px">
-            <label>Focus (optional)</label>
-            <input id="ai-analyze-focus" placeholder="agent health, routing performance…">
+        <div class="chat-wrap">
+          <div class="chat-messages" id="ai-chat-messages">
+            <div class="chat-msg system">Start a new message below to begin chatting.</div>
           </div>
-          <button class="btn btn-primary" onclick="runAIAnalyze()">🔍 Analyze Cluster</button>
-          <div id="ai-analyze-result" class="ai-result-box" style="margin-top:10px;display:none"></div>
+          <div class="chat-input-row">
+            <textarea id="ai-chat-input" placeholder="Type a message… (Shift+Enter = newline)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChatMessage();}"></textarea>
+            <button class="btn btn-primary" onclick="sendChatMessage()" style="align-self:flex-end">Send</button>
+          </div>
         </div>
-      </div>
-      <div class="section">
-        <div class="section-title">AI Agents</div>
-        <div id="ai-agents-list" style="margin-top:4px"><button class="btn btn-outline btn-sm" onclick="loadAIAgents()">Load Inference Agents</button></div>
       </div>
     </div>
-    <div>
-      <div class="section">
-        <div class="section-title">AI Chat Session</div>
-        <div class="card" style="padding:0;overflow:hidden">
-          <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <span style="font-size:12px;color:var(--muted)">Session:</span>
-            <select id="ai-session-select" style="width:160px;padding:3px 8px;font-size:12px" onchange="selectChatSession(this.value)">
-              <option value="">— new session —</option>
-            </select>
-            <button class="btn btn-outline btn-sm" onclick="loadChatSessions()">↻</button>
-            <button class="btn btn-danger btn-sm" onclick="deleteChatSession()">✕ Delete</button>
+  </div>
+
+  <!-- INFER TAB -->
+  <div id="ai-tab-infer" style="display:none">
+    <div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <div class="section">
+          <div class="section-title">AI Inference</div>
+          <div class="card">
+            <div class="form-group" style="margin-bottom:8px">
+              <label>System Prompt (optional)</label>
+              <input id="ai-system" placeholder="You are a helpful assistant…">
+            </div>
+            <div class="form-group" style="margin-bottom:8px">
+              <label>Prompt</label>
+              <textarea id="ai-prompt" placeholder="Ask anything…" style="min-height:80px"></textarea>
+            </div>
+            <div class="form-row" style="margin-bottom:8px">
+              <div class="form-group">
+                <label>Model</label>
+                <select id="ai-model">
+                  <option value="">server default</option>
+                  <option value="claude-3-5-haiku-latest">claude-3-5-haiku-latest</option>
+                  <option value="claude-3-5-sonnet-latest">claude-3-5-sonnet-latest</option>
+                  <option value="claude-opus-4-5">claude-opus-4-5</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Max Tokens</label>
+                <input id="ai-max-tokens" type="number" value="1024" style="width:90px">
+              </div>
+            </div>
+            <div class="flex" style="gap:8px;margin-bottom:10px">
+              <button class="btn btn-primary" onclick="runAIInfer()">⚡ Infer</button>
+              <button class="btn btn-outline" onclick="runAIStream()">▶ Stream</button>
+              <button class="btn btn-outline" onclick="runAIAsync()">⬡ Async (Agent)</button>
+            </div>
+            <div id="ai-infer-result" class="ai-result-box" style="min-height:48px;display:none"></div>
           </div>
-          <div class="chat-wrap">
-            <div class="chat-messages" id="ai-chat-messages">
-              <div class="chat-msg system">Start a new message below to begin chatting.</div>
+        </div>
+      </div>
+      <div>
+        <div class="section">
+          <div class="section-title">Cluster Analysis</div>
+          <div class="card">
+            <div class="form-group" style="margin-bottom:8px">
+              <label>Focus (optional)</label>
+              <input id="ai-analyze-focus" placeholder="agent health, routing performance…">
             </div>
-            <div class="chat-input-row">
-              <textarea id="ai-chat-input" placeholder="Type a message… (Shift+Enter = newline)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChatMessage();}"></textarea>
-              <button class="btn btn-primary" onclick="sendChatMessage()" style="align-self:flex-end">Send</button>
+            <button class="btn btn-primary" onclick="runAIAnalyze()">🔍 Analyze Cluster</button>
+            <div id="ai-analyze-result" class="ai-result-box" style="margin-top:10px;display:none"></div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="section-title">AI Agents</div>
+          <div id="ai-agents-list" style="margin-top:4px"><button class="btn btn-outline btn-sm" onclick="loadAIAgents()">Load Inference Agents</button></div>
+        </div>
+        <div class="section">
+          <div class="section-title">Available Models</div>
+          <div id="ai-models-list" style="margin-top:4px"><button class="btn btn-outline btn-sm" onclick="loadAIModels()">↻ Load Models</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOOLS TAB -->
+  <div id="ai-tab-tools" style="display:none">
+    <div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <div class="section">
+          <div class="section-title">Extract Structured Data</div>
+          <div class="card">
+            <div class="form-group" style="margin-bottom:8px">
+              <label>Text to extract from</label>
+              <textarea id="ai-extract-text" placeholder="Paste any text here…" style="min-height:80px"></textarea>
             </div>
+            <div class="form-group" style="margin-bottom:8px">
+              <label>Schema description</label>
+              <input id="ai-extract-schema" placeholder='name (string), age (number), email (string)'>
+            </div>
+            <button class="btn btn-primary" onclick="runAIExtract()">⬡ Extract</button>
+            <div id="ai-extract-result" class="ai-result-box" style="margin-top:10px;display:none"></div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="section-title">Classify Text</div>
+          <div class="card">
+            <div class="form-group" style="margin-bottom:8px">
+              <label>Text</label>
+              <textarea id="ai-classify-text" placeholder="Text to classify…" style="min-height:60px"></textarea>
+            </div>
+            <div class="form-group" style="margin-bottom:8px">
+              <label>Labels (comma-separated)</label>
+              <input id="ai-classify-labels" placeholder="positive, negative, neutral">
+            </div>
+            <div class="form-row" style="margin-bottom:8px">
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+                <input type="checkbox" id="ai-classify-multi"> Multi-label
+              </label>
+            </div>
+            <button class="btn btn-primary" onclick="runAIClassify()">🏷️ Classify</button>
+            <div id="ai-classify-result" class="ai-result-box" style="margin-top:10px;display:none"></div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="section-title">Translate</div>
+          <div class="card">
+            <div class="form-group" style="margin-bottom:8px">
+              <label>Text</label>
+              <textarea id="ai-translate-text" placeholder="Text to translate…" style="min-height:60px"></textarea>
+            </div>
+            <div class="form-row" style="margin-bottom:8px;gap:8px">
+              <div class="form-group">
+                <label>Target language</label>
+                <input id="ai-translate-target" placeholder="French" style="min-width:100px">
+              </div>
+              <div class="form-group">
+                <label>Source (optional)</label>
+                <input id="ai-translate-source" placeholder="auto" style="min-width:80px">
+              </div>
+            </div>
+            <button class="btn btn-primary" onclick="runAITranslate()">🌐 Translate</button>
+            <div id="ai-translate-result" class="ai-result-box" style="margin-top:10px;display:none"></div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="section">
+          <div class="section-title">Judge (LLM-as-Judge)</div>
+          <div class="card">
+            <div class="form-group" style="margin-bottom:8px">
+              <label>Text to evaluate</label>
+              <textarea id="ai-judge-text" placeholder="Text to score…" style="min-height:80px"></textarea>
+            </div>
+            <div class="form-group" style="margin-bottom:8px">
+              <label>Criteria</label>
+              <input id="ai-judge-criteria" placeholder="Clarity, accuracy, relevance…">
+            </div>
+            <button class="btn btn-primary" onclick="runAIJudge()">⚖️ Judge</button>
+            <div id="ai-judge-result" class="ai-result-box" style="margin-top:10px;display:none"></div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="section-title">Rerank Candidates</div>
+          <div class="card">
+            <div class="form-group" style="margin-bottom:8px">
+              <label>Query</label>
+              <input id="ai-rerank-query" placeholder="Find the best option for…">
+            </div>
+            <div class="form-group" style="margin-bottom:8px">
+              <label>Candidates (one per line)</label>
+              <textarea id="ai-rerank-candidates" placeholder="Option A&#10;Option B&#10;Option C" style="min-height:80px"></textarea>
+            </div>
+            <button class="btn btn-primary" onclick="runAIRerank()">📊 Rerank</button>
+            <div id="ai-rerank-result" class="ai-result-box" style="margin-top:10px;display:none"></div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="section-title">Explain Diff</div>
+          <div class="card">
+            <div class="form-row" style="margin-bottom:8px;gap:8px">
+              <div class="form-group" style="flex:1">
+                <label>Before</label>
+                <textarea id="ai-diff-before" placeholder="Original text…" style="min-height:80px"></textarea>
+              </div>
+              <div class="form-group" style="flex:1">
+                <label>After</label>
+                <textarea id="ai-diff-after" placeholder="Updated text…" style="min-height:80px"></textarea>
+              </div>
+            </div>
+            <div class="form-group" style="margin-bottom:8px">
+              <label>Context (optional)</label>
+              <input id="ai-diff-context" placeholder="Describe what changed…">
+            </div>
+            <button class="btn btn-primary" onclick="runAIDiff()">🔍 Explain Diff</button>
+            <div id="ai-diff-result" class="ai-result-box" style="margin-top:10px;display:none"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROUTE TAB -->
+  <div id="ai-tab-route" style="display:none">
+    <div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <div class="section">
+          <div class="section-title">Smart Route (Natural Language → Job)</div>
+          <div class="card">
+            <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Describe a task in plain English. Claude picks the best agent capability and submits a job automatically.</p>
+            <div class="form-group" style="margin-bottom:8px">
+              <label>Task description</label>
+              <textarea id="ai-route-task" placeholder="Fetch weather data for New York and summarize it…" style="min-height:80px"></textarea>
+            </div>
+            <div class="form-group" style="margin-bottom:8px">
+              <label>Extra payload JSON (optional)</label>
+              <input id="ai-route-payload" placeholder='{"key":"value"}'>
+            </div>
+            <button class="btn btn-primary" onclick="runAIRoute()">🗺️ Route &amp; Submit Job</button>
+            <div id="ai-route-result" class="ai-result-box" style="margin-top:10px;display:none"></div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="section">
+          <div class="section-title">Agentic Loop</div>
+          <div class="card">
+            <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Give Claude a goal. It will autonomously list agents, submit jobs, and check results until the goal is achieved (up to max iterations).</p>
+            <div class="form-group" style="margin-bottom:8px">
+              <label>Goal</label>
+              <textarea id="ai-loop-goal" placeholder="Check all agent health statuses and submit a diagnostic job to any degraded agents…" style="min-height:80px"></textarea>
+            </div>
+            <div class="form-row" style="margin-bottom:8px">
+              <div class="form-group">
+                <label>Max iterations</label>
+                <input id="ai-loop-iterations" type="number" value="10" style="width:80px">
+              </div>
+            </div>
+            <button class="btn btn-primary" onclick="runAILoop()">🔄 Run Loop</button>
+            <div id="ai-loop-result" class="ai-result-box" style="margin-top:10px;display:none"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TEMPLATES TAB -->
+  <div id="ai-tab-templates" style="display:none">
+    <div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <div class="section">
+          <div class="topbar" style="height:auto;padding:0;background:none;border:none;margin-bottom:10px">
+            <div class="section-title">Prompt Templates</div>
+            <div class="ml-auto"><button class="btn btn-outline btn-sm" onclick="loadAITemplates()">↻ Refresh</button></div>
+          </div>
+          <div id="ai-templates-list"><div class="empty">Loading…</div></div>
+        </div>
+      </div>
+      <div>
+        <div class="section">
+          <div class="section-title">Create Template</div>
+          <div class="card">
+            <div class="form-group" style="margin-bottom:8px">
+              <label>Name</label>
+              <input id="ai-tmpl-name" placeholder="my-template">
+            </div>
+            <div class="form-group" style="margin-bottom:8px">
+              <label>System Prompt (optional)</label>
+              <input id="ai-tmpl-system" placeholder="You are a helpful assistant…">
+            </div>
+            <div class="form-group" style="margin-bottom:8px">
+              <label>Prompt (use {{variable}} for vars)</label>
+              <textarea id="ai-tmpl-prompt" placeholder="Summarize {{text}} in {{style}} style." style="min-height:80px"></textarea>
+            </div>
+            <div class="form-row" style="margin-bottom:8px">
+              <div class="form-group">
+                <label>Model (optional)</label>
+                <select id="ai-tmpl-model">
+                  <option value="">server default</option>
+                  <option value="claude-3-5-haiku-latest">claude-3-5-haiku-latest</option>
+                  <option value="claude-3-5-sonnet-latest">claude-3-5-sonnet-latest</option>
+                  <option value="claude-opus-4-5">claude-opus-4-5</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Max Tokens</label>
+                <input id="ai-tmpl-max-tokens" type="number" value="1024" style="width:80px">
+              </div>
+            </div>
+            <button class="btn btn-primary" onclick="saveAITemplate()">💾 Save Template</button>
+          </div>
+        </div>
+        <div class="section" id="ai-tmpl-run-section" style="display:none">
+          <div class="section-title">Run Template: <span id="ai-tmpl-run-name" style="color:var(--accent)"></span></div>
+          <div class="card">
+            <div id="ai-tmpl-vars-form" style="margin-bottom:8px"></div>
+            <button class="btn btn-primary" onclick="runAITemplate()">▶ Run</button>
+            <div id="ai-tmpl-run-result" class="ai-result-box" style="margin-top:10px;display:none"></div>
           </div>
         </div>
       </div>
     </div>
   </div>`;
+
   loadChatSessions();
+  loadAITemplates();
+}
+
+function switchAITab(tab) {
+  const tabs = ['chat','infer','tools','route','templates'];
+  tabs.forEach(t => {
+    const panel = document.getElementById('ai-tab-'+t);
+    if (panel) panel.style.display = t === tab ? '' : 'none';
+  });
+  document.querySelectorAll('#ai-tab-bar .tab').forEach((el, i) => {
+    el.classList.toggle('active', tabs[i] === tab);
+  });
+  if (tab === 'templates') loadAITemplates();
+  if (tab === 'infer') loadAIModels();
 }
 
 async function runAIInfer() {
@@ -3621,6 +3874,255 @@ async function loadAIAgents() {
   } catch(e) { el.innerHTML = `<div class="alert err">${esc(e.message)}</div>`; }
 }
 
+async function loadAIModels() {
+  const el = document.getElementById('ai-models-list');
+  if (!el) return;
+  try {
+    const res = await api('/ai/models');
+    const models = res.models || [];
+    if (!models.length) { el.innerHTML = '<div class="empty">No models listed</div>'; return; }
+    el.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Model</th><th>Max Tokens</th><th>Description</th></tr></thead><tbody>'
+      + models.map(m=>`<tr><td class="mono">${esc(m.id)}</td><td>${m.max_tokens||'—'}</td><td style="font-size:12px;color:var(--muted)">${esc(m.description||'')}</td></tr>`).join('')
+      + '</tbody></table></div>';
+  } catch(e) { el.innerHTML = `<div class="alert err">${esc(e.message)}</div>`; }
+}
+
+async function runAIExtract() {
+  const text = (document.getElementById('ai-extract-text')||{}).value.trim();
+  const schema = (document.getElementById('ai-extract-schema')||{}).value.trim();
+  const el = document.getElementById('ai-extract-result');
+  if (!text) { toast('Text required', false); return; }
+  if (!schema) { toast('Schema required', false); return; }
+  if (el) { el.style.display='block'; el.textContent='Extracting…'; }
+  try {
+    const res = await post('/ai/extract', {text, schema});
+    if (el) el.textContent = JSON.stringify(res.extracted ?? res.raw ?? res, null, 2);
+  } catch(e) { if (el) el.textContent='Error: '+e.message; }
+}
+
+async function runAIJudge() {
+  const text = (document.getElementById('ai-judge-text')||{}).value.trim();
+  const criteria = (document.getElementById('ai-judge-criteria')||{}).value.trim();
+  const el = document.getElementById('ai-judge-result');
+  if (!text) { toast('Text required', false); return; }
+  if (!criteria) { toast('Criteria required', false); return; }
+  if (el) { el.style.display='block'; el.textContent='Judging…'; }
+  try {
+    const res = await post('/ai/judge', {text, criteria});
+    if (el) {
+      if (res.score !== undefined) {
+        const bar = Math.round((res.score / 10) * 10);
+        el.innerHTML = `<div style="margin-bottom:8px"><span style="font-size:24px;font-weight:700;color:var(--accent)">${res.score}</span><span style="font-size:13px;color:var(--muted)">/10</span></div>`
+          + `<div style="height:8px;border-radius:4px;background:var(--border);overflow:hidden;margin-bottom:8px"><div style="height:100%;width:${bar*10}%;background:var(--accent2);border-radius:4px"></div></div>`
+          + `<div style="font-size:13px">${esc(res.reasoning||'')}</div>`
+          + `<div style="font-size:11px;color:var(--muted);margin-top:6px">Model: ${esc(res.model||'—')} · ${res.input_tokens||0} in / ${res.output_tokens||0} out</div>`;
+      } else {
+        el.textContent = JSON.stringify(res, null, 2);
+      }
+    }
+  } catch(e) { if (el) el.textContent='Error: '+e.message; }
+}
+
+async function runAIRerank() {
+  const query = (document.getElementById('ai-rerank-query')||{}).value.trim();
+  const raw = (document.getElementById('ai-rerank-candidates')||{}).value.trim();
+  const el = document.getElementById('ai-rerank-result');
+  if (!query) { toast('Query required', false); return; }
+  const candidates = raw.split('\n').map(s=>s.trim()).filter(Boolean);
+  if (!candidates.length) { toast('At least one candidate required', false); return; }
+  if (el) { el.style.display='block'; el.textContent='Ranking…'; }
+  try {
+    const res = await post('/ai/rerank', {query, candidates});
+    if (el) {
+      const ranked = res.ranked || [];
+      if (ranked.length) {
+        el.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Rank</th><th>Score</th><th>Candidate</th></tr></thead><tbody>'
+          + ranked.map((r,i)=>`<tr><td>${i+1}</td><td><span class="badge ok">${r.score}/10</span></td><td>${esc(r.text||'')}</td></tr>`).join('')
+          + '</tbody></table></div>'
+          + `<div style="font-size:11px;color:var(--muted);margin-top:6px">Model: ${esc(res.model||'—')}</div>`;
+      } else {
+        el.textContent = JSON.stringify(res, null, 2);
+      }
+    }
+  } catch(e) { if (el) el.textContent='Error: '+e.message; }
+}
+
+async function runAIClassify() {
+  const text = (document.getElementById('ai-classify-text')||{}).value.trim();
+  const labelsRaw = (document.getElementById('ai-classify-labels')||{}).value.trim();
+  const multi = (document.getElementById('ai-classify-multi')||{}).checked;
+  const el = document.getElementById('ai-classify-result');
+  if (!text) { toast('Text required', false); return; }
+  const labels = labelsRaw.split(',').map(s=>s.trim()).filter(Boolean);
+  if (!labels.length) { toast('Labels required', false); return; }
+  if (el) { el.style.display='block'; el.textContent='Classifying…'; }
+  try {
+    const res = await post('/ai/classify', {text, labels, multi_label: multi});
+    if (el) el.textContent = JSON.stringify(res.result ?? res.raw ?? res, null, 2);
+  } catch(e) { if (el) el.textContent='Error: '+e.message; }
+}
+
+async function runAITranslate() {
+  const text = (document.getElementById('ai-translate-text')||{}).value.trim();
+  const target = (document.getElementById('ai-translate-target')||{}).value.trim();
+  const source = (document.getElementById('ai-translate-source')||{}).value.trim();
+  const el = document.getElementById('ai-translate-result');
+  if (!text) { toast('Text required', false); return; }
+  if (!target) { toast('Target language required', false); return; }
+  if (el) { el.style.display='block'; el.textContent='Translating…'; }
+  try {
+    const body = {text, target_language: target};
+    if (source && source !== 'auto') body.source_language = source;
+    const res = await post('/ai/translate', body);
+    if (el) el.textContent = res.translation || res.content || JSON.stringify(res, null, 2);
+  } catch(e) { if (el) el.textContent='Error: '+e.message; }
+}
+
+async function runAIDiff() {
+  const before = (document.getElementById('ai-diff-before')||{}).value.trim();
+  const after = (document.getElementById('ai-diff-after')||{}).value.trim();
+  const context = (document.getElementById('ai-diff-context')||{}).value.trim();
+  const el = document.getElementById('ai-diff-result');
+  if (!before || !after) { toast('Before and After are required', false); return; }
+  if (el) { el.style.display='block'; el.textContent='Analyzing diff…'; }
+  try {
+    const body = {before, after};
+    if (context) body.context = context;
+    const res = await post('/ai/diff', body);
+    if (el) el.textContent = res.explanation || res.content || JSON.stringify(res, null, 2);
+  } catch(e) { if (el) el.textContent='Error: '+e.message; }
+}
+
+async function runAIRoute() {
+  const task = (document.getElementById('ai-route-task')||{}).value.trim();
+  const payloadRaw = (document.getElementById('ai-route-payload')||{}).value.trim();
+  const el = document.getElementById('ai-route-result');
+  if (!task) { toast('Task description required', false); return; }
+  if (el) { el.style.display='block'; el.textContent='Routing…'; }
+  try {
+    const body = {task};
+    if (payloadRaw) {
+      try { body.payload = JSON.parse(payloadRaw); } catch { toast('Invalid payload JSON', false); return; }
+    }
+    const res = await post('/ai/route', body);
+    if (el) {
+      el.innerHTML = `<div style="margin-bottom:6px"><strong>Chosen capability:</strong> <span class="badge ok">${esc(res.chosen_capability||'—')}</span></div>`
+        + `<div style="margin-bottom:6px"><strong>Agent:</strong> <span class="mono">${esc(res.agent_id||'—')}</span></div>`
+        + `<div style="margin-bottom:6px"><strong>Job ID:</strong> <span class="mono">${esc((res.job||{}).id||'—')}</span></div>`
+        + `<div style="font-size:11px;color:var(--muted)">Routing model: ${esc(res.routing_model||'—')}</div>`;
+    }
+  } catch(e) { if (el) el.textContent='Error: '+e.message; }
+}
+
+async function runAILoop() {
+  const goal = (document.getElementById('ai-loop-goal')||{}).value.trim();
+  const maxIter = parseInt((document.getElementById('ai-loop-iterations')||{}).value) || 10;
+  const el = document.getElementById('ai-loop-result');
+  if (!goal) { toast('Goal required', false); return; }
+  if (el) { el.style.display='block'; el.textContent='Running agentic loop…'; }
+  try {
+    const res = await post('/ai/loop', {goal, max_iterations: maxIter});
+    if (el) {
+      const steps = res.steps || [];
+      const header = `<div style="margin-bottom:8px"><strong>Outcome:</strong> ${esc(res.outcome||'done')} · <strong>Iterations:</strong> ${res.iterations||0}</div>`;
+      const stepsHtml = steps.length
+        ? '<div class="table-wrap"><table><thead><tr><th>#</th><th>Action</th><th>Result (truncated)</th></tr></thead><tbody>'
+          + steps.map((s,i)=>`<tr><td>${i+1}</td><td class="mono">${esc(s.action||'')}</td><td style="font-size:11px;max-width:280px;white-space:pre-wrap;word-break:break-all">${esc((s.result||'').slice(0,200))}</td></tr>`).join('')
+          + '</tbody></table></div>'
+        : '';
+      el.innerHTML = header + stepsHtml + `<div style="font-size:11px;color:var(--muted);margin-top:6px">Model: ${esc(res.model||'—')}</div>`;
+    }
+  } catch(e) { if (el) el.textContent='Error: '+e.message; }
+}
+
+async function loadAITemplates() {
+  const el = document.getElementById('ai-templates-list');
+  if (!el) return;
+  try {
+    const res = await api('/ai/templates');
+    const templates = res.templates || [];
+    if (!templates.length) {
+      el.innerHTML = '<div class="empty">No templates yet. Create one →</div>';
+      return;
+    }
+    el.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Name</th><th>Updated</th><th></th></tr></thead><tbody>'
+      + templates.map(t=>`<tr>
+          <td class="mono">${esc(t.name)}</td>
+          <td style="font-size:11px;color:var(--muted)">${t.updated_at ? new Date(t.updated_at).toLocaleString() : '—'}</td>
+          <td>
+            <button class="btn btn-outline btn-sm" onclick="openAITemplateRun(${JSON.stringify(t.name)})">▶ Run</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteAITemplate(${JSON.stringify(t.name)})">✕</button>
+          </td>
+        </tr>`).join('')
+      + '</tbody></table></div>';
+  } catch(e) { el.innerHTML = `<div class="alert err">${esc(e.message)}</div>`; }
+}
+
+async function saveAITemplate() {
+  const name = (document.getElementById('ai-tmpl-name')||{}).value.trim();
+  const system = (document.getElementById('ai-tmpl-system')||{}).value.trim();
+  const prompt = (document.getElementById('ai-tmpl-prompt')||{}).value.trim();
+  const model = (document.getElementById('ai-tmpl-model')||{}).value || undefined;
+  const maxTokens = parseInt((document.getElementById('ai-tmpl-max-tokens')||{}).value) || 1024;
+  if (!name) { toast('Name required', false); return; }
+  if (!prompt) { toast('Prompt required', false); return; }
+  try {
+    await post('/ai/templates', {name, system: system||undefined, prompt, model, max_tokens: maxTokens});
+    toast('Template saved');
+    loadAITemplates();
+    ['ai-tmpl-name','ai-tmpl-system','ai-tmpl-prompt'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function deleteAITemplate(name) {
+  if (!confirm('Delete template "'+name+'"?')) return;
+  try {
+    await del('/ai/templates/'+encodeURIComponent(name));
+    toast('Template deleted'); loadAITemplates();
+  } catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function openAITemplateRun(name) {
+  // Load template to find variable placeholders.
+  const secEl = document.getElementById('ai-tmpl-run-section');
+  const nameEl = document.getElementById('ai-tmpl-run-name');
+  const formEl = document.getElementById('ai-tmpl-vars-form');
+  const resEl = document.getElementById('ai-tmpl-run-result');
+  if (!secEl || !nameEl || !formEl) return;
+  try {
+    const tmpl = await api('/ai/templates/'+encodeURIComponent(name));
+    // Extract {{variable}} placeholders.
+    const matches = [...new Set([...(tmpl.prompt||'').matchAll(/\{\{(\w+)\}\}/g)].map(m=>m[1]))];
+    nameEl.textContent = name;
+    if (matches.length) {
+      formEl.innerHTML = matches.map(v=>`<div class="form-group" style="margin-bottom:8px"><label>${esc(v)}</label><input id="ai-tmpl-var-${esc(v)}" data-var="${esc(v)}" placeholder="Value for {{${esc(v)}}}"></div>`).join('');
+    } else {
+      formEl.innerHTML = '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">No variables in this template. Click Run to execute directly.</div>';
+    }
+    if (resEl) resEl.style.display='none';
+    secEl.style.display='';
+    secEl.scrollIntoView({behavior:'smooth', block:'nearest'});
+    // Store current template name for runAITemplate.
+    secEl.dataset.templateName = name;
+  } catch(e) { toast('Error loading template: '+e.message, false); }
+}
+
+async function runAITemplate() {
+  const secEl = document.getElementById('ai-tmpl-run-section');
+  const resEl = document.getElementById('ai-tmpl-run-result');
+  if (!secEl) return;
+  const name = secEl.dataset.templateName;
+  if (!name) return;
+  // Collect variable values.
+  const vars = {};
+  secEl.querySelectorAll('[data-var]').forEach(el => { vars[el.dataset.var] = el.value; });
+  if (resEl) { resEl.style.display='block'; resEl.textContent='Running template…'; }
+  try {
+    const res = await post('/ai/templates/'+encodeURIComponent(name)+'/run', vars);
+    if (resEl) resEl.textContent = res.content || res.result || JSON.stringify(res, null, 2);
+  } catch(e) { if (resEl) resEl.textContent='Error: '+e.message; }
+}
+
 async function loadChatSessions() {
   try {
     const res = await api('/ai/sessions');
@@ -3629,13 +4131,16 @@ async function loadChatSessions() {
     if (!sel) return;
     const cur = sel.value;
     sel.innerHTML = '<option value="">— new session —</option>';
-    sessions.forEach(id => {
+    sessions.forEach(s => {
+      // API returns {session_id, turns, updated_at} objects.
+      const id = s.session_id || s;
+      const label = s.turns !== undefined ? `${id} (${s.turns} turns)` : id;
       const opt = document.createElement('option');
-      opt.value = id; opt.textContent = id;
+      opt.value = id; opt.textContent = label;
       if (id === cur || id === aiChatSessionId) opt.selected = true;
       sel.appendChild(opt);
     });
-    if (aiChatSessionId && sessions.includes(aiChatSessionId)) sel.value = aiChatSessionId;
+    if (aiChatSessionId && sessions.some(s => (s.session_id || s) === aiChatSessionId)) sel.value = aiChatSessionId;
   } catch { /* sessions endpoint may not be available */ }
 }
 
