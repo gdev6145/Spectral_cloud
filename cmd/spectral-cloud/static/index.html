@@ -519,11 +519,18 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
           <tr><td class="mono">g &nbsp;r</td><td>Go to Routes</td></tr>
           <tr><td class="mono">g &nbsp;a</td><td>Go to Agents</td></tr>
           <tr><td class="mono">g &nbsp;e</td><td>Go to Events</td></tr>
+          <tr><td class="mono">g &nbsp;j</td><td>Go to Jobs</td></tr>
           <tr><td class="mono">g &nbsp;k</td><td>Go to KV Store</td></tr>
           <tr><td class="mono">g &nbsp;s</td><td>Go to Schedules</td></tr>
           <tr><td class="mono">g &nbsp;n</td><td>Go to Notifications</td></tr>
           <tr><td class="mono">g &nbsp;m</td><td>Go to Mesh Peers</td></tr>
+          <tr><td class="mono">g &nbsp;c</td><td>Go to Circuit Breaker</td></tr>
+          <tr><td class="mono">g &nbsp;u</td><td>Go to Audit Log</td></tr>
+          <tr><td class="mono">g &nbsp;y</td><td>Go to Analytics</td></tr>
+          <tr><td class="mono">g &nbsp;p</td><td>Go to Topology</td></tr>
           <tr><td class="mono">r</td><td>Refresh current page</td></tr>
+          <tr><td class="mono">t</td><td>Toggle dark / light theme</td></tr>
+          <tr><td class="mono">/</td><td>Jump to Search</td></tr>
           <tr><td class="mono">?</td><td>Show this help</td></tr>
           <tr><td class="mono">Esc</td><td>Close any modal</td></tr>
           <tr><td class="mono">← / →</td><td>Browser back / forward (hash routing)</td></tr>
@@ -615,6 +622,7 @@ function go(page) {
   }
   stopSSE();
   clearTimeout(autoRefreshTimer);
+  clearInterval(_refreshFooterTimer);
   render(page, rid);
 }
 // Handle back/forward navigation and direct hash links
@@ -756,6 +764,30 @@ function fmtTime(ts) {
 }
 function fmtHash(h) { return h ? `<span class="hash" title="${esc(h)}">${esc(h)}</span>` : '—'; }
 function shortHash(h) { return h ? h.substring(0,12)+'…' : '—'; }
+
+// Tracks page-level last-refresh timestamp; call markRefreshed() at the end of each page render,
+// then call refreshFooterHtml() to get a small "Updated Xs ago" label.
+let _lastRefreshedAt = 0;
+let _refreshFooterTimer = null;
+function markRefreshed() {
+  _lastRefreshedAt = Date.now();
+  clearInterval(_refreshFooterTimer);
+  _refreshFooterTimer = setInterval(function() {
+    const el = document.getElementById('refresh-footer');
+    if (el) el.textContent = _refreshFooterLabel();
+  }, 5000);
+}
+function _refreshFooterLabel() {
+  if (!_lastRefreshedAt) return '';
+  const sec = Math.round((Date.now() - _lastRefreshedAt) / 1000);
+  if (sec < 5) return 'Updated just now';
+  if (sec < 60) return 'Updated ' + sec + 's ago';
+  return 'Updated ' + Math.round(sec/60) + 'm ago';
+}
+function refreshFooterHtml() {
+  markRefreshed();
+  return `<div id="refresh-footer" style="font-size:11px;color:var(--muted);margin-top:6px;text-align:right">${_refreshFooterLabel()}</div>`;
+}
 
 let blockHistory = [];
 
@@ -1074,6 +1106,7 @@ async function renderBlockchain(rid) {
         <span style="margin-left:10px;color:var(--muted);font-size:12px">Height: ${chain.height}</span>
       </div>
       <div class="ml-auto flex">
+        <input id="bc-filter" placeholder="filter hash/txn…" style="padding:4px 8px;font-size:12px;width:150px;border:1px solid var(--border);border-radius:var(--radius);background:var(--input);color:var(--text)" oninput="bcApplyFilter()">
         <button class="btn btn-outline btn-sm" onclick="exportBlockchain()">⬇ Export</button>
         <label class="btn btn-outline btn-sm" style="cursor:pointer">⬆ Import<input type="file" accept=".json" style="display:none" onchange="importBlockchainFile(this)"></label>
         <button class="btn btn-outline btn-sm" onclick="bcOffset=Math.max(0,bcOffset-${BC_LIMIT});renderBlockchain(currentRenderId)">← Prev</button>
@@ -1144,6 +1177,25 @@ async function renderBlockchain(rid) {
 function toggleBlockDetail(i) {
   const row = document.getElementById('bc-detail-' + i);
   if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}
+
+function bcApplyFilter() {
+  const q = ((document.getElementById('bc-filter')||{}).value || '').toLowerCase().trim();
+  const tbody = document.querySelector('#content .table-wrap table tbody');
+  if (!tbody) return;
+  let dataRowIndex = 0;
+  const rows = Array.from(tbody.rows);
+  rows.forEach(function(row) {
+    // detail rows always follow their data row; identify by id
+    if (row.id && row.id.startsWith('bc-detail-')) { return; }
+    const text = (row.textContent || '').toLowerCase();
+    const visible = !q || text.includes(q);
+    row.style.display = visible ? '' : 'none';
+    // also hide the paired detail row
+    const detailRow = tbody.querySelector('#bc-detail-' + dataRowIndex);
+    if (detailRow) detailRow.style.display = 'none'; // always collapse on filter change
+    dataRowIndex++;
+  });
 }
 
 async function addBuilderBlock() {
@@ -1337,7 +1389,8 @@ async function renderRoutes(rid) {
         <button class="btn btn-primary" onclick="batchAddRoutes()">Batch Add</button>
       </div>
     </div>
-  </div>`;
+  </div>
+  ${refreshFooterHtml()}`;
 }
 
 async function addRoute() {
@@ -1630,7 +1683,8 @@ async function renderAgents(rid) {
         <div id="job-list" style="margin-top:10px"></div>
       </div>
     </div>
-  </div>`;
+  </div>
+  ${refreshFooterHtml()}`;
 }
 
 function showDispatchForm(agentId, cap) {
@@ -1735,25 +1789,37 @@ async function deregisterAgent(id) {
 // ── JOBS ──────────────────────────────────────────────────────────────────────
 let jobStatusFilter = 'all';
 let jobAutoRefresh = true;
+let _lastJobsData = [];
 
 async function renderJobs(rid) {
   const jobsRes = await api('/agents/jobs');
   if (rid && rid !== currentRenderId) return;
   const allJobs = jobsRes.jobs || [];
+  _lastJobsData = allJobs;
   const list = jobStatusFilter === 'all' ? allJobs : allJobs.filter(j => j.status === jobStatusFilter);
   const tabs = ['all','pending','running','done','failed'];
 
+  // Status summary bar chart
+  const statusColors = {pending:'var(--warn)', running:'var(--accent)', done:'var(--accent2)', failed:'var(--danger)'};
+  const statusCounts = tabs.slice(1).map(t => allJobs.filter(j => j.status === t).length);
+  const statusLabels = tabs.slice(1);
+  const jobChartHtml = allJobs.length > 0
+    ? `<div class="chart-wrap" style="margin-bottom:14px"><div class="chart-title">Jobs by Status</div>${barChart(statusLabels, statusCounts, statusColors['done'], 360, 80)}</div>`
+    : '';
+
   document.getElementById('content').innerHTML = `
+  ${jobChartHtml}
   <div class="section">
     <div class="flex" style="margin-bottom:10px">
       <div style="display:flex;gap:4px;flex-wrap:wrap">
         ${tabs.map(t=>`<button class="btn btn-sm ${jobStatusFilter===t?'btn-primary':'btn-outline'}" onclick="jobStatusFilter='${t}';renderJobs(currentRenderId)">${t.charAt(0).toUpperCase()+t.slice(1)} (${t==='all'?allJobs.length:allJobs.filter(j=>j.status===t).length})</button>`).join('')}
       </div>
       <div class="ml-auto flex">
+        <button class="btn btn-outline btn-sm" onclick="exportJobsCSV()">⬇ CSV</button>
         <label style="font-size:12px;display:flex;align-items:center;gap:4px;color:var(--muted)">
           <input type="checkbox" ${jobAutoRefresh?'checked':''} onchange="jobAutoRefresh=this.checked"> Auto-refresh
         </label>
-        <button class="btn btn-outline btn-sm" onclick="renderJobs(currentRenderId)">refresh</button>
+        <button class="btn btn-outline btn-sm" onclick="renderJobs(currentRenderId)">↻</button>
       </div>
     </div>
     <div class="table-wrap">
@@ -1790,7 +1856,8 @@ async function renderJobs(rid) {
       <textarea id="job-payload" placeholder='{"prompt":"hello"}'></textarea></div>
       <button class="btn btn-primary" style="margin-top:12px" onclick="submitJob()">Submit Job</button>
     </div>
-  </div>`;
+  </div>
+  ${refreshFooterHtml()}`;
 
   if (jobAutoRefresh) {
     autoRefreshTimer = setTimeout(() => { if(currentPage==='jobs' && rid === currentRenderId) renderJobs(rid); }, 5000);
@@ -1952,7 +2019,7 @@ async function renderKV(rid) {
     const exp = e.expires_at ? `<span class="mono">${esc(e.expires_at.substring(0,19))}</span>` : '<span class="muted">—</span>';
     return `<tr>
       <td class="mono">${esc(e.key)}</td>
-      <td>${esc(e.value)}</td>
+      <td ondblclick="kvInlineEdit(this,${JSON.stringify(e.key)},${JSON.stringify(e.value)})" title="Double-click to edit" style="cursor:pointer">${esc(e.value)}</td>
       <td>${exp}</td>
       <td>
         <button class="btn btn-outline btn-sm btn-danger" onclick="kvDelete(${JSON.stringify(e.key)})">Del</button>
@@ -2011,13 +2078,39 @@ function kvRefreshWithPrefix() {
       const exp = e.expires_at ? `<span class="mono">${esc(e.expires_at.substring(0,19))}</span>` : '<span class="muted">—</span>';
       return `<tr>
         <td class="mono">${esc(e.key)}</td>
-        <td>${esc(e.value)}</td>
+        <td ondblclick="kvInlineEdit(this,${JSON.stringify(e.key)},${JSON.stringify(e.value)})" title="Double-click to edit" style="cursor:pointer">${esc(e.value)}</td>
         <td>${exp}</td>
         <td><button class="btn btn-outline btn-sm btn-danger" onclick="kvDelete(${JSON.stringify(e.key)})">Del</button></td>
       </tr>`;
     }).join('');
     const tbody = document.querySelector('.table-wrap tbody');
     if (tbody) tbody.innerHTML = rows || '<tr><td colspan="4" style="text-align:center;color:var(--muted)">No entries</td></tr>';
+  });
+}
+
+function kvInlineEdit(cell, key, currentValue) {
+  // Prevent re-opening if already editing
+  if (cell.querySelector('input')) return;
+  const input = document.createElement('input');
+  input.value = currentValue;
+  input.style.cssText = 'width:100%;padding:2px 6px;font-size:13px;border:1px solid var(--accent);border-radius:var(--radius);background:var(--surface);color:var(--text)';
+  cell.textContent = '';
+  cell.appendChild(input);
+  input.focus();
+  input.select();
+  async function commit() {
+    const newVal = input.value;
+    if (newVal === currentValue) { cell.textContent = esc(currentValue); cell.innerHTML = esc(currentValue); return; }
+    try {
+      await api('/kv/'+encodeURIComponent(key), {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({value: newVal, ttl: 0})});
+      toast('KV updated');
+      cell.textContent = newVal;
+    } catch(e) { toast('Error: '+e.message, false); cell.textContent = currentValue; }
+  }
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+    if (ev.key === 'Escape') { cell.textContent = currentValue; }
   });
 }
 
@@ -2480,10 +2573,11 @@ async function renderSchedules(rid) {
             <td class="mono">${esc(Math.round((Number(s.interval_ns)||0) / 1e9))}s</td>
             <td>${esc(s.capability||'—')}</td>
             <td class="mono">${esc(s.agent_id||'—')}</td>
-            <td><span class="pill ${s.active?'healthy':'unknown'}">${s.active?'active':'stopped'}</span></td>
+            <td><span class="pill ${s.active?'healthy':'unknown'}">${s.active?'active':'paused'}</span></td>
             <td class="mono">${fmtTime(s.last_run)}</td>
             <td class="mono">${esc(String(s.run_count||0))}</td>
             <td class="flex">
+              <button class="btn btn-outline btn-sm" onclick="toggleSchedule('${esc(s.id)}',${!s.active})" title="${s.active?'Pause':'Resume'}">${s.active?'⏸':'▶'}</button>
               <button class="btn btn-danger btn-sm" onclick="deleteSchedule('${esc(s.id)}')">✕</button>
             </td>
           </tr>`).join('')||'<tr><td colspan="8" class="empty">No schedules</td></tr>'}
@@ -2528,6 +2622,18 @@ async function deleteSchedule(id) {
   if (!confirm('Delete schedule?')) return;
   try { await del('/schedules/'+encodeURIComponent(id)); toast('Schedule deleted'); renderSchedules(currentRenderId); }
   catch(e) { toast('Error: '+e.message, false); }
+}
+
+async function toggleSchedule(id, active) {
+  try {
+    await api('/schedules/'+encodeURIComponent(id), {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({active})
+    });
+    toast(active ? 'Schedule resumed' : 'Schedule paused');
+    renderSchedules(currentRenderId);
+  } catch(e) { toast('Error: '+e.message, false); }
 }
 
 // ── AGENT GROUPS ──────────────────────────────────────────────────────────────
@@ -2945,7 +3051,7 @@ function closeShortcutsModal() {
 (function() {
   let _kbLastKey = '';
   let _kbLastTime = 0;
-  const _kbNavMap = {o:'overview', b:'blockchain', r:'routes', a:'agents', e:'events', k:'kv', s:'schedules', n:'notifs', m:'mesh'};
+  const _kbNavMap = {o:'overview', b:'blockchain', r:'routes', a:'agents', e:'events', k:'kv', s:'schedules', n:'notifs', m:'mesh', j:'jobs', c:'circuit', u:'audit', y:'stats', p:'topology', g_:'groups'};
   document.addEventListener('keydown', function(ev) {
     const tag = (ev.target.tagName||'').toLowerCase();
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
@@ -2967,6 +3073,7 @@ function closeShortcutsModal() {
       if (page) { go(page); _kbLastKey = ''; return; }
     }
     if (key === 'r') { refresh(); _kbLastKey = ''; return; }
+    if (key === 't') { toggleTheme(); _kbLastKey = ''; return; }
     _kbLastKey = key;
     _kbLastTime = now;
   });
@@ -3429,6 +3536,24 @@ function exportAuditCSV() {
     };
   });
   downloadCSV(rows, ['timestamp','actor','action','resource','result','ip'], 'audit-export.csv');
+}
+
+function exportJobsCSV() {
+  if (!_lastJobsData.length) { toast('No job data loaded', 'ok'); return; }
+  var rows = _lastJobsData.map(function(j) {
+    var dur = (j.created_at && j.updated_at && j.status !== 'pending')
+      ? Math.round((new Date(j.updated_at) - new Date(j.created_at)) / 1000) + 's' : '';
+    return {
+      id: j.id,
+      status: j.status,
+      capability: j.capability || '',
+      agent_id: j.agent_id || '',
+      created_at: j.created_at || '',
+      updated_at: j.updated_at || '',
+      duration: dur
+    };
+  });
+  downloadCSV(rows, ['id','status','capability','agent_id','created_at','updated_at','duration'], 'jobs-export.csv');
 }
 
 // ── BROWSER NOTIFICATIONS ─────────────────────────────────────────────────────
