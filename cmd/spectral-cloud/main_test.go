@@ -4701,3 +4701,395 @@ func TestParsePathRule_EmptyMain(t *testing.T) {
 		t.Fatal("expected false for empty rule")
 	}
 }
+
+// ── Pipeline HTTP endpoint tests ──────────────────────────────────────────────
+
+func makePipelineHandler(t *testing.T) (http.Handler, *httptest.Server) {
+	t.Helper()
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_pl_total_" + t.Name(), Help: "test"}, []string{"path", "method", "code"})
+	tmp := t.TempDir()
+	db, err := store.Open(store.DBPath(tmp))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	tenantMgr := newTenantManager(db)
+	_, _ = tenantMgr.getTenant("default")
+	meshCounter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_pl_mesh_" + t.Name(), Help: "test"}, []string{"outcome"})
+	meshReject := prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_pl_reject_" + t.Name(), Help: "test"})
+	meshAnom := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_pl_anom_" + t.Name(), Help: "test"}, []string{"type"})
+	durHist := prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "test_pl_dur_" + t.Name(), Help: "test"}, []string{"path", "method"})
+	agentReg := agent.NewRegistry()
+	jq := jobs.NewQueue()
+	broker := events.NewBroker()
+	h := newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist,
+		authConfig{defaultTenant: "default"}, 100, 200, 0, 0, tenantLimits{}, nil, nil, &meshAnomalyState{},
+		agentReg, corsConfig{}, false, broker, nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq), pipeline.NewWithStore(db), billing.New(db))
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return h, srv
+}
+
+// postJSON is a tiny helper used by pipeline tests.
+func postJSON(t *testing.T, url, body string) *http.Response {
+	t.Helper()
+	resp, err := http.Post(url, "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	return resp
+}
+
+func patchJSON(t *testing.T, url, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPatch, url, bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("build PATCH %s: %v", url, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH %s: %v", url, err)
+	}
+	return resp
+}
+
+func deleteReq(t *testing.T, url string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		t.Fatalf("build DELETE %s: %v", url, err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE %s: %v", url, err)
+	}
+	return resp
+}
+
+func TestPipelineCreateAndList(t *testing.T) {
+	_, srv := makePipelineHandler(t)
+
+	// POST /agent-pipelines — create
+	body := `{"name":"etl","stages":[{"name":"s0","agent_id":"agent-99"}]}`
+	resp := postJSON(t, srv.URL+"/agent-pipelines", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	var created map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	id, _ := created["id"].(string)
+	if id == "" {
+		t.Fatal("expected non-empty pipeline id")
+	}
+	if created["name"] != "etl" {
+		t.Errorf("expected name 'etl', got %v", created["name"])
+	}
+
+	// GET /agent-pipelines — list
+	listResp, err := http.Get(srv.URL + "/agent-pipelines")
+	if err != nil {
+		t.Fatalf("GET /agent-pipelines: %v", err)
+	}
+	defer listResp.Body.Close()
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", listResp.StatusCode)
+	}
+	var list map[string]any
+	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	pipelines, _ := list["pipelines"].([]any)
+	if len(pipelines) != 1 {
+		t.Errorf("expected 1 pipeline, got %d", len(pipelines))
+	}
+}
+
+func TestPipelineCreate_ValidationErrors(t *testing.T) {
+	_, srv := makePipelineHandler(t)
+
+	cases := []struct {
+		body string
+		desc string
+	}{
+		{`{}`, "missing name and stages"},
+		{`{"name":"x"}`, "missing stages"},
+		{`{"name":"x","stages":[{"name":"bad"}]}`, "stage with no agent_id or capability"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			resp := postJSON(t, srv.URL+"/agent-pipelines", tc.body)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("%s: expected 400, got %d", tc.desc, resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestPipelineGetUpdateDelete(t *testing.T) {
+	_, srv := makePipelineHandler(t)
+
+	// Create a pipeline.
+	createResp := postJSON(t, srv.URL+"/agent-pipelines",
+		`{"name":"pipe","stages":[{"name":"s0","agent_id":"a-1"},{"name":"s1","capability":"cap-1"}]}`)
+	defer createResp.Body.Close()
+	var created map[string]any
+	_ = json.NewDecoder(createResp.Body).Decode(&created)
+	id := created["id"].(string)
+
+	// GET /agent-pipelines/{id}
+	getResp, _ := http.Get(srv.URL + "/agent-pipelines/" + id)
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET pipeline: expected 200, got %d", getResp.StatusCode)
+	}
+	var got map[string]any
+	_ = json.NewDecoder(getResp.Body).Decode(&got)
+	if got["name"] != "pipe" {
+		t.Errorf("expected name 'pipe', got %v", got["name"])
+	}
+
+	// PATCH /agent-pipelines/{id} — rename
+	patchResp := patchJSON(t, srv.URL+"/agent-pipelines/"+id, `{"name":"renamed"}`)
+	defer patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH pipeline: expected 200, got %d", patchResp.StatusCode)
+	}
+	var patched map[string]any
+	_ = json.NewDecoder(patchResp.Body).Decode(&patched)
+	if patched["name"] != "renamed" {
+		t.Errorf("expected 'renamed', got %v", patched["name"])
+	}
+
+	// DELETE /agent-pipelines/{id}
+	delResp := deleteReq(t, srv.URL+"/agent-pipelines/"+id)
+	defer delResp.Body.Close()
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE pipeline: expected 204, got %d", delResp.StatusCode)
+	}
+
+	// GET after delete must be 404.
+	get2, _ := http.Get(srv.URL + "/agent-pipelines/" + id)
+	defer get2.Body.Close()
+	if get2.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 after delete, got %d", get2.StatusCode)
+	}
+}
+
+func TestPipelineGet_NotFound(t *testing.T) {
+	_, srv := makePipelineHandler(t)
+	resp, _ := http.Get(srv.URL + "/agent-pipelines/pipe-9999")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestPipelineDelete_NotFound(t *testing.T) {
+	_, srv := makePipelineHandler(t)
+	resp := deleteReq(t, srv.URL+"/agent-pipelines/pipe-9999")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 on missing delete, got %d", resp.StatusCode)
+	}
+}
+
+func TestPipelineRunLifecycle(t *testing.T) {
+	_, srv := makePipelineHandler(t)
+
+	// Register an agent that owns the "cap-a" capability so auto-dispatch works.
+	regResp := postJSON(t, srv.URL+"/agents/register",
+		`{"id":"worker-a","addr":"127.0.0.1:9001","status":"healthy","capabilities":["cap-a"]}`)
+	_ = regResp.Body.Close()
+
+	// Create a two-stage pipeline (stage0 uses agent_id, stage1 uses capability).
+	createResp := postJSON(t, srv.URL+"/agent-pipelines",
+		`{"name":"two-stage","stages":[{"name":"ingest","agent_id":"worker-a"},{"name":"process","capability":"cap-a"}]}`)
+	defer createResp.Body.Close()
+	var created map[string]any
+	_ = json.NewDecoder(createResp.Body).Decode(&created)
+	pipelineID := created["id"].(string)
+
+	// POST /agent-pipelines/{id}/runs — start run
+	runResp := postJSON(t, srv.URL+"/agent-pipelines/"+pipelineID+"/runs",
+		`{"input":{"source":"db"}}`)
+	defer runResp.Body.Close()
+	if runResp.StatusCode != http.StatusCreated {
+		var errBody map[string]any
+		_ = json.NewDecoder(runResp.Body).Decode(&errBody)
+		t.Fatalf("start run: expected 201, got %d: %v", runResp.StatusCode, errBody)
+	}
+	var startResult map[string]any
+	_ = json.NewDecoder(runResp.Body).Decode(&startResult)
+	run, _ := startResult["run"].(map[string]any)
+	runID := run["id"].(string)
+	if runID == "" {
+		t.Fatal("expected non-empty run ID")
+	}
+	if run["status"] != "running" {
+		t.Errorf("expected status 'running', got %v", run["status"])
+	}
+	if run["current_stage"].(float64) != 0 {
+		t.Errorf("expected current_stage 0, got %v", run["current_stage"])
+	}
+	job, _ := startResult["job"].(map[string]any)
+	if job == nil || job["id"] == nil {
+		t.Fatal("expected job in start-run response")
+	}
+
+	// GET /agent-pipelines/{id}/runs — list runs
+	listResp, _ := http.Get(srv.URL + "/agent-pipelines/" + pipelineID + "/runs")
+	defer listResp.Body.Close()
+	var runList map[string]any
+	_ = json.NewDecoder(listResp.Body).Decode(&runList)
+	runs, _ := runList["runs"].([]any)
+	if len(runs) != 1 {
+		t.Errorf("expected 1 run, got %d", len(runs))
+	}
+
+	// GET /agent-pipelines/{id}/runs/{runID}
+	getRunResp, _ := http.Get(srv.URL + "/agent-pipelines/" + pipelineID + "/runs/" + runID)
+	defer getRunResp.Body.Close()
+	if getRunResp.StatusCode != http.StatusOK {
+		t.Fatalf("get run: expected 200, got %d", getRunResp.StatusCode)
+	}
+	var fetchedRun map[string]any
+	_ = json.NewDecoder(getRunResp.Body).Decode(&fetchedRun)
+	if fetchedRun["id"] != runID {
+		t.Errorf("expected run ID %q, got %v", runID, fetchedRun["id"])
+	}
+
+	// POST /agent-pipelines/{id}/runs/{runID}/advance — advance to stage1
+	advResp := postJSON(t, srv.URL+"/agent-pipelines/"+pipelineID+"/runs/"+runID+"/advance",
+		`{"result":"stage0 output","failed":false}`)
+	defer advResp.Body.Close()
+	if advResp.StatusCode != http.StatusOK {
+		var errBody map[string]any
+		_ = json.NewDecoder(advResp.Body).Decode(&errBody)
+		t.Fatalf("advance to stage1: expected 200, got %d: %v", advResp.StatusCode, errBody)
+	}
+	var adv1 map[string]any
+	_ = json.NewDecoder(advResp.Body).Decode(&adv1)
+	advRun, _ := adv1["run"].(map[string]any)
+	if advRun["current_stage"].(float64) != 1 {
+		t.Errorf("expected current_stage 1, got %v", advRun["current_stage"])
+	}
+	if advRun["status"] != "running" {
+		t.Errorf("expected status 'running' at stage1, got %v", advRun["status"])
+	}
+
+	// Advance again — final stage, run becomes done.
+	adv2Resp := postJSON(t, srv.URL+"/agent-pipelines/"+pipelineID+"/runs/"+runID+"/advance",
+		`{"result":"done","failed":false}`)
+	defer adv2Resp.Body.Close()
+	if adv2Resp.StatusCode != http.StatusOK {
+		t.Fatalf("advance final: expected 200, got %d", adv2Resp.StatusCode)
+	}
+	var adv2 map[string]any
+	_ = json.NewDecoder(adv2Resp.Body).Decode(&adv2)
+	doneRun, _ := adv2["run"].(map[string]any)
+	if doneRun["status"] != "done" {
+		t.Errorf("expected status 'done', got %v", doneRun["status"])
+	}
+	if adv2["job"] != nil {
+		t.Errorf("expected nil job after final stage, got %v", adv2["job"])
+	}
+}
+
+func TestPipelineRunFailed(t *testing.T) {
+	_, srv := makePipelineHandler(t)
+
+	createResp := postJSON(t, srv.URL+"/agent-pipelines",
+		`{"name":"fail-pipe","stages":[{"name":"s0","agent_id":"a0"},{"name":"s1","agent_id":"a1"}]}`)
+	defer createResp.Body.Close()
+	var created map[string]any
+	_ = json.NewDecoder(createResp.Body).Decode(&created)
+	pipelineID := created["id"].(string)
+
+	startResp := postJSON(t, srv.URL+"/agent-pipelines/"+pipelineID+"/runs", `{}`)
+	defer startResp.Body.Close()
+	var startResult map[string]any
+	_ = json.NewDecoder(startResp.Body).Decode(&startResult)
+	run, _ := startResult["run"].(map[string]any)
+	runID := run["id"].(string)
+
+	// Advance with failed=true
+	failResp := postJSON(t, srv.URL+"/agent-pipelines/"+pipelineID+"/runs/"+runID+"/advance",
+		`{"failed":true}`)
+	defer failResp.Body.Close()
+	if failResp.StatusCode != http.StatusOK {
+		t.Fatalf("advance failed: expected 200, got %d", failResp.StatusCode)
+	}
+	var failResult map[string]any
+	_ = json.NewDecoder(failResp.Body).Decode(&failResult)
+	failedRun, _ := failResult["run"].(map[string]any)
+	if failedRun["status"] != "failed" {
+		t.Errorf("expected status 'failed', got %v", failedRun["status"])
+	}
+}
+
+func TestPipelineRunStart_PipelineNotFound(t *testing.T) {
+	_, srv := makePipelineHandler(t)
+	resp := postJSON(t, srv.URL+"/agent-pipelines/pipe-9999/runs", `{}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing pipeline, got %d", resp.StatusCode)
+	}
+}
+
+func TestPipelineRunStart_NoAgentForCapability(t *testing.T) {
+	_, srv := makePipelineHandler(t)
+
+	// Pipeline whose first stage needs a capability — but no agent is registered.
+	createResp := postJSON(t, srv.URL+"/agent-pipelines",
+		`{"name":"cap-pipe","stages":[{"name":"s0","capability":"missing-cap"}]}`)
+	defer createResp.Body.Close()
+	var created map[string]any
+	_ = json.NewDecoder(createResp.Body).Decode(&created)
+	pipelineID := created["id"].(string)
+
+	startResp := postJSON(t, srv.URL+"/agent-pipelines/"+pipelineID+"/runs", `{}`)
+	defer startResp.Body.Close()
+	if startResp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when no agent available, got %d", startResp.StatusCode)
+	}
+}
+
+func TestPipelineAdvance_RunNotFound(t *testing.T) {
+	_, srv := makePipelineHandler(t)
+
+	createResp := postJSON(t, srv.URL+"/agent-pipelines",
+		`{"name":"p","stages":[{"name":"s","agent_id":"a"}]}`)
+	defer createResp.Body.Close()
+	var created map[string]any
+	_ = json.NewDecoder(createResp.Body).Decode(&created)
+	pipelineID := created["id"].(string)
+
+	resp := postJSON(t, srv.URL+"/agent-pipelines/"+pipelineID+"/runs/prun-9999/advance",
+		`{"failed":false}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing run, got %d", resp.StatusCode)
+	}
+}
+
+func TestPipelineMethodNotAllowed(t *testing.T) {
+	_, srv := makePipelineHandler(t)
+
+	// PATCH on the collection is not allowed.
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/agent-pipelines", bytes.NewBufferString("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH /agent-pipelines: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", resp.StatusCode)
+	}
+}
