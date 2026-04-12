@@ -18,7 +18,7 @@ type Block struct {
 	Hash         string        `json:"hash"`
 	// Signature is an optional HMAC-SHA256 of the block Hash using a signing
 	// key. It provides verifiable authorship without changing the Hash itself.
-	Signature    string        `json:"signature,omitempty"`
+	Signature string `json:"signature,omitempty"`
 }
 
 // Transaction represents a transaction in the blockchain

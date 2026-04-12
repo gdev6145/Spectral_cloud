@@ -19,21 +19,21 @@ const (
 
 // Breaker is a single circuit breaker for one agent.
 type Breaker struct {
-	AgentID      string    `json:"agent_id"`
-	State        State     `json:"state"`
-	Failures     int       `json:"failures"`
-	Successes    int       `json:"successes"`
-	Threshold    int       `json:"threshold"`    // failures before opening
+	AgentID      string        `json:"agent_id"`
+	State        State         `json:"state"`
+	Failures     int           `json:"failures"`
+	Successes    int           `json:"successes"`
+	Threshold    int           `json:"threshold"` // failures before opening
 	ResetTimeout time.Duration `json:"-"`
-	OpenedAt     *time.Time `json:"opened_at,omitempty"`
-	LastFailure  *time.Time `json:"last_failure,omitempty"`
+	OpenedAt     *time.Time    `json:"opened_at,omitempty"`
+	LastFailure  *time.Time    `json:"last_failure,omitempty"`
 	mu           sync.Mutex
 }
 
 // Manager holds circuit breakers for all agents.
 type Manager struct {
-	mu       sync.RWMutex
-	breakers map[string]*Breaker
+	mu           sync.RWMutex
+	breakers     map[string]*Breaker
 	threshold    int
 	resetTimeout time.Duration
 }

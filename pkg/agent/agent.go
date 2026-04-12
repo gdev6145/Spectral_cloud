@@ -24,17 +24,17 @@ const (
 
 // Agent is a registered edge AI agent.
 type Agent struct {
-	ID           string            `json:"id"`
-	TenantID     string            `json:"tenant_id"`
-	Addr         string            `json:"addr,omitempty"`
-	Status       Status            `json:"status"`
-	Tags         map[string]string `json:"tags,omitempty"`
+	ID       string            `json:"id"`
+	TenantID string            `json:"tenant_id"`
+	Addr     string            `json:"addr,omitempty"`
+	Status   Status            `json:"status"`
+	Tags     map[string]string `json:"tags,omitempty"`
 	// Capabilities is a free-form list of strings describing what this agent
 	// can do (e.g. "inference", "storage", "relay"). Used for discovery.
-	Capabilities []string          `json:"capabilities,omitempty"`
-	RegisteredAt time.Time         `json:"registered_at"`
-	LastSeen     time.Time         `json:"last_seen"`
-	ExpiresAt    *time.Time        `json:"expires_at,omitempty"`
+	Capabilities []string   `json:"capabilities,omitempty"`
+	RegisteredAt time.Time  `json:"registered_at"`
+	LastSeen     time.Time  `json:"last_seen"`
+	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 }
 
 // RegisterRequest carries the fields a caller may set when registering.

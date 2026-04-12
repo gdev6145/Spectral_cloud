@@ -211,62 +211,62 @@ func TestListSortedByRegisteredAt(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestListByCapability_MatchesCapability(t *testing.T) {
-r := NewRegistry()
-_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1", Capabilities: []string{"inference", "storage"}})
-_ = r.Register(RegisterRequest{ID: "a2", TenantID: "t1", Capabilities: []string{"storage"}})
-_ = r.Register(RegisterRequest{ID: "a3", TenantID: "t1", Capabilities: []string{"inference"}})
+	r := NewRegistry()
+	_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1", Capabilities: []string{"inference", "storage"}})
+	_ = r.Register(RegisterRequest{ID: "a2", TenantID: "t1", Capabilities: []string{"storage"}})
+	_ = r.Register(RegisterRequest{ID: "a3", TenantID: "t1", Capabilities: []string{"inference"}})
 
-agents := r.ListByCapability("t1", "inference")
-if len(agents) != 2 {
-t.Fatalf("expected 2 inference agents, got %d", len(agents))
-}
+	agents := r.ListByCapability("t1", "inference")
+	if len(agents) != 2 {
+		t.Fatalf("expected 2 inference agents, got %d", len(agents))
+	}
 }
 
 func TestListByCapability_EmptyCapabilityReturnsAll(t *testing.T) {
-r := NewRegistry()
-_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1", Capabilities: []string{"inference"}})
-_ = r.Register(RegisterRequest{ID: "a2", TenantID: "t1", Capabilities: []string{"storage"}})
+	r := NewRegistry()
+	_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1", Capabilities: []string{"inference"}})
+	_ = r.Register(RegisterRequest{ID: "a2", TenantID: "t1", Capabilities: []string{"storage"}})
 
-agents := r.ListByCapability("t1", "")
-if len(agents) != 2 {
-t.Fatalf("expected 2 agents with empty capability filter, got %d", len(agents))
-}
+	agents := r.ListByCapability("t1", "")
+	if len(agents) != 2 {
+		t.Fatalf("expected 2 agents with empty capability filter, got %d", len(agents))
+	}
 }
 
 func TestListByCapability_NoMatch(t *testing.T) {
-r := NewRegistry()
-_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1", Capabilities: []string{"storage"}})
+	r := NewRegistry()
+	_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1", Capabilities: []string{"storage"}})
 
-agents := r.ListByCapability("t1", "inference")
-if len(agents) != 0 {
-t.Fatalf("expected 0 agents, got %d", len(agents))
-}
+	agents := r.ListByCapability("t1", "inference")
+	if len(agents) != 0 {
+		t.Fatalf("expected 0 agents, got %d", len(agents))
+	}
 }
 
 func TestListByCapability_AllTenants(t *testing.T) {
-r := NewRegistry()
-_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1", Capabilities: []string{"gpu"}})
-_ = r.Register(RegisterRequest{ID: "a2", TenantID: "t2", Capabilities: []string{"gpu"}})
-_ = r.Register(RegisterRequest{ID: "a3", TenantID: "t3", Capabilities: []string{"cpu"}})
+	r := NewRegistry()
+	_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1", Capabilities: []string{"gpu"}})
+	_ = r.Register(RegisterRequest{ID: "a2", TenantID: "t2", Capabilities: []string{"gpu"}})
+	_ = r.Register(RegisterRequest{ID: "a3", TenantID: "t3", Capabilities: []string{"cpu"}})
 
-agents := r.ListByCapability("", "gpu")
-if len(agents) != 2 {
-t.Fatalf("expected 2 gpu agents across all tenants, got %d", len(agents))
-}
+	agents := r.ListByCapability("", "gpu")
+	if len(agents) != 2 {
+		t.Fatalf("expected 2 gpu agents across all tenants, got %d", len(agents))
+	}
 }
 
 func TestCountByTenant_Basic(t *testing.T) {
-r := NewRegistry()
-_ = r.Register(RegisterRequest{ID: "a1", TenantID: "tenant-x"})
-_ = r.Register(RegisterRequest{ID: "a2", TenantID: "tenant-x"})
-_ = r.Register(RegisterRequest{ID: "a3", TenantID: "tenant-y"})
+	r := NewRegistry()
+	_ = r.Register(RegisterRequest{ID: "a1", TenantID: "tenant-x"})
+	_ = r.Register(RegisterRequest{ID: "a2", TenantID: "tenant-x"})
+	_ = r.Register(RegisterRequest{ID: "a3", TenantID: "tenant-y"})
 
-if got := r.CountByTenant("tenant-x"); got != 2 {
-t.Fatalf("expected 2 for tenant-x, got %d", got)
-}
-if got := r.CountByTenant("tenant-y"); got != 1 {
-t.Fatalf("expected 1 for tenant-y, got %d", got)
-}
+	if got := r.CountByTenant("tenant-x"); got != 2 {
+		t.Fatalf("expected 2 for tenant-x, got %d", got)
+	}
+	if got := r.CountByTenant("tenant-y"); got != 1 {
+		t.Fatalf("expected 1 for tenant-y, got %d", got)
+	}
 }
 
 func TestCountByTenant_ExcludesExpired(t *testing.T) {
@@ -282,12 +282,12 @@ func TestCountByTenant_ExcludesExpired(t *testing.T) {
 }
 
 func TestCountByTenant_NoneForUnknown(t *testing.T) {
-r := NewRegistry()
-_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1"})
+	r := NewRegistry()
+	_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1"})
 
-if got := r.CountByTenant("unknown"); got != 0 {
-t.Fatalf("expected 0 for unknown tenant, got %d", got)
-}
+	if got := r.CountByTenant("unknown"); got != 0 {
+		t.Fatalf("expected 0 for unknown tenant, got %d", got)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -295,80 +295,80 @@ t.Fatalf("expected 0 for unknown tenant, got %d", got)
 // ---------------------------------------------------------------------------
 
 func TestFindBest_NoAgents(t *testing.T) {
-r := NewRegistry()
-_, ok := r.FindBest("t1", "inference")
-if ok {
-t.Fatal("expected false for empty registry")
-}
+	r := NewRegistry()
+	_, ok := r.FindBest("t1", "inference")
+	if ok {
+		t.Fatal("expected false for empty registry")
+	}
 }
 
 func TestFindBest_NoMatchingCapability(t *testing.T) {
-r := NewRegistry()
-_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"storage"}})
-_, ok := r.FindBest("t1", "inference")
-if ok {
-t.Fatal("expected false when no agent has the capability")
-}
+	r := NewRegistry()
+	_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"storage"}})
+	_, ok := r.FindBest("t1", "inference")
+	if ok {
+		t.Fatal("expected false when no agent has the capability")
+	}
 }
 
 func TestFindBest_PrefersHealthy(t *testing.T) {
-r := NewRegistry()
-_ = r.Register(RegisterRequest{ID: "deg", TenantID: "t1", Status: StatusDegraded, Capabilities: []string{"inference"}})
-_ = r.Register(RegisterRequest{ID: "hlth", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"inference"}})
-got, ok := r.FindBest("t1", "inference")
-if !ok {
-t.Fatal("expected a result")
-}
-if got.ID != "hlth" {
-t.Fatalf("expected healthy agent, got %s", got.ID)
-}
+	r := NewRegistry()
+	_ = r.Register(RegisterRequest{ID: "deg", TenantID: "t1", Status: StatusDegraded, Capabilities: []string{"inference"}})
+	_ = r.Register(RegisterRequest{ID: "hlth", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"inference"}})
+	got, ok := r.FindBest("t1", "inference")
+	if !ok {
+		t.Fatal("expected a result")
+	}
+	if got.ID != "hlth" {
+		t.Fatalf("expected healthy agent, got %s", got.ID)
+	}
 }
 
 func TestFindBest_TieBreaksByLastSeen(t *testing.T) {
-r := NewRegistry()
-_ = r.Register(RegisterRequest{ID: "old", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"inference"}})
-// small sleep so the second agent has a strictly later LastSeen
-time.Sleep(2 * time.Millisecond)
-_ = r.Register(RegisterRequest{ID: "new", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"inference"}})
-got, ok := r.FindBest("t1", "inference")
-if !ok {
-t.Fatal("expected a result")
-}
-if got.ID != "new" {
-t.Fatalf("expected most-recently-seen agent 'new', got %s", got.ID)
-}
+	r := NewRegistry()
+	_ = r.Register(RegisterRequest{ID: "old", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"inference"}})
+	// small sleep so the second agent has a strictly later LastSeen
+	time.Sleep(2 * time.Millisecond)
+	_ = r.Register(RegisterRequest{ID: "new", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"inference"}})
+	got, ok := r.FindBest("t1", "inference")
+	if !ok {
+		t.Fatal("expected a result")
+	}
+	if got.ID != "new" {
+		t.Fatalf("expected most-recently-seen agent 'new', got %s", got.ID)
+	}
 }
 
 func TestFindBest_TenantIsolation(t *testing.T) {
-r := NewRegistry()
-_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"inference"}})
-_, ok := r.FindBest("t2", "inference")
-if ok {
-t.Fatal("expected false for different tenant")
-}
+	r := NewRegistry()
+	_ = r.Register(RegisterRequest{ID: "a1", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"inference"}})
+	_, ok := r.FindBest("t2", "inference")
+	if ok {
+		t.Fatal("expected false for different tenant")
+	}
 }
 
 func TestFindBest_IgnoresExpired(t *testing.T) {
-r := NewRegistry()
-_ = r.Register(RegisterRequest{ID: "exp", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"cap"}, TTLSeconds: 0})
-// Force expiry by directly manipulating via re-register with 1-nanosecond TTL
-_ = r.Register(RegisterRequest{ID: "exp", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"cap"}, TTLSeconds: 1})
-// The agent is live — should be found
-got, ok := r.FindBest("t1", "cap")
-if !ok || got.ID != "exp" {
-t.Fatal("expected to find live agent")
-}
+	r := NewRegistry()
+	_ = r.Register(RegisterRequest{ID: "exp", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"cap"}, TTLSeconds: 0})
+	// Force expiry by directly manipulating via re-register with 1-nanosecond TTL
+	_ = r.Register(RegisterRequest{ID: "exp", TenantID: "t1", Status: StatusHealthy, Capabilities: []string{"cap"}, TTLSeconds: 1})
+	// The agent is live — should be found
+	got, ok := r.FindBest("t1", "cap")
+	if !ok || got.ID != "exp" {
+		t.Fatal("expected to find live agent")
+	}
 }
 
 func TestFindBest_DegradedBeatsUnknown(t *testing.T) {
-r := NewRegistry()
-_ = r.Register(RegisterRequest{ID: "unk", TenantID: "t1", Status: StatusUnknown, Capabilities: []string{"relay"}})
-_ = r.Register(RegisterRequest{ID: "deg", TenantID: "t1", Status: StatusDegraded, Capabilities: []string{"relay"}})
-got, ok := r.FindBest("t1", "relay")
-if !ok {
-t.Fatal("expected a result")
-}
-if got.ID != "deg" {
-t.Fatalf("expected degraded to beat unknown, got %s", got.ID)
-}
+	r := NewRegistry()
+	_ = r.Register(RegisterRequest{ID: "unk", TenantID: "t1", Status: StatusUnknown, Capabilities: []string{"relay"}})
+	_ = r.Register(RegisterRequest{ID: "deg", TenantID: "t1", Status: StatusDegraded, Capabilities: []string{"relay"}})
+	got, ok := r.FindBest("t1", "relay")
+	if !ok {
+		t.Fatal("expected a result")
+	}
+	if got.ID != "deg" {
+		t.Fatalf("expected degraded to beat unknown, got %s", got.ID)
+	}
 }

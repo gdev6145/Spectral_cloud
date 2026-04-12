@@ -59,17 +59,17 @@ const (
 
 // Run tracks the execution state of a single pipeline invocation.
 type Run struct {
-	ID           string         `json:"id"`
-	PipelineID   string         `json:"pipeline_id"`
-	Tenant       string         `json:"tenant"`
-	Status       RunStatus      `json:"status"`
-	CurrentStage int            `json:"current_stage"`
+	ID           string    `json:"id"`
+	PipelineID   string    `json:"pipeline_id"`
+	Tenant       string    `json:"tenant"`
+	Status       RunStatus `json:"status"`
+	CurrentStage int       `json:"current_stage"`
 	// JobIDs holds the job ID submitted for each stage (index = stage index).
-	JobIDs       []string       `json:"job_ids"`
+	JobIDs []string `json:"job_ids"`
 	// Input is the initial payload passed to the first stage.
-	Input        map[string]any `json:"input,omitempty"`
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at"`
+	Input     map[string]any `json:"input,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
 }
 
 // UpdateParams describes a partial pipeline update.

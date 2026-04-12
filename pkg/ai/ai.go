@@ -65,9 +65,9 @@ type InferResponse struct {
 
 // anthropicSystemBlock is a system prompt block, optionally with cache_control.
 type anthropicSystemBlock struct {
-	Type         string                   `json:"type"`
-	Text         string                   `json:"text"`
-	CacheControl *anthropicCacheControl   `json:"cache_control,omitempty"`
+	Type         string                 `json:"type"`
+	Text         string                 `json:"text"`
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
 }
 
 type anthropicCacheControl struct {
@@ -94,9 +94,9 @@ type anthropicResponse struct {
 	ID    string `json:"id"`
 	Model string `json:"model"`
 	Usage struct {
-		InputTokens            int `json:"input_tokens"`
-		OutputTokens           int `json:"output_tokens"`
-		CacheReadInputTokens   int `json:"cache_read_input_tokens"`
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	} `json:"usage"`
 	Content []struct {
@@ -213,18 +213,18 @@ type StreamRequest struct {
 
 // Message is a single turn in a conversation.
 type Message struct {
-	Role         string `json:"role"`              // "user" or "assistant"
+	Role         string `json:"role"` // "user" or "assistant"
 	Content      string `json:"content"`
-	IsRaw        bool   `json:"is_raw,omitempty"`        // content is a JSON array of content blocks (assistant tool_use turn)
+	IsRaw        bool   `json:"is_raw,omitempty"`         // content is a JSON array of content blocks (assistant tool_use turn)
 	IsToolResult bool   `json:"is_tool_result,omitempty"` // content is a JSON array of tool_result blocks
 }
 
 // StreamChunk is a single SSE delta event emitted by Stream.
 type StreamChunk struct {
 	// Type is "delta", "stop", or "error".
-	Type  string `json:"type"`
+	Type string `json:"type"`
 	// Text carries incremental content when Type=="delta".
-	Text  string `json:"text,omitempty"`
+	Text string `json:"text,omitempty"`
 	// Error carries an error message when Type=="error".
 	Error string `json:"error,omitempty"`
 }
@@ -491,7 +491,7 @@ type anthropicToolMsg struct {
 }
 
 type anthropicToolResultBlock struct {
-	Type      string `json:"type"`       // "tool_result"
+	Type      string `json:"type"` // "tool_result"
 	ToolUseID string `json:"tool_use_id"`
 	Content   string `json:"content"`
 	IsError   bool   `json:"is_error,omitempty"`

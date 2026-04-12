@@ -237,115 +237,115 @@ func TestSearchTransactionsBothFilters(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNewBlockchainFromBlocks_Empty(t *testing.T) {
-bc := NewBlockchainFromBlocks(nil)
-if bc.Height() != 1 {
-t.Fatalf("expected genesis height 1, got %d", bc.Height())
-}
+	bc := NewBlockchainFromBlocks(nil)
+	if bc.Height() != 1 {
+		t.Fatalf("expected genesis height 1, got %d", bc.Height())
+	}
 }
 
 func TestNewBlockchainFromBlocks_WithBlocks(t *testing.T) {
-src := NewBlockchain()
-src.AddBlock([]Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
-snap := src.Blocks()
-bc := NewBlockchainFromBlocks(snap)
-if bc.Height() != 2 {
-t.Fatalf("expected height 2, got %d", bc.Height())
-}
+	src := NewBlockchain()
+	src.AddBlock([]Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+	snap := src.Blocks()
+	bc := NewBlockchainFromBlocks(snap)
+	if bc.Height() != 2 {
+		t.Fatalf("expected height 2, got %d", bc.Height())
+	}
 }
 
 func TestLastBlock_Genesis(t *testing.T) {
-bc := NewBlockchain()
-lb := bc.LastBlock()
-if lb == nil {
-t.Fatal("expected non-nil last block")
-}
-if lb.Index != 0 {
-t.Fatalf("expected genesis index 0, got %d", lb.Index)
-}
+	bc := NewBlockchain()
+	lb := bc.LastBlock()
+	if lb == nil {
+		t.Fatal("expected non-nil last block")
+	}
+	if lb.Index != 0 {
+		t.Fatalf("expected genesis index 0, got %d", lb.Index)
+	}
 }
 
 func TestLastBlock_AfterAdd(t *testing.T) {
-bc := NewBlockchain()
-bc.AddBlock([]Transaction{{Sender: "x", Recipient: "y", Amount: 5}})
-lb := bc.LastBlock()
-if lb.Index != 1 {
-t.Fatalf("expected index 1, got %d", lb.Index)
-}
+	bc := NewBlockchain()
+	bc.AddBlock([]Transaction{{Sender: "x", Recipient: "y", Amount: 5}})
+	lb := bc.LastBlock()
+	if lb.Index != 1 {
+		t.Fatalf("expected index 1, got %d", lb.Index)
+	}
 }
 
 func TestBlocks_ReturnsCopy(t *testing.T) {
-bc := NewBlockchain()
-bc.AddBlock([]Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
-blocks := bc.Blocks()
-if len(blocks) != 2 {
-t.Fatalf("expected 2 blocks, got %d", len(blocks))
-}
-// Mutating the copy must not affect the chain.
-blocks[0] = nil
-if bc.Height() != 2 {
-t.Fatal("mutation of copy affected original")
-}
+	bc := NewBlockchain()
+	bc.AddBlock([]Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+	blocks := bc.Blocks()
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks, got %d", len(blocks))
+	}
+	// Mutating the copy must not affect the chain.
+	blocks[0] = nil
+	if bc.Height() != 2 {
+		t.Fatal("mutation of copy affected original")
+	}
 }
 
 func TestRemoveLastBlock_PreservesGenesis(t *testing.T) {
-bc := NewBlockchain()
-bc.RemoveLastBlock() // only genesis — should be a no-op
-if bc.Height() != 1 {
-t.Fatalf("expected height 1 after no-op remove, got %d", bc.Height())
-}
+	bc := NewBlockchain()
+	bc.RemoveLastBlock() // only genesis — should be a no-op
+	if bc.Height() != 1 {
+		t.Fatalf("expected height 1 after no-op remove, got %d", bc.Height())
+	}
 }
 
 func TestRemoveLastBlock_RemovesAdded(t *testing.T) {
-bc := NewBlockchain()
-bc.AddBlock([]Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
-bc.AddBlock([]Transaction{{Sender: "b", Recipient: "c", Amount: 2}})
-bc.RemoveLastBlock()
-if bc.Height() != 2 {
-t.Fatalf("expected height 2 after remove, got %d", bc.Height())
-}
-lb := bc.LastBlock()
-if lb.Index != 1 {
-t.Fatalf("expected last block index 1, got %d", lb.Index)
-}
+	bc := NewBlockchain()
+	bc.AddBlock([]Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+	bc.AddBlock([]Transaction{{Sender: "b", Recipient: "c", Amount: 2}})
+	bc.RemoveLastBlock()
+	if bc.Height() != 2 {
+		t.Fatalf("expected height 2 after remove, got %d", bc.Height())
+	}
+	lb := bc.LastBlock()
+	if lb.Index != 1 {
+		t.Fatalf("expected last block index 1, got %d", lb.Index)
+	}
 }
 
 func TestSnapshot_IndependentCopy(t *testing.T) {
-bc := NewBlockchain()
-bc.AddBlock([]Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
-snap := bc.Snapshot()
-if len(snap) != 2 {
-t.Fatalf("expected 2 blocks in snapshot, got %d", len(snap))
-}
-// Mutate snapshot — chain must be unaffected.
-snap[0].Hash = "tampered"
-genesis, _ := bc.GetBlock(0)
-if genesis.Hash == "tampered" {
-t.Fatal("snapshot mutation affected original chain")
-}
+	bc := NewBlockchain()
+	bc.AddBlock([]Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+	snap := bc.Snapshot()
+	if len(snap) != 2 {
+		t.Fatalf("expected 2 blocks in snapshot, got %d", len(snap))
+	}
+	// Mutate snapshot — chain must be unaffected.
+	snap[0].Hash = "tampered"
+	genesis, _ := bc.GetBlock(0)
+	if genesis.Hash == "tampered" {
+		t.Fatal("snapshot mutation affected original chain")
+	}
 }
 
 func TestLoad_Empty(t *testing.T) {
-bc := NewBlockchain()
-bc.AddBlock([]Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
-bc.Load(nil)
-if bc.Height() != 1 {
-t.Fatalf("Load(nil) should reset to genesis, height=%d", bc.Height())
-}
+	bc := NewBlockchain()
+	bc.AddBlock([]Transaction{{Sender: "a", Recipient: "b", Amount: 1}})
+	bc.Load(nil)
+	if bc.Height() != 1 {
+		t.Fatalf("Load(nil) should reset to genesis, height=%d", bc.Height())
+	}
 }
 
 func TestLoad_WithBlocks(t *testing.T) {
-src := NewBlockchain()
-src.AddBlock([]Transaction{{Sender: "x", Recipient: "y", Amount: 9}})
-src.AddBlock([]Transaction{{Sender: "y", Recipient: "z", Amount: 3}})
-snap := src.Snapshot()
+	src := NewBlockchain()
+	src.AddBlock([]Transaction{{Sender: "x", Recipient: "y", Amount: 9}})
+	src.AddBlock([]Transaction{{Sender: "y", Recipient: "z", Amount: 3}})
+	snap := src.Snapshot()
 
-dst := NewBlockchain()
-dst.Load(snap)
-if dst.Height() != 3 {
-t.Fatalf("expected height 3 after load, got %d", dst.Height())
-}
-lb := dst.LastBlock()
-if lb.Index != 2 {
-t.Fatalf("expected last block index 2, got %d", lb.Index)
-}
+	dst := NewBlockchain()
+	dst.Load(snap)
+	if dst.Height() != 3 {
+		t.Fatalf("expected height 3 after load, got %d", dst.Height())
+	}
+	lb := dst.LastBlock()
+	if lb.Index != 2 {
+		t.Fatalf("expected last block index 2, got %d", lb.Index)
+	}
 }

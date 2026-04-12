@@ -39,7 +39,7 @@ type Job struct {
 	AgentID    string         `json:"agent_id,omitempty"`
 	Capability string         `json:"capability,omitempty"`
 	Payload    map[string]any `json:"payload,omitempty"`
-	Priority   int            `json:"priority,omitempty"`   // higher = more urgent; default 0
+	Priority   int            `json:"priority,omitempty"`    // higher = more urgent; default 0
 	TTLSeconds int            `json:"ttl_seconds,omitempty"` // 0 = no expiry
 	Status     Status         `json:"status"`
 	Result     string         `json:"result,omitempty"`

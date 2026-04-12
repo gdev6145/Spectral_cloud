@@ -29,10 +29,10 @@ const (
 // Quota holds the per-day limits for a tenant plan.
 // Zero means unlimited.
 type Quota struct {
-	MaxAPICalls   int64 `json:"max_api_calls"`
-	MaxJobs       int64 `json:"max_jobs"`
-	MaxAITokens   int64 `json:"max_ai_tokens"`
-	MaxAgents     int64 `json:"max_agents"`
+	MaxAPICalls int64 `json:"max_api_calls"`
+	MaxJobs     int64 `json:"max_jobs"`
+	MaxAITokens int64 `json:"max_ai_tokens"`
+	MaxAgents   int64 `json:"max_agents"`
 }
 
 // QuotaFor returns the default Quota for the given Plan.
@@ -77,9 +77,9 @@ type SubKey struct {
 // ─── Metric constants ─────────────────────────────────────────────────────────
 
 const (
-	MetricAPICalls  = "api_calls"
-	MetricJobs      = "jobs"
-	MetricAITokens  = "ai_tokens"
+	MetricAPICalls = "api_calls"
+	MetricJobs     = "jobs"
+	MetricAITokens = "ai_tokens"
 )
 
 // ─── Persister ────────────────────────────────────────────────────────────────
@@ -229,7 +229,7 @@ func (m *Meter) GenerateKey(tenantID, name string) (SubKey, error) {
 		ID:        id,
 		TenantID:  tenantID,
 		Name:      name,
-		Key:       secret,          // returned to caller once; not stored
+		Key:       secret, // returned to caller once; not stored
 		KeyHash:   hashSecret(secret),
 		CreatedAt: time.Now().UTC(),
 	}
