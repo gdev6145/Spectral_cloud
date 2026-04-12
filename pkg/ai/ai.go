@@ -25,6 +25,7 @@ const (
 // Client calls the Anthropic Messages API.
 type Client struct {
 	apiKey     string
+	baseURL    string // overrides messagesURL when set; used in tests
 	httpClient *http.Client
 }
 
@@ -34,6 +35,24 @@ func New(apiKey string) *Client {
 		apiKey:     apiKey,
 		httpClient: &http.Client{Timeout: 120 * time.Second},
 	}
+}
+
+// NewWithBaseURL returns a Client that sends requests to baseURL instead of
+// the production Anthropic endpoint. Intended for unit tests.
+func NewWithBaseURL(apiKey, baseURL string) *Client {
+	return &Client{
+		apiKey:     apiKey,
+		baseURL:    baseURL,
+		httpClient: &http.Client{Timeout: 120 * time.Second},
+	}
+}
+
+// endpoint returns the messages endpoint URL, using baseURL when set.
+func (c *Client) endpoint() string {
+	if c.baseURL != "" {
+		return c.baseURL
+	}
+	return messagesURL
 }
 
 // InferRequest is the input for a single inference call.
@@ -150,7 +169,7 @@ func (c *Client) Infer(ctx context.Context, req InferRequest) (InferResponse, er
 		return InferResponse{}, fmt.Errorf("ai: marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, messagesURL, bytes.NewReader(data))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(), bytes.NewReader(data))
 	if err != nil {
 		return InferResponse{}, fmt.Errorf("ai: build request: %w", err)
 	}
@@ -273,7 +292,7 @@ func (c *Client) Stream(ctx context.Context, req StreamRequest) <-chan StreamChu
 			return
 		}
 
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, messagesURL, bytes.NewReader(data))
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(), bytes.NewReader(data))
 		if err != nil {
 			ch <- StreamChunk{Type: "error", Error: fmt.Sprintf("build request: %v", err)}
 			return
@@ -370,7 +389,7 @@ func (c *Client) InferMultiTurn(ctx context.Context, history []Message, system, 
 	if err != nil {
 		return InferResponse{}, fmt.Errorf("ai: marshal: %w", err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, messagesURL, bytes.NewReader(data))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(), bytes.NewReader(data))
 	if err != nil {
 		return InferResponse{}, fmt.Errorf("ai: build request: %w", err)
 	}
@@ -535,7 +554,7 @@ func (c *Client) InferWithTools(ctx context.Context, req ToolsRequest) (ToolsRes
 	if err != nil {
 		return ToolsResponse{}, fmt.Errorf("ai: marshal: %w", err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, messagesURL, bytes.NewReader(data))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(), bytes.NewReader(data))
 	if err != nil {
 		return ToolsResponse{}, fmt.Errorf("ai: build request: %w", err)
 	}

@@ -4024,14 +4024,14 @@ async function runAILoop() {
   try {
     const res = await post('/ai/loop', {goal, max_iterations: maxIter});
     if (el) {
-      const steps = res.steps || [];
-      const header = `<div style="margin-bottom:8px"><strong>Outcome:</strong> ${esc(res.outcome||'done')} · <strong>Iterations:</strong> ${res.iterations||0}</div>`;
-      const stepsHtml = steps.length
-        ? '<div class="table-wrap"><table><thead><tr><th>#</th><th>Action</th><th>Result (truncated)</th></tr></thead><tbody>'
-          + steps.map((s,i)=>`<tr><td>${i+1}</td><td class="mono">${esc(s.action||'')}</td><td style="font-size:11px;max-width:280px;white-space:pre-wrap;word-break:break-all">${esc((s.result||'').slice(0,200))}</td></tr>`).join('')
+      const trace = res.trace || [];
+      const header = `<div style="margin-bottom:8px"><strong>Result:</strong> ${esc(res.result||'(no output)')} · <strong>Steps:</strong> ${res.iterations||0}</div>`;
+      const traceHtml = trace.length
+        ? '<div class="table-wrap"><table><thead><tr><th>#</th><th>Tool / Step</th><th>Output (truncated)</th></tr></thead><tbody>'
+          + trace.map((s,i)=>`<tr><td>${i+1}</td><td class="mono">${esc(s.tool||'(final)')}</td><td style="font-size:11px;max-width:280px;white-space:pre-wrap;word-break:break-all">${esc((s.result||s.text||'').slice(0,200))}</td></tr>`).join('')
           + '</tbody></table></div>'
         : '';
-      el.innerHTML = header + stepsHtml + `<div style="font-size:11px;color:var(--muted);margin-top:6px">Model: ${esc(res.model||'—')}</div>`;
+      el.innerHTML = header + traceHtml + `<div style="font-size:11px;color:var(--muted);margin-top:6px">${res.input_tokens||0} in / ${res.output_tokens||0} out tokens</div>`;
     }
   } catch(e) { if (el) el.textContent='Error: '+e.message; }
 }
