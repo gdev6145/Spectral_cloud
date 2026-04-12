@@ -96,7 +96,7 @@ type Persister interface {
 // ─── key prefixes (BoltDB) ────────────────────────────────────────────────────
 
 const (
-	billingTenant = "_billing" // special pseudo-tenant bucket
+	billingBucket = "_billing" // special pseudo-tenant bucket for system-wide billing data
 
 	prefixProfile = "profile:"
 	prefixSubKey  = "subkey:"
@@ -189,7 +189,7 @@ func profileKey(tenantID string) string {
 // GetProfile loads the TenantProfile for tenantID from BoltDB.
 // The second return value is false when no profile exists.
 func (m *Meter) GetProfile(tenantID string) (TenantProfile, bool) {
-	raw, err := m.db.GetKV(billingTenant, profileKey(tenantID))
+	raw, err := m.db.GetKV(billingBucket, profileKey(tenantID))
 	if err != nil || raw == nil {
 		return TenantProfile{}, false
 	}
@@ -206,7 +206,7 @@ func (m *Meter) SaveProfile(p TenantProfile) error {
 	if err != nil {
 		return err
 	}
-	return m.db.PutKV(billingTenant, profileKey(p.TenantID), b)
+	return m.db.PutKV(billingBucket, profileKey(p.TenantID), b)
 }
 
 // ─── Sub-keys ─────────────────────────────────────────────────────────────────
@@ -241,7 +241,7 @@ func (m *Meter) GenerateKey(tenantID, name string) (SubKey, error) {
 	if err != nil {
 		return SubKey{}, err
 	}
-	if err := m.db.PutKV(billingTenant, subKeyStorageKey(tenantID, id), b); err != nil {
+	if err := m.db.PutKV(billingBucket, subKeyStorageKey(tenantID, id), b); err != nil {
 		return SubKey{}, err
 	}
 	return sk, nil
@@ -251,7 +251,7 @@ func (m *Meter) GenerateKey(tenantID, name string) (SubKey, error) {
 func (m *Meter) ListKeys(tenantID string) ([]SubKey, error) {
 	prefix := prefixSubKey + tenantID + ":"
 	var keys []SubKey
-	err := m.db.ScanPrefix(billingTenant, prefix, func(_, v []byte) error {
+	err := m.db.ScanPrefix(billingBucket, prefix, func(_, v []byte) error {
 		var sk SubKey
 		if err := json.Unmarshal(v, &sk); err != nil {
 			return nil
@@ -265,7 +265,7 @@ func (m *Meter) ListKeys(tenantID string) ([]SubKey, error) {
 
 // DeleteKey removes a sub-key by ID for a tenant.
 func (m *Meter) DeleteKey(tenantID, keyID string) error {
-	return m.db.DeleteKV(billingTenant, subKeyStorageKey(tenantID, keyID))
+	return m.db.DeleteKV(billingBucket, subKeyStorageKey(tenantID, keyID))
 }
 
 // GetKeyBySecret looks up a sub-key by its plaintext secret across the given
@@ -275,7 +275,7 @@ func (m *Meter) GetKeyBySecret(tenants []string, secret string) (SubKey, bool) {
 	for _, tenantID := range tenants {
 		prefix := prefixSubKey + tenantID + ":"
 		var found SubKey
-		_ = m.db.ScanPrefix(billingTenant, prefix, func(_, v []byte) error {
+		_ = m.db.ScanPrefix(billingBucket, prefix, func(_, v []byte) error {
 			var sk SubKey
 			if err := json.Unmarshal(v, &sk); err != nil {
 				return nil
@@ -296,7 +296,7 @@ func (m *Meter) GetKeyBySecret(tenants []string, secret string) (SubKey, bool) {
 // TouchKey updates LastUsed for a sub-key.
 func (m *Meter) TouchKey(tenantID, keyID string) {
 	k := subKeyStorageKey(tenantID, keyID)
-	raw, err := m.db.GetKV(billingTenant, k)
+	raw, err := m.db.GetKV(billingBucket, k)
 	if err != nil || raw == nil {
 		return
 	}
@@ -309,15 +309,12 @@ func (m *Meter) TouchKey(tenantID, keyID string) {
 	if err != nil {
 		return
 	}
-	_ = m.db.PutKV(billingTenant, k, b)
+	_ = m.db.PutKV(billingBucket, k, b)
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-// hashSecret returns a base64-encoded BLAKE2-style digest of the secret.
-// We use SHA-256 via the standard library to keep zero extra dependencies.
+// hashSecret returns a hex-encoded SHA-256 digest of the secret.
 func hashSecret(secret string) string {
-	// Import crypto/sha256 inline via the function to avoid a top-level import
-	// bloating the package for callers that don't use hashing.
 	return sha256Hex([]byte(secret))
 }
