@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Security Policy – Spectral Cloud</title>
+<style>
+:root {
+  --bg: #0d0f14; --surface: #161b27; --border: #232a3a;
+  --accent: #6c63ff; --accent2: #00d4aa; --danger: #e05252;
+  --warn: #f5a623; --text: #e2e8f0; --muted: #64748b;
+  --card: #1a2035; --radius: 8px;
+}
+[data-theme="light"] {
+  --bg: #f8fafc; --surface: #ffffff; --border: #e2e8f0;
+  --text: #1e293b; --muted: #64748b; --card: #f1f5f9;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.7 'Inter', system-ui, sans-serif; min-height: 100vh; }
+.topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; }
+.topbar h1 { font-size: 15px; font-weight: 700; color: var(--accent); }
+.topbar a { font-size: 13px; color: var(--muted); text-decoration: none; }
+.topbar a:hover { color: var(--text); }
+.container { max-width: 760px; margin: 40px auto; padding: 0 24px 60px; }
+h2 { font-size: 28px; font-weight: 700; margin-bottom: 6px; }
+.updated { font-size: 12px; color: var(--muted); margin-bottom: 32px; }
+h3 { font-size: 15px; font-weight: 700; margin: 28px 0 8px; color: var(--accent); }
+p { margin-bottom: 12px; color: var(--text); }
+ul { padding-left: 20px; margin-bottom: 12px; }
+li { margin-bottom: 6px; }
+code { font-family: 'JetBrains Mono', 'Fira Mono', monospace; font-size: 12px; background: rgba(108,99,255,.12); color: var(--accent); padding: 1px 5px; border-radius: 4px; }
+.alert { padding: 12px 16px; border-radius: var(--radius); font-size: 13px; margin-bottom: 20px; border: 1px solid rgba(224,82,82,.3); background: rgba(224,82,82,.08); color: var(--danger); }
+.back { display: inline-block; margin-top: 32px; font-size: 13px; color: var(--muted); text-decoration: none; }
+.back:hover { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>Spectral Cloud</h1>
+  <a href="/ui/">← Back to Dashboard</a>
+</div>
+<div class="container">
+  <h2>Security Policy</h2>
+  <p class="updated">Last updated: April 2026</p>
+
+  <div class="alert">
+    ⚠ If you have discovered a security vulnerability, please report it privately — do not open a public issue. See the <strong>Reporting a Vulnerability</strong> section below.
+  </div>
+
+  <h3>Reporting a Vulnerability</h3>
+  <p>Please report security vulnerabilities using one of the following channels:</p>
+  <ul>
+    <li><strong>GitHub Security Advisories</strong> (preferred) – Open a private advisory directly in the repository's Security tab.</li>
+    <li><strong>Email</strong> – Contact the maintainers at <em>security@spectral-cloud.local</em>.</li>
+  </ul>
+  <p>When reporting, please include:</p>
+  <ul>
+    <li>A clear description of the vulnerability and its potential impact.</li>
+    <li>Steps to reproduce or a proof-of-concept (where safe to share).</li>
+    <li>The version or commit SHA where you observed the issue.</li>
+    <li>Any suggested remediation, if known.</li>
+  </ul>
+  <p>We aim to acknowledge receipt within 2 business days and to provide a remediation timeline within 7 business days.</p>
+
+  <h3>Supported Versions</h3>
+  <p>Security patches are provided for the latest released version only. Users on older versions are encouraged to upgrade promptly.</p>
+
+  <h3>Built-in Security Controls</h3>
+  <p>Spectral Cloud includes the following security features:</p>
+  <ul>
+    <li><strong>API key authentication</strong> – All data-plane endpoints require a valid API key or tenant key. Configure via <code>API_KEY</code>, <code>TENANT_KEYS</code>, or <code>TENANT_WRITE_KEYS</code>.</li>
+    <li><strong>Admin CIDR restriction</strong> – Admin endpoints can be restricted to trusted IP ranges using <code>ADMIN_CIDR</code>.</li>
+    <li><strong>TLS support</strong> – Enable HTTPS via <code>TLS_CERT</code> / <code>TLS_KEY</code>. Mesh traffic supports mutual TLS via <code>MESH_TLS_*</code> environment variables.</li>
+    <li><strong>Rate limiting</strong> – Both per-IP (<code>RATE_RPS</code>, <code>RATE_BURST</code>) and per-tenant (<code>TENANT_RATE_RPS</code>, <code>TENANT_RATE_BURST</code>) rate limits are configurable.</li>
+    <li><strong>Circuit breaking</strong> – Automatic circuit breaking prevents unhealthy agents from receiving new work.</li>
+    <li><strong>Backup encryption</strong> – Backup archives can be encrypted with AES-256-GCM using <code>BACKUP_ENCRYPTION_KEY</code>.</li>
+    <li><strong>Audit logging</strong> – Authenticated write operations are recorded in the audit log.</li>
+    <li><strong>Request size limits</strong> – Configurable maximum request body size via <code>MAX_BODY_BYTES</code>.</li>
+  </ul>
+
+  <h3>Dependency Security</h3>
+  <p>The project uses <code>govulncheck ./...</code> as part of CI to identify known vulnerabilities in Go dependencies. To run this check locally:</p>
+  <ul>
+    <li>Install: <code>go install golang.org/x/vuln/cmd/govulncheck@latest</code></li>
+    <li>Run: <code>govulncheck ./...</code> in the repository root.</li>
+  </ul>
+  <p>Some vulnerabilities may require upgrading the Go toolchain or gRPC libraries. Schedule upgrades promptly when security advisories are published for your dependency versions.</p>
+
+  <h3>Responsible Disclosure</h3>
+  <p>We ask that you follow responsible disclosure practices: give us reasonable time to investigate and patch before publicly disclosing the issue. We will credit reporters in the release notes (with your permission).</p>
+
+  <a class="back" href="/ui/">← Back to Dashboard</a>
+</div>
+</body>
+</html>

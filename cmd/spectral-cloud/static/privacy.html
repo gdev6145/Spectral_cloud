@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy Policy – Spectral Cloud</title>
+<style>
+:root {
+  --bg: #0d0f14; --surface: #161b27; --border: #232a3a;
+  --accent: #6c63ff; --text: #e2e8f0; --muted: #64748b;
+  --card: #1a2035; --radius: 8px;
+}
+[data-theme="light"] {
+  --bg: #f8fafc; --surface: #ffffff; --border: #e2e8f0;
+  --text: #1e293b; --muted: #64748b; --card: #f1f5f9;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.7 'Inter', system-ui, sans-serif; min-height: 100vh; }
+.topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; }
+.topbar h1 { font-size: 15px; font-weight: 700; color: var(--accent); }
+.topbar a { font-size: 13px; color: var(--muted); text-decoration: none; }
+.topbar a:hover { color: var(--text); }
+.container { max-width: 760px; margin: 40px auto; padding: 0 24px 60px; }
+h2 { font-size: 28px; font-weight: 700; margin-bottom: 6px; }
+.updated { font-size: 12px; color: var(--muted); margin-bottom: 32px; }
+h3 { font-size: 15px; font-weight: 700; margin: 28px 0 8px; color: var(--accent); }
+p { margin-bottom: 12px; color: var(--text); }
+ul { padding-left: 20px; margin-bottom: 12px; }
+li { margin-bottom: 6px; }
+.back { display: inline-block; margin-top: 32px; font-size: 13px; color: var(--muted); text-decoration: none; }
+.back:hover { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>Spectral Cloud</h1>
+  <a href="/ui/">← Back to Dashboard</a>
+</div>
+<div class="container">
+  <h2>Privacy Policy</h2>
+  <p class="updated">Last updated: April 2026</p>
+
+  <p>Spectral Cloud ("the Service") is committed to protecting your privacy. This Privacy Policy explains what information is collected, how it is used, and how it is protected when you use the Service.</p>
+
+  <h3>1. Information We Collect</h3>
+  <p>The Service collects the following categories of information:</p>
+  <ul>
+    <li><strong>Account credentials</strong> – API keys and tenant identifiers used to authenticate requests. These are hashed or stored securely and are never logged in plaintext.</li>
+    <li><strong>Operational data</strong> – Blockchain blocks, routing entries, agent registrations, job payloads, and other data you explicitly submit through the API.</li>
+    <li><strong>Request metadata</strong> – HTTP request logs including timestamps, IP addresses, HTTP methods, paths, and response codes, used for auditing and debugging.</li>
+    <li><strong>Health and metrics data</strong> – Prometheus-compatible metrics about service health, throughput, and latency. These contain no personally identifiable information.</li>
+  </ul>
+
+  <h3>2. How We Use Your Information</h3>
+  <p>Information collected by the Service is used solely to:</p>
+  <ul>
+    <li>Authenticate and authorize API requests.</li>
+    <li>Fulfill the operations you request (storing blocks, routing data, managing agents and jobs).</li>
+    <li>Monitor service health and detect anomalies or security incidents.</li>
+    <li>Produce operational audit logs for compliance and troubleshooting purposes.</li>
+  </ul>
+  <p>The Service does not sell, rent, or share your data with third parties for advertising or marketing purposes.</p>
+
+  <h3>3. Data Storage and Retention</h3>
+  <p>All persistent data is stored in an embedded BoltDB database on the server where the Service is deployed. You, as the operator, control where this database is stored. Data is retained until explicitly deleted through the API, a restore operation, or manual removal of the data directory.</p>
+  <p>Access logs, if enabled via <code>ACCESS_LOG=true</code>, are written to standard output or a configured log file and are subject to your infrastructure's log retention policies.</p>
+
+  <h3>4. Data Security</h3>
+  <p>The Service implements the following security controls:</p>
+  <ul>
+    <li>API key authentication for all sensitive endpoints.</li>
+    <li>Optional TLS encryption for all HTTP and mesh traffic.</li>
+    <li>IP-based and tenant-based rate limiting to prevent abuse.</li>
+    <li>Audit logging of authenticated write operations.</li>
+    <li>Optional backup encryption via AES-256-GCM when <code>BACKUP_ENCRYPTION_KEY</code> is configured.</li>
+  </ul>
+  <p>Despite these measures, no system is perfectly secure. You are responsible for deploying the Service in a secure environment and maintaining the confidentiality of your credentials.</p>
+
+  <h3>5. Your Rights</h3>
+  <p>As a self-hosted service, you have full control over your data:</p>
+  <ul>
+    <li>You can delete any data at any time using the API or by removing the data directory.</li>
+    <li>You can export your data using the backup functionality provided by <code>spectralctl backup</code>.</li>
+    <li>You can restrict access to your deployment using the built-in authentication and network controls.</li>
+  </ul>
+
+  <h3>6. Cookies and Tracking</h3>
+  <p>The Spectral Cloud dashboard does not use cookies or any third-party tracking technologies. Theme preferences are stored in your browser's <code>localStorage</code> and never transmitted to the server.</p>
+
+  <h3>7. Third-Party Services</h3>
+  <p>The Service does not make outbound connections to third-party analytics, telemetry, or data-collection services. Any integrations (such as webhook endpoints you configure) are entirely under your control and subject to the privacy policies of those external systems.</p>
+
+  <h3>8. Changes to This Policy</h3>
+  <p>This Privacy Policy may be updated from time to time. The "Last updated" date at the top of this page reflects when changes were last made. Continued use of the Service after changes are posted constitutes acceptance of the revised policy.</p>
+
+  <h3>9. Contact</h3>
+  <p>For privacy-related questions or requests, please open an issue on the project repository or contact the maintainers via the channels listed in <a href="/ui/security.html" target="_blank" style="color:var(--accent)">our Security page</a>.</p>
+
+  <a class="back" href="/ui/">← Back to Dashboard</a>
+</div>
+</body>
+</html>

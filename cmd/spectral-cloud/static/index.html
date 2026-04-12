@@ -294,6 +294,13 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
       <button id="theme-toggle" class="btn btn-outline btn-sm" onclick="toggleTheme()" title="Toggle light/dark theme" style="padding:4px 8px;font-size:14px">🌙</button>
       <button class="btn btn-outline btn-sm" onclick="showShortcutsModal()" title="Keyboard shortcuts" style="padding:4px 8px;font-size:14px">⌨</button>
     </div>
+    <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px">
+      <a href="/ui/terms.html" target="_blank" style="font-size:10px;color:var(--muted);text-decoration:none;" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--muted)'">Terms</a>
+      <span style="font-size:10px;color:var(--muted)">·</span>
+      <a href="/ui/privacy.html" target="_blank" style="font-size:10px;color:var(--muted);text-decoration:none;" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--muted)'">Privacy</a>
+      <span style="font-size:10px;color:var(--muted)">·</span>
+      <a href="/ui/security.html" target="_blank" style="font-size:10px;color:var(--muted);text-decoration:none;" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--muted)'">Security</a>
+    </div>
   </div>
 </nav>
 <div class="nav-overlay" id="nav-overlay" onclick="closeSidebar()"></div>
