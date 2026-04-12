@@ -3,10 +3,11 @@
  * for static assets, falling back to network for API calls.
  */
 
-const CACHE_VERSION = 'spectral-v1';
+const CACHE_VERSION = 'spectral-v2';
 const STATIC_ASSETS = [
   '/ui/',
   '/ui/index.html',
+  '/ui/offline.html',
   '/ui/manifest.json',
   '/ui/terms.html',
   '/ui/privacy.html',
@@ -81,14 +82,18 @@ function cacheFirst(request) {
       }
       return response;
     }).catch(function() {
-      // Offline fallback: return cached index
+      // Offline fallback: return the dedicated offline page for navigation
+      // requests, or the cached index as last resort.
+      if (request.mode === 'navigate') {
+        return caches.match('/ui/offline.html');
+      }
       return caches.match('/ui/index.html');
     });
   });
 }
 
 function networkFirst(request) {
-  return fetch(request).catch(function(err) {
+  return fetch(request).catch(function(_err) {
     // Network unavailable — serve cached response if available.
     // Errors are not re-thrown here because the service worker is an
     // enhancement only; failed API calls surface to callers normally.

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Offline – Spectral Cloud</title>
+<meta name="theme-color" content="#6c63ff">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/ui/manifest.json">
+<style>
+:root {
+  --bg: #0d0f14; --surface: #161b27; --border: #232a3a;
+  --accent: #6c63ff; --text: #e2e8f0; --muted: #64748b;
+  --card: #1a2035; --radius: 8px; --danger: #e05252;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, sans-serif; }
+
+body { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; text-align: center; min-height: 100vh; min-height: 100dvh; }
+
+.icon { font-size: 64px; margin-bottom: 24px; animation: pulse 2s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+
+h1 { font-size: 22px; font-weight: 700; margin-bottom: 8px; color: var(--text); }
+p  { font-size: 14px; color: var(--muted); line-height: 1.6; max-width: 320px; margin: 0 auto 24px; }
+
+.btn { display: inline-flex; align-items: center; gap: 8px; background: var(--accent); color: #fff; border: none; border-radius: var(--radius); padding: 12px 24px; font-size: 14px; font-weight: 600; cursor: pointer; text-decoration: none; transition: opacity .15s; -webkit-tap-highlight-color: transparent; }
+.btn:active { opacity: .8; }
+
+.cached-pages { margin-top: 32px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; width: 100%; max-width: 360px; text-align: left; }
+.cached-pages h2 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin-bottom: 12px; }
+.cached-page-item { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.cached-page-item:last-child { border-bottom: none; }
+.cached-page-item a { color: var(--text); text-decoration: none; font-size: 13px; }
+.cached-page-item a:hover { color: var(--accent); }
+.cached-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+
+#status-check { font-size: 12px; color: var(--muted); margin-top: 16px; }
+#status-check.online { color: #4ade80; }
+</style>
+</head>
+<body>
+
+<div class="icon">📡</div>
+<h1>You're offline</h1>
+<p>Spectral Cloud can't reach the server right now. Check your network connection and try again.</p>
+
+<button class="btn" onclick="tryReconnect()">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+  Try again
+</button>
+
+<p id="status-check">Checking connection…</p>
+
+<div class="cached-pages">
+  <h2>Cached pages available offline</h2>
+  <div class="cached-page-item"><span class="cached-dot"></span><a href="/ui/">Dashboard</a></div>
+  <div class="cached-page-item"><span class="cached-dot"></span><a href="/ui/terms.html">Terms of Service</a></div>
+  <div class="cached-page-item"><span class="cached-dot"></span><a href="/ui/privacy.html">Privacy Policy</a></div>
+  <div class="cached-page-item"><span class="cached-dot"></span><a href="/ui/security.html">Security Policy</a></div>
+</div>
+
+<script>
+function tryReconnect() {
+  const btn = document.querySelector('.btn');
+  if (btn) { btn.textContent = 'Checking…'; btn.disabled = true; }
+  fetch('/health', { method: 'GET', cache: 'no-store' })
+    .then(function(r) {
+      if (r.ok) { window.location.replace('/ui/'); }
+      else { showFail(); }
+    })
+    .catch(function() { showFail(); });
+}
+function showFail() {
+  const btn = document.querySelector('.btn');
+  if (btn) {
+    btn.disabled = false;
+    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg> Try again';
+  }
+  const s = document.getElementById('status-check');
+  if (s) { s.textContent = 'Still offline – server unreachable'; s.className = ''; }
+}
+
+// Auto-reconnect when network comes back online
+window.addEventListener('online', function() {
+  const s = document.getElementById('status-check');
+  if (s) { s.textContent = 'Network restored – reconnecting…'; s.className = 'online'; }
+  setTimeout(tryReconnect, 500);
+});
+
+// Initial connectivity check
+(function() {
+  const s = document.getElementById('status-check');
+  if (navigator.onLine === false) {
+    if (s) s.textContent = 'No network connection detected';
+  } else {
+    fetch('/health', { method: 'GET', cache: 'no-store' })
+      .then(function(r) { if (r.ok) { window.location.replace('/ui/'); } })
+      .catch(function() { if (s) s.textContent = 'Network present but server unreachable'; });
+  }
+})();
+</script>
+</body>
+</html>

@@ -230,6 +230,21 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
 #pwa-install-bar button { background: rgba(255,255,255,.25); border: 1px solid rgba(255,255,255,.4); color: #fff; border-radius: 6px; padding: 6px 14px; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; }
 #pwa-install-bar .pwa-dismiss { background: none; border: none; color: rgba(255,255,255,.7); font-size: 18px; cursor: pointer; padding: 0 4px; }
 
+/* ── PULL-TO-REFRESH INDICATOR ───────────────────────────────────────────── */
+#ptr-indicator { display: flex; align-items: center; justify-content: center; height: 0; overflow: hidden; transition: height .2s ease; background: var(--bg); }
+#ptr-indicator svg { width: 24px; height: 24px; color: var(--accent); transition: transform .3s; }
+#ptr-indicator.pulling svg { animation: none; }
+#ptr-indicator.refreshing svg { animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── OFFLINE BANNER ──────────────────────────────────────────────────────── */
+#offline-banner { display: none; position: fixed; top: 0; left: 0; right: 0; background: #b45309; color: #fff; text-align: center; font-size: 12px; font-weight: 600; padding: 6px 12px; z-index: 500; letter-spacing: .3px; }
+#offline-banner.visible { display: block; }
+
+/* ── SHARE BUTTON ────────────────────────────────────────────────────────── */
+#share-btn { display: none; background: none; border: 1px solid var(--border); border-radius: var(--radius); padding: 5px 10px; color: var(--text); font-size: 14px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+#share-btn:active { background: var(--surface); }
+
 /* ── COMPREHENSIVE MOBILE STYLES ─────────────────────────────────────────── */
 @media (max-width: 768px) {
   /* Layout: full-width main, pad bottom for nav bar */
@@ -297,6 +312,12 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
 
   /* Nav footer legal links */
   .nav-footer { padding: 10px 12px; }
+
+  /* Offline banner: push content down */
+  #offline-banner.visible ~ main { padding-top: 30px; }
+
+  /* Share button: always show on touch devices */
+  #share-btn { display: inline-flex; align-items: center; }
 }
 
 @media (max-width: 420px) {
@@ -404,7 +425,14 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
 </nav>
 <div class="nav-overlay" id="nav-overlay" onclick="closeSidebar()"></div>
 
+<!-- Offline connectivity banner -->
+<div id="offline-banner" role="alert">📡 You're offline — showing cached data</div>
+
 <main>
+  <!-- Pull-to-refresh indicator -->
+  <div id="ptr-indicator" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+  </div>
   <div class="topbar">
     <button class="hamburger" onclick="toggleSidebar()" aria-label="Toggle menu">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
@@ -413,6 +441,9 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
     <div class="topbar-right">
       <span class="badge" id="tenant-badge">default</span>
       <span class="badge muted" id="access-badge">checking…</span>
+      <button id="share-btn" onclick="shareCurrentPage()" aria-label="Share this page" title="Share">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+      </button>
       <button class="btn btn-outline btn-sm" onclick="refresh()">↻ Refresh</button>
     </div>
   </div>
@@ -3128,6 +3159,168 @@ function pwaDismissInstall() {
   localStorage.setItem('spectral_pwa_dismissed', '1');
   const bar = document.getElementById('pwa-install-bar');
   if (bar) bar.classList.remove('visible');
+}
+
+// ── HAPTIC FEEDBACK ───────────────────────────────────────────────────────────
+function haptic(pattern) {
+  if (navigator.vibrate) { navigator.vibrate(pattern || 10); }
+}
+
+// Patch toast to vibrate on error
+(function() {
+  const _origToast = window.toast;
+  if (typeof _origToast === 'function') {
+    window.toast = function(msg, type) {
+      if (type === 'err' || (typeof msg === 'string' && msg.toLowerCase().includes('error'))) {
+        haptic([10, 30, 10]);
+      } else {
+        haptic(8);
+      }
+      return _origToast.apply(this, arguments);
+    };
+  }
+})();
+
+// Haptic on mobile nav taps
+(function() {
+  document.querySelectorAll('.mobile-nav-item').forEach(function(btn) {
+    btn.addEventListener('touchstart', function() { haptic(6); }, { passive: true });
+  });
+})();
+
+// ── SWIPE GESTURES (sidebar) ─────────────────────────────────────────────────
+(function() {
+  var _swipeStartX = 0;
+  var _swipeStartY = 0;
+  var _swipeTracking = false;
+  var SWIPE_THRESHOLD = 60;
+  var SWIPE_MAX_VERTICAL = 80;
+  var EDGE_ZONE = 32; // px from left edge to start open-swipe
+
+  document.addEventListener('touchstart', function(e) {
+    if (e.touches.length !== 1) return;
+    _swipeStartX = e.touches[0].clientX;
+    _swipeStartY = e.touches[0].clientY;
+    _swipeTracking = true;
+  }, { passive: true });
+
+  document.addEventListener('touchend', function(e) {
+    if (!_swipeTracking) return;
+    _swipeTracking = false;
+    if (e.changedTouches.length !== 1) return;
+    var dx = e.changedTouches[0].clientX - _swipeStartX;
+    var dy = Math.abs(e.changedTouches[0].clientY - _swipeStartY);
+    if (dy > SWIPE_MAX_VERTICAL) return; // mostly vertical — ignore
+    var nav = document.getElementById('sidebar');
+    if (!nav) return;
+    var isOpen = nav.classList.contains('open');
+    // Swipe right from left edge: open sidebar
+    if (!isOpen && dx > SWIPE_THRESHOLD && _swipeStartX <= EDGE_ZONE) {
+      toggleSidebar();
+      haptic(8);
+    }
+    // Swipe left while sidebar is open: close it
+    if (isOpen && dx < -SWIPE_THRESHOLD) {
+      closeSidebar();
+      haptic(6);
+    }
+  }, { passive: true });
+})();
+
+// ── PULL-TO-REFRESH ───────────────────────────────────────────────────────────
+(function() {
+  var _ptrStartY = 0;
+  var _ptrActive = false;
+  var _ptrRefreshing = false;
+  var PTR_THRESHOLD = 72; // px pull to trigger
+  var PTR_MAX = 90;
+  var indicator = document.getElementById('ptr-indicator');
+
+  function isPtrTarget() {
+    // Only trigger when scrolled to top and not inside a scroll container
+    var content = document.getElementById('content');
+    if (!content) return false;
+    return content.scrollTop <= 0 && window.scrollY <= 0;
+  }
+
+  document.addEventListener('touchstart', function(e) {
+    if (e.touches.length !== 1) return;
+    _ptrStartY = e.touches[0].clientY;
+    _ptrActive = isPtrTarget();
+  }, { passive: true });
+
+  document.addEventListener('touchmove', function(e) {
+    if (!_ptrActive || _ptrRefreshing) return;
+    var dy = e.touches[0].clientY - _ptrStartY;
+    if (dy <= 0) { if (indicator) indicator.style.height = '0'; return; }
+    var clamp = Math.min(dy * 0.5, PTR_MAX);
+    if (indicator) {
+      indicator.style.height = clamp + 'px';
+      indicator.className = clamp >= PTR_THRESHOLD * 0.5 ? 'pulling' : '';
+    }
+  }, { passive: true });
+
+  document.addEventListener('touchend', function(e) {
+    if (!_ptrActive || _ptrRefreshing) return;
+    var dy = e.changedTouches[0].clientY - _ptrStartY;
+    if (dy < PTR_THRESHOLD) {
+      if (indicator) indicator.style.height = '0';
+      _ptrActive = false;
+      return;
+    }
+    // Trigger refresh
+    _ptrRefreshing = true;
+    haptic([10, 20, 10]);
+    if (indicator) { indicator.style.height = '40px'; indicator.className = 'refreshing'; }
+    setTimeout(function() {
+      refresh();
+      setTimeout(function() {
+        if (indicator) { indicator.style.height = '0'; indicator.className = ''; }
+        _ptrRefreshing = false;
+        _ptrActive = false;
+      }, 600);
+    }, 200);
+  }, { passive: true });
+})();
+
+// ── OFFLINE / ONLINE BANNER ───────────────────────────────────────────────────
+(function() {
+  var banner = document.getElementById('offline-banner');
+  function update() {
+    if (!banner) return;
+    if (!navigator.onLine) {
+      banner.classList.add('visible');
+    } else {
+      banner.classList.remove('visible');
+    }
+  }
+  window.addEventListener('offline', update);
+  window.addEventListener('online', function() {
+    update();
+    toast('Back online');
+    refresh();
+  });
+  update();
+})();
+
+// ── WEB SHARE API ─────────────────────────────────────────────────────────────
+(function() {
+  var btn = document.getElementById('share-btn');
+  if (btn && navigator.share) {
+    btn.style.display = 'inline-flex';
+  }
+})();
+
+function shareCurrentPage() {
+  if (!navigator.share) { toast('Sharing not supported by this browser', 'ok'); return; }
+  var pageName = document.getElementById('page-title');
+  var title = 'Spectral Cloud' + (pageName ? ' — ' + pageName.textContent : '');
+  haptic(8);
+  navigator.share({
+    title: title,
+    text: 'Spectral Cloud Edge AI Infrastructure control plane',
+    url: window.location.href
+  }).catch(function() {}); // user cancelled — no error
 }
 </script>
 </body>
