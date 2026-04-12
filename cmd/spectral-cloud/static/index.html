@@ -641,8 +641,9 @@ function closeSidebar() {
 // ── swipe-to-open/close sidebar (mobile) ─────────────────────────────────────
 (function() {
   let touchStartX = 0, touchStartY = 0;
-  const EDGE_ZONE = 28; // px from left edge to start swipe-open
-  const MIN_SWIPE = 48; // minimum horizontal px for swipe
+  const EDGE_ZONE = 28;   // px from left edge to start swipe-open
+  const MIN_SWIPE = 48;  // minimum horizontal px for swipe
+  const MAX_V_TO_H_RATIO = 1.2; // swipe is horizontal only if |dy|/|dx| < this ratio
 
   document.addEventListener('touchstart', function(e) {
     touchStartX = e.touches[0].clientX;
@@ -652,7 +653,7 @@ function closeSidebar() {
   document.addEventListener('touchend', function(e) {
     const dx = e.changedTouches[0].clientX - touchStartX;
     const dy = e.changedTouches[0].clientY - touchStartY;
-    if (Math.abs(dx) < MIN_SWIPE || Math.abs(dy) > Math.abs(dx) * 1.2) return; // not a horizontal swipe
+    if (Math.abs(dx) < MIN_SWIPE || Math.abs(dy) > Math.abs(dx) * MAX_V_TO_H_RATIO) return; // not a horizontal swipe
     const nav = document.getElementById('sidebar');
     if (!nav) return;
     if (dx > 0 && touchStartX < EDGE_ZONE && !nav.classList.contains('open')) {
@@ -4070,7 +4071,11 @@ async function saveAITemplate() {
     await post('/ai/templates', {name, system: system||undefined, prompt, model, max_tokens: maxTokens});
     toast('Template saved');
     loadAITemplates();
-    ['ai-tmpl-name','ai-tmpl-system','ai-tmpl-prompt'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+    const toClear = ['ai-tmpl-name', 'ai-tmpl-system', 'ai-tmpl-prompt'];
+    toClear.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = '';
+    });
   } catch(e) { toast('Error: '+e.message, false); }
 }
 
@@ -4091,8 +4096,9 @@ async function openAITemplateRun(name) {
   if (!secEl || !nameEl || !formEl) return;
   try {
     const tmpl = await api('/ai/templates/'+encodeURIComponent(name));
-    // Extract {{variable}} placeholders.
-    const matches = [...new Set([...(tmpl.prompt||'').matchAll(/\{\{(\w+)\}\}/g)].map(m=>m[1]))];
+    // Extract {{variable}} placeholders from the template prompt.
+    const rawMatches = [...(tmpl.prompt||'').matchAll(/\{\{(\w+)\}\}/g)];
+    const matches = [...new Set(rawMatches.map(m => m[1]))];
     nameEl.textContent = name;
     if (matches.length) {
       formEl.innerHTML = matches.map(v=>`<div class="form-group" style="margin-bottom:8px"><label>${esc(v)}</label><input id="ai-tmpl-var-${esc(v)}" data-var="${esc(v)}" placeholder="Value for {{${esc(v)}}}"></div>`).join('');
@@ -4133,6 +4139,8 @@ async function loadChatSessions() {
     sel.innerHTML = '<option value="">— new session —</option>';
     sessions.forEach(s => {
       // API returns {session_id, turns, updated_at} objects.
+      // The `|| s` branch is kept for forward-compatibility in case the endpoint
+      // ever returns a plain string list (e.g. older server versions).
       const id = s.session_id || s;
       const label = s.turns !== undefined ? `${id} (${s.turns} turns)` : id;
       const opt = document.createElement('option');
@@ -4141,7 +4149,7 @@ async function loadChatSessions() {
       sel.appendChild(opt);
     });
     if (aiChatSessionId && sessions.some(s => (s.session_id || s) === aiChatSessionId)) sel.value = aiChatSessionId;
-  } catch { /* sessions endpoint may not be available */ }
+  } catch(e) { console.warn('loadChatSessions:', e.message); }
 }
 
 async function selectChatSession(id) {
@@ -4344,7 +4352,7 @@ async function revokeSubKey(id) {
 
   document.addEventListener('touchstart', function(e) {
     const content = document.getElementById('content');
-    if (content && content.scrollTop === 0) {
+    if (content && content.scrollTop <= PTR_SCROLL_TOLERANCE) {
       startY = e.touches[0].clientY;
       pulling = true;
     }
