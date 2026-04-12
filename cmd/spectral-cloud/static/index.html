@@ -441,6 +441,9 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
     <div class="topbar-right">
       <span class="badge" id="tenant-badge">default</span>
       <span class="badge muted" id="access-badge">checking…</span>
+      <button id="notif-btn" onclick="toggleNotifications()" aria-label="Toggle desktop notifications" title="Desktop notifications off — click to enable" style="display:none;background:none;border:1px solid var(--border);border-radius:var(--radius);padding:5px 10px;color:var(--muted);font-size:14px;cursor:pointer;-webkit-tap-highlight-color:transparent">
+        🔕
+      </button>
       <button id="share-btn" onclick="shareCurrentPage()" aria-label="Share this page" title="Share">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
       </button>
@@ -523,6 +526,7 @@ textarea { min-height: 80px; font-family: monospace; resize: vertical; width: 10
           <tr><td class="mono">r</td><td>Refresh current page</td></tr>
           <tr><td class="mono">?</td><td>Show this help</td></tr>
           <tr><td class="mono">Esc</td><td>Close any modal</td></tr>
+          <tr><td class="mono">← / →</td><td>Browser back / forward (hash routing)</td></tr>
         </tbody>
       </table>
     </div>
@@ -590,6 +594,7 @@ const PAGE_NAMES = {
   audit:'Audit Log', admin:'Admin', notifs:'Notifications', mesh:'Mesh Peers',
   stats:'Analytics', topology:'Topology'
 };
+let _skipHashUpdate = false;
 function go(page) {
   currentRenderId++;
   const rid = currentRenderId;
@@ -601,10 +606,26 @@ function go(page) {
   const name = PAGE_NAMES[page] || page;
   document.getElementById('page-title').textContent = name;
   document.title = 'Spectral Cloud — ' + name;
+  // Update URL hash for deep-linking and back-button support
+  if (!_skipHashUpdate) {
+    const newHash = '#' + page;
+    if (window.location.hash !== newHash) {
+      window.history.pushState(null, '', newHash);
+    }
+  }
   stopSSE();
   clearTimeout(autoRefreshTimer);
   render(page, rid);
 }
+// Handle back/forward navigation and direct hash links
+window.addEventListener('popstate', function() {
+  const hash = window.location.hash.replace('#', '');
+  if (hash && PAGE_NAMES[hash]) {
+    _skipHashUpdate = true;
+    go(hash);
+    _skipHashUpdate = false;
+  }
+});
 
 let apiKey = localStorage.getItem('spectral_api_key') || '';
 
@@ -1165,12 +1186,14 @@ async function searchTxns() {
 }
 
 // ── ROUTES ───────────────────────────────────────────────────────────────────
+let _lastRoutesData = [];
 async function renderRoutes(rid) {
   document.getElementById('content').innerHTML = `<div class="section"><div class="table-wrap"><table><thead><tr><th>Destination</th><th>Latency</th><th>Throughput</th><th>Tags</th><th>Expires</th><th></th></tr></thead><tbody>${skeletonRows(6)}</tbody></table></div></div>`;
   const [routesRes, statsRes] = await Promise.allSettled([api('/routes'), api('/routes/stats').catch(()=>null)]);
   if (rid && rid !== currentRenderId) return;
   const routes = (routesRes.status === 'fulfilled' ? routesRes.value : null) || [];
   const routeStats = (statsRes.status === 'fulfilled' ? statsRes.value : null) || null;
+  _lastRoutesData = routes;
 
   const statsCards = routeStats ? `<div class="cards" style="margin-bottom:16px">
     <div class="card accent"><div class="card-label">Total Routes</div><div class="card-value">${routeStats.total}</div></div>
@@ -1259,6 +1282,7 @@ async function renderRoutes(rid) {
     <div class="flex" style="margin-bottom:12px">
       <div class="section-title" style="margin:0">${routes.length} Route(s)</div>
       <div class="ml-auto flex">
+        <button class="btn btn-outline btn-sm" onclick="exportRoutesCSV()">⬇ CSV</button>
         <button class="btn btn-outline btn-sm" onclick="exportRoutes()">⬇ Export</button>
         <label class="btn btn-outline btn-sm" style="cursor:pointer">⬆ Import<input type="file" accept=".json" style="display:none" onchange="importRoutesFile(this)"></label>
         <button class="btn btn-outline btn-sm" onclick="renderRoutes(currentRenderId)">↻</button>
@@ -1495,12 +1519,14 @@ async function batchResolveRoutes() {
 
 // ── AGENTS ────────────────────────────────────────────────────────────────────
 let agentCapFilter = '';
+let _lastAgentsData = [];
 async function renderAgents(rid) {
   document.getElementById('content').innerHTML = `<div class="section"><div class="table-wrap"><table><thead><tr><th>ID</th><th>Status</th><th>Address</th><th>Capabilities</th><th>Expires</th><th>Actions</th></tr></thead><tbody>${skeletonRows(6)}</tbody></table></div></div>`;
   const [agentsRes, statsRes] = await Promise.allSettled([api('/agents'), api('/agents/stats').catch(()=>null)]);
   if (rid && rid !== currentRenderId) return;
   const agentsAll = (agentsRes.status === 'fulfilled' ? agentsRes.value : null) || [];
   const agentStats = (statsRes.status === 'fulfilled' ? statsRes.value : null) || null;
+  _lastAgentsData = agentsAll;
   const agents = agentCapFilter ? agentsAll.filter(a => (a.capabilities||[]).includes(agentCapFilter)) : agentsAll;
   const allCaps = [...new Set(agentsAll.flatMap(a => a.capabilities||[]))].sort();
 
@@ -1519,6 +1545,7 @@ async function renderAgents(rid) {
           <option value="">All capabilities</option>
           ${allCaps.map(c=>`<option value="${esc(c)}" ${agentCapFilter===c?'selected':''}>${esc(c)}</option>`).join('')}
         </select>
+        <button class="btn btn-outline btn-sm" onclick="exportAgentsCSV()">⬇ CSV</button>
         <button class="btn btn-outline btn-sm" onclick="checkAgentsHealth()">♥ Health Check</button>
         <button class="btn btn-outline btn-sm" onclick="renderAgents(currentRenderId)">↻</button>
       </div>
@@ -2610,6 +2637,7 @@ async function resetBreaker(agentId) {
 }
 
 // ── AUDIT LOG PAGE ────────────────────────────────────────────────────────────
+let _lastAuditData = [];
 async function renderAudit(rid) {
   if (rid && rid !== currentRenderId) return;
   document.getElementById('content').innerHTML = `
@@ -2621,6 +2649,7 @@ async function renderAudit(rid) {
         <div class="form-group"><label style="font-size:11px">Action</label><input id="audit-action" placeholder="action…" style="width:110px;padding:4px 8px;font-size:12px"></div>
         <div class="form-group"><label style="font-size:11px">Limit</label><input id="audit-limit" type="number" value="50" style="width:70px;padding:4px 8px;font-size:12px"></div>
         <button class="btn btn-outline btn-sm" onclick="loadAuditPage()" style="margin-top:18px">↻ Refresh</button>
+        <button class="btn btn-outline btn-sm" onclick="exportAuditCSV()" style="margin-top:18px">⬇ CSV</button>
       </div>
     </div>
     <div class="table-wrap">
@@ -2645,6 +2674,7 @@ async function loadAuditPage() {
     const tbody = document.getElementById('audit-page-body');
     if (!tbody) return;
     const entries = res.entries || [];
+    _lastAuditData = entries;
     if (!entries.length) { tbody.innerHTML = '<tr><td colspan="6" class="empty">No audit entries</td></tr>'; return; }
     tbody.innerHTML = entries.map(e=>`<tr>
       <td class="mono">${fmtTime(e.timestamp)}</td>
@@ -3100,7 +3130,11 @@ function topoSelectNode(id, data) {
 
 // ── BOOT ────────────────────────────────────────────────────────────────────
 if (!apiKey) { setTimeout(showApiKeyModal, 600); }
-go('overview');
+(function() {
+  const hash = window.location.hash.replace('#', '');
+  const startPage = (hash && PAGE_NAMES[hash]) ? hash : 'overview';
+  go(startPage);
+})();
 
 // ── MOBILE BOTTOM NAV SYNC ───────────────────────────────────────────────────
 (function() {
@@ -3322,6 +3356,198 @@ function shareCurrentPage() {
     url: window.location.href
   }).catch(function() {}); // user cancelled — no error
 }
+
+// ── CSV EXPORT HELPERS ────────────────────────────────────────────────────────
+function _csvEscapeCell(val) {
+  if (val === null || val === undefined) return '';
+  var s = String(val);
+  // Wrap in quotes if contains comma, quote, or newline
+  if (s.indexOf(',') !== -1 || s.indexOf('"') !== -1 || s.indexOf('\n') !== -1) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+function downloadCSV(rows, columns, filename) {
+  if (!rows || !rows.length) { toast('No data to export', 'ok'); return; }
+  var header = columns.map(_csvEscapeCell).join(',');
+  var body = rows.map(function(row) {
+    return columns.map(function(col) {
+      return _csvEscapeCell(row[col]);
+    }).join(',');
+  }).join('\n');
+  var csv = header + '\n' + body;
+  var blob = new Blob([csv], { type: 'text/csv' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(function() { URL.revokeObjectURL(a.href); }, 10000);
+  toast('CSV downloaded: ' + filename);
+}
+
+function exportAgentsCSV() {
+  if (!_lastAgentsData.length) { toast('No agent data loaded', 'ok'); return; }
+  var rows = _lastAgentsData.map(function(a) {
+    return {
+      id: a.id,
+      status: a.status,
+      address: a.addr || '',
+      capabilities: (a.capabilities || []).join(';'),
+      expires_at: a.expires_at || ''
+    };
+  });
+  downloadCSV(rows, ['id','status','address','capabilities','expires_at'], 'agents-export.csv');
+}
+
+function exportRoutesCSV() {
+  if (!_lastRoutesData.length) { toast('No route data loaded', 'ok'); return; }
+  var rows = _lastRoutesData.map(function(r) {
+    var tags = r.tags ? Object.entries(r.tags).map(function(e) { return e[0]+':'+e[1]; }).join(';') : '';
+    return {
+      destination: r.destination,
+      latency_ms: r.metric ? r.metric.latency : '',
+      throughput: r.metric ? r.metric.throughput : '',
+      satellite: r.satellite ? 'true' : 'false',
+      tags: tags,
+      expires_at: r.expires_at || ''
+    };
+  });
+  downloadCSV(rows, ['destination','latency_ms','throughput','satellite','tags','expires_at'], 'routes-export.csv');
+}
+
+function exportAuditCSV() {
+  if (!_lastAuditData.length) { toast('No audit data loaded', 'ok'); return; }
+  var rows = _lastAuditData.map(function(e) {
+    return {
+      timestamp: e.timestamp,
+      actor: e.actor || '',
+      action: e.action || '',
+      resource: e.resource || '',
+      result: e.result || '',
+      ip: e.ip || ''
+    };
+  });
+  downloadCSV(rows, ['timestamp','actor','action','resource','result','ip'], 'audit-export.csv');
+}
+
+// ── BROWSER NOTIFICATIONS ─────────────────────────────────────────────────────
+var _notifEnabled = localStorage.getItem('spectral_notif') === '1';
+
+function _updateNotifBtn() {
+  var btn = document.getElementById('notif-btn');
+  if (!btn || !('Notification' in window)) return;
+  btn.style.display = 'inline-flex';
+  btn.style.alignItems = 'center';
+  if (_notifEnabled && Notification.permission === 'granted') {
+    btn.textContent = '🔔';
+    btn.title = 'Desktop notifications on — click to disable';
+    btn.style.color = 'var(--accent)';
+  } else {
+    btn.textContent = '🔕';
+    btn.title = 'Desktop notifications off — click to enable';
+    btn.style.color = 'var(--muted)';
+  }
+}
+
+function toggleNotifications() {
+  if (!('Notification' in window)) { toast('Notifications not supported', 'ok'); return; }
+  if (_notifEnabled) {
+    _notifEnabled = false;
+    localStorage.setItem('spectral_notif', '0');
+    _updateNotifBtn();
+    toast('Desktop notifications disabled');
+    return;
+  }
+  if (Notification.permission === 'granted') {
+    _notifEnabled = true;
+    localStorage.setItem('spectral_notif', '1');
+    _updateNotifBtn();
+    new Notification('Spectral Cloud', {
+      body: 'Desktop notifications enabled'
+    });
+    toast('Desktop notifications enabled');
+  } else if (Notification.permission !== 'denied') {
+    Notification.requestPermission().then(function(perm) {
+      if (perm === 'granted') {
+        _notifEnabled = true;
+        localStorage.setItem('spectral_notif', '1');
+        _updateNotifBtn();
+        new Notification('Spectral Cloud', {
+          body: 'Desktop notifications enabled'
+        });
+        toast('Desktop notifications enabled');
+      } else {
+        toast('Notification permission denied', 'ok');
+      }
+    });
+  } else {
+    toast('Notification permission blocked — enable in browser settings', 'ok');
+  }
+}
+
+function sendNotif(title, body, tag) {
+  if (!_notifEnabled || !('Notification' in window) || Notification.permission !== 'granted') return;
+  var opts = { body: body, tag: tag || 'spectral-event' };
+  var n = new Notification(title, opts);
+  // Auto-close after 6s
+  setTimeout(function() { n.close(); }, 6000);
+  // Click to focus the window and navigate to agents
+  n.onclick = function() {
+    window.focus();
+    if (tag && tag.startsWith('agent-')) { go('agents'); }
+    n.close();
+  };
+}
+
+// Hook SSE onmessage for notification-worthy events
+(function() {
+  var _origStartSSE = window.startSSE;
+  if (typeof _origStartSSE !== 'function') return;
+  window.startSSE = function() {
+    _origStartSSE.apply(this, arguments);
+    // Patch after brief delay so sseSource is set
+    setTimeout(function() {
+      if (!sseSource) return;
+      var _origOnmessage = sseSource.onmessage;
+      sseSource.onmessage = function(e) {
+        if (_origOnmessage) _origOnmessage.call(sseSource, e);
+        try {
+          var ev = JSON.parse(e.data);
+          if (ev.type === 'agent_deregistered') {
+            var agId = (ev.data && ev.data.id) ? ev.data.id : 'agent';
+            sendNotif('⚠ Agent Deregistered', agId + ' has gone offline', 'agent-deregistered-' + agId);
+          } else if (ev.type === 'mesh_anomaly') {
+            var detail = (ev.data && ev.data.message) ? ev.data.message : 'Anomaly detected';
+            sendNotif('⚡ Mesh Anomaly', detail, 'mesh-anomaly');
+          }
+        } catch (_e2) {}
+      };
+    }, 100);
+  };
+})();
+
+// Background agent health watcher — polls every 30s when not on agents page
+(function() {
+  var _prevAgentStatuses = {};
+  function checkAgentHealth() {
+    if (!_notifEnabled || currentPage === 'agents') return;
+    api('/agents').then(function(agents) {
+      (agents || []).forEach(function(a) {
+        var prev = _prevAgentStatuses[a.id];
+        if (prev && prev !== a.status && (a.status === 'degraded' || a.status === 'unknown')) {
+          sendNotif('⚠ Agent Status Change', a.id + ': ' + prev + ' → ' + a.status, 'agent-health-' + a.id);
+        }
+        _prevAgentStatuses[a.id] = a.status;
+      });
+    }).catch(function() {});
+  }
+  setInterval(checkAgentHealth, 30000);
+})();
+
+// Init notification button visibility on load
+window.addEventListener('load', _updateNotifBtn);
+_updateNotifBtn();
 </script>
 </body>
 </html>
