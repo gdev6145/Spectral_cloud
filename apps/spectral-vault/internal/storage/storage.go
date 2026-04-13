@@ -29,12 +29,20 @@ func (s *Store) StoragePath(tenant, storageKey string) string {
 // safePath resolves the path for a given tenant + storageKey and verifies it
 // remains within DataDir, preventing directory traversal attacks.
 func (s *Store) safePath(tenant, storageKey string) (string, error) {
+	// Explicitly reject traversal sequences and absolute paths before any path
+	// operations so there is no ambiguity about the intent of the validation.
+	if strings.Contains(tenant, "..") || strings.Contains(storageKey, "..") {
+		return "", fmt.Errorf("storage: path traversal detected")
+	}
+	if filepath.IsAbs(tenant) || filepath.IsAbs(storageKey) {
+		return "", fmt.Errorf("storage: absolute path not allowed")
+	}
 	absBase, err := filepath.Abs(s.DataDir)
 	if err != nil {
 		return "", fmt.Errorf("storage: resolve base: %w", err)
 	}
-	p := filepath.Join(absBase, filepath.FromSlash(tenant), filepath.FromSlash(storageKey))
-	// Ensure the resolved path is strictly within absBase.
+	p := filepath.Clean(filepath.Join(absBase, filepath.FromSlash(tenant), filepath.FromSlash(storageKey)))
+	// Belt-and-suspenders: confirm the resolved path is still within absBase.
 	if !strings.HasPrefix(p+string(os.PathSeparator), absBase+string(os.PathSeparator)) {
 		return "", fmt.Errorf("storage: path traversal detected")
 	}

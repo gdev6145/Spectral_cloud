@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -119,16 +120,18 @@ func (d *DB) GetBySHA256(tenant, sha256 string) (*FileRecord, error) {
 
 // Search does a fuzzy (LIKE %q%) match across original_name, canonical_name, tags, and summary.
 func (d *DB) Search(tenant, q string) ([]FileRecord, error) {
-	like := "%" + q + "%"
+	// Escape LIKE special characters so user input is treated as a literal string.
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q)
+	like := "%" + escaped + "%"
 	rows, err := d.conn.Query(`
 		SELECT id, tenant, original_name, canonical_name, folder_path, storage_key,
 		       mime_type, size, sha256, tags, summary, created_at, updated_at
 		FROM files
 		WHERE tenant=? AND (
-		  original_name  LIKE ? OR
-		  canonical_name LIKE ? OR
-		  tags           LIKE ? OR
-		  summary        LIKE ?
+		  original_name  LIKE ? ESCAPE '\' OR
+		  canonical_name LIKE ? ESCAPE '\' OR
+		  tags           LIKE ? ESCAPE '\' OR
+		  summary        LIKE ? ESCAPE '\'
 		)
 		ORDER BY created_at DESC`, tenant, like, like, like, like)
 	if err != nil {
