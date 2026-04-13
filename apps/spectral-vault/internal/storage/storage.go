@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Store is a local filesystem object store that organises files under DataDir.
@@ -25,10 +26,28 @@ func (s *Store) StoragePath(tenant, storageKey string) string {
 	return filepath.Join(s.DataDir, tenant, storageKey)
 }
 
+// safePath resolves the path for a given tenant + storageKey and verifies it
+// remains within DataDir, preventing directory traversal attacks.
+func (s *Store) safePath(tenant, storageKey string) (string, error) {
+	absBase, err := filepath.Abs(s.DataDir)
+	if err != nil {
+		return "", fmt.Errorf("storage: resolve base: %w", err)
+	}
+	p := filepath.Join(absBase, filepath.FromSlash(tenant), filepath.FromSlash(storageKey))
+	// Ensure the resolved path is strictly within absBase.
+	if !strings.HasPrefix(p+string(os.PathSeparator), absBase+string(os.PathSeparator)) {
+		return "", fmt.Errorf("storage: path traversal detected")
+	}
+	return p, nil
+}
+
 // Put writes the contents of r to the store and returns the number of bytes written.
 func (s *Store) Put(tenant, storageKey string, r io.Reader) (int64, error) {
-	dest := s.StoragePath(tenant, storageKey)
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+	dest, err := s.safePath(tenant, storageKey)
+	if err != nil {
+		return 0, err
+	}
+	if err = os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return 0, fmt.Errorf("storage: create parent dirs: %w", err)
 	}
 	f, err := os.Create(dest)
@@ -45,11 +64,14 @@ func (s *Store) Put(tenant, storageKey string, r io.Reader) (int64, error) {
 
 // Get opens the stored file for reading. The caller is responsible for closing the returned ReadCloser.
 func (s *Store) Get(tenant, storageKey string) (io.ReadCloser, error) {
-	path := s.StoragePath(tenant, storageKey)
+	path, err := s.safePath(tenant, storageKey)
+	if err != nil {
+		return nil, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("storage: file not found: %s", path)
+			return nil, fmt.Errorf("storage: file not found")
 		}
 		return nil, fmt.Errorf("storage: open file: %w", err)
 	}
@@ -58,10 +80,13 @@ func (s *Store) Get(tenant, storageKey string) (io.ReadCloser, error) {
 
 // Delete removes the stored file.
 func (s *Store) Delete(tenant, storageKey string) error {
-	path := s.StoragePath(tenant, storageKey)
-	if err := os.Remove(path); err != nil {
+	path, err := s.safePath(tenant, storageKey)
+	if err != nil {
+		return err
+	}
+	if err = os.Remove(path); err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("storage: file not found: %s", path)
+			return fmt.Errorf("storage: file not found")
 		}
 		return fmt.Errorf("storage: delete file: %w", err)
 	}
