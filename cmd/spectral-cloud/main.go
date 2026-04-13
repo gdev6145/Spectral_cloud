@@ -26,18 +26,19 @@ import (
 
 	"github.com/gdev6145/Spectral_cloud/pkg/agent"
 	"github.com/gdev6145/Spectral_cloud/pkg/agentgroup"
-	"github.com/gdev6145/Spectral_cloud/pkg/pipeline"
+	"github.com/gdev6145/Spectral_cloud/pkg/ai"
 	"github.com/gdev6145/Spectral_cloud/pkg/auth"
+	"github.com/gdev6145/Spectral_cloud/pkg/billing"
 	"github.com/gdev6145/Spectral_cloud/pkg/blockchain"
 	"github.com/gdev6145/Spectral_cloud/pkg/circuit"
 	"github.com/gdev6145/Spectral_cloud/pkg/events"
 	"github.com/gdev6145/Spectral_cloud/pkg/healthcheck"
 	"github.com/gdev6145/Spectral_cloud/pkg/jobs"
 	"github.com/gdev6145/Spectral_cloud/pkg/kv"
-	"github.com/gdev6145/Spectral_cloud/pkg/ai"
-	"github.com/gdev6145/Spectral_cloud/pkg/billing"
 	"github.com/gdev6145/Spectral_cloud/pkg/mesh"
+	"github.com/gdev6145/Spectral_cloud/pkg/mq"
 	"github.com/gdev6145/Spectral_cloud/pkg/notify"
+	"github.com/gdev6145/Spectral_cloud/pkg/pipeline"
 	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
 	"github.com/gdev6145/Spectral_cloud/pkg/routing"
 	"github.com/gdev6145/Spectral_cloud/pkg/scheduler"
@@ -596,6 +597,8 @@ func main() {
 
 	pipelineMgr := pipeline.NewWithStore(db)
 
+	mqQueue := mq.New()
+
 	meter := billing.New(db)
 	go func() {
 		tick := time.NewTicker(30 * time.Second)
@@ -710,7 +713,7 @@ func main() {
 		}
 	}()
 
-	handler := newHandler(tenantMgr, db, maxBodyBytes, requestsTotal, meshPackets, meshRejectRate, meshAnomaly, requestDuration, auth, rateRPS, rateBurst, tenantRateRPS, tenantRateBurst, limits, status, meshNode, anomalyState, agentReg, corsCfg, enableAccessLog, eventBroker, hookDispatcher, blockSigningKey, jobQueue, hcChecker, kvStore, notifyMgr, circuitMgr, groupMgr, sched, pipelineMgr, meter)
+	handler := newHandler(tenantMgr, db, maxBodyBytes, requestsTotal, meshPackets, meshRejectRate, meshAnomaly, requestDuration, auth, rateRPS, rateBurst, tenantRateRPS, tenantRateBurst, limits, status, meshNode, anomalyState, agentReg, corsCfg, enableAccessLog, eventBroker, hookDispatcher, blockSigningKey, jobQueue, hcChecker, kvStore, notifyMgr, circuitMgr, groupMgr, sched, pipelineMgr, meter, mqQueue)
 
 	srv := &http.Server{
 		Addr:              ":" + port,
@@ -771,7 +774,7 @@ func main() {
 	}
 }
 
-func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, requestsTotal *prometheus.CounterVec, meshPackets *prometheus.CounterVec, meshRejectRate prometheus.Gauge, meshAnomaly *prometheus.GaugeVec, requestDuration *prometheus.HistogramVec, auth authConfig, rateRPS float64, rateBurst int, tenantRateRPS float64, tenantRateBurst int, limits tenantLimits, status *statusTracker, meshNode *mesh.Node, anomalyState *meshAnomalyState, agentReg *agent.Registry, corsCfg corsConfig, enableAccessLog bool, eventBroker *events.Broker, hookDispatcher *webhook.Dispatcher, blockSigningKey string, jobQueue *jobs.Queue, hcChecker *healthcheck.Checker, kvStore *kv.Store, notifyMgr *notify.Manager, circuitMgr *circuit.Manager, groupMgr *agentgroup.Manager, sched *scheduler.Manager, pipelineMgr *pipeline.Manager, meter *billing.Meter) http.Handler {
+func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, requestsTotal *prometheus.CounterVec, meshPackets *prometheus.CounterVec, meshRejectRate prometheus.Gauge, meshAnomaly *prometheus.GaugeVec, requestDuration *prometheus.HistogramVec, auth authConfig, rateRPS float64, rateBurst int, tenantRateRPS float64, tenantRateBurst int, limits tenantLimits, status *statusTracker, meshNode *mesh.Node, anomalyState *meshAnomalyState, agentReg *agent.Registry, corsCfg corsConfig, enableAccessLog bool, eventBroker *events.Broker, hookDispatcher *webhook.Dispatcher, blockSigningKey string, jobQueue *jobs.Queue, hcChecker *healthcheck.Checker, kvStore *kv.Store, notifyMgr *notify.Manager, circuitMgr *circuit.Manager, groupMgr *agentgroup.Manager, sched *scheduler.Manager, pipelineMgr *pipeline.Manager, meter *billing.Meter, mqQueue *mq.Queue) http.Handler {
 	mux := http.NewServeMux()
 	getState := func(r *http.Request) (*tenantState, string, error) {
 		tenant, ok := tenantFromContext(r.Context())
@@ -3673,7 +3676,6 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 
 	// ── Scheduler endpoints ───────────────────────────────────────────────────
 
-
 	// ── Pipeline endpoints ────────────────────────────────────────────────────
 
 	// GET  /agent-pipelines   — list pipelines
@@ -4178,10 +4180,10 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			return
 		}
 		var req struct {
-			TenantID string        `json:"tenant_id"`
-			Name     string        `json:"name"`
-			Email    string        `json:"email"`
-			Plan     billing.Plan  `json:"plan"`
+			TenantID string       `json:"tenant_id"`
+			Name     string       `json:"name"`
+			Email    string       `json:"email"`
+			Plan     billing.Plan `json:"plan"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid request body")
@@ -4382,11 +4384,11 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 
 		type tenantReport struct {
-			TenantID string                   `json:"tenant_id"`
-			Plan     billing.Plan             `json:"plan"`
-			Quota    billing.Quota            `json:"quota"`
-			Usage    map[string]int64         `json:"usage_today"`
-			Agents   int                      `json:"agents_live"`
+			TenantID string           `json:"tenant_id"`
+			Plan     billing.Plan     `json:"plan"`
+			Quota    billing.Quota    `json:"quota"`
+			Usage    map[string]int64 `json:"usage_today"`
+			Agents   int              `json:"agents_live"`
 		}
 		reports := make([]tenantReport, 0, len(tenants))
 		for _, t := range tenants {
@@ -5270,13 +5272,13 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"score":            verdict.Score,
-				"reasoning":        verdict.Reasoning,
-				"model":            result.Model,
-				"input_tokens":     result.InputTokens,
-				"output_tokens":    result.OutputTokens,
-				"cache_read":       result.CacheReadTokens,
-				"cache_write":      result.CacheWriteTokens,
+				"score":         verdict.Score,
+				"reasoning":     verdict.Reasoning,
+				"model":         result.Model,
+				"input_tokens":  result.InputTokens,
+				"output_tokens": result.OutputTokens,
+				"cache_read":    result.CacheReadTokens,
+				"cache_write":   result.CacheWriteTokens,
 			})
 		})
 
@@ -5747,6 +5749,85 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 	// Serve the embedded web dashboard at /ui/.
 	uiFS, _ := fs.Sub(staticFiles, "static")
 	mux.Handle("/ui/", http.StripPrefix("/ui", http.FileServer(http.FS(uiFS))))
+
+	// GET  /mq              — list topics with pending message counts for tenant
+	// POST /mq/{topic}      — publish a message to topic
+	// GET  /mq/{topic}?count=N — consume (dequeue) up to N messages (default 1)
+	// DELETE /mq/{topic}   — purge all messages from topic
+
+	mux.HandleFunc("/mq", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		topics := mqQueue.Topics(tenant)
+		if topics == nil {
+			topics = []mq.TopicInfo{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"topics": topics, "count": len(topics)})
+	})
+
+	mux.HandleFunc("/mq/", func(w http.ResponseWriter, r *http.Request) {
+		_, tenant, err := getState(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tenant")
+			return
+		}
+		topic := strings.TrimPrefix(r.URL.Path, "/mq/")
+		topic = strings.TrimSuffix(topic, "/")
+		if topic == "" {
+			writeError(w, http.StatusBadRequest, "topic is required")
+			return
+		}
+		switch r.Method {
+		case http.MethodPost:
+			var body struct {
+				Payload map[string]any `json:"payload"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid JSON")
+				return
+			}
+			msg, err := mqQueue.Publish(tenant, topic, body.Payload)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if eventBroker != nil {
+				eventBroker.Publish(events.Event{
+					Type:      "mq.published",
+					TenantID:  tenant,
+					Timestamp: time.Now().UTC(),
+					Data:      map[string]any{"topic": topic, "msg_id": msg.ID},
+				})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(msg)
+		case http.MethodGet:
+			countStr := r.URL.Query().Get("count")
+			count := 1
+			if countStr != "" {
+				if n, err := strconv.Atoi(countStr); err == nil && n > 0 {
+					count = n
+				}
+			}
+			msgs := mqQueue.Consume(tenant, topic, count)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"messages": msgs, "count": len(msgs)})
+		case http.MethodDelete:
+			removed := mqQueue.Purge(tenant, topic)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"purged": removed, "topic": topic})
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {

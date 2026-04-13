@@ -15,14 +15,15 @@ import (
 	"github.com/gdev6145/Spectral_cloud/pkg/agentgroup"
 	"github.com/gdev6145/Spectral_cloud/pkg/auth"
 	"github.com/gdev6145/Spectral_cloud/pkg/billing"
-	"github.com/gdev6145/Spectral_cloud/pkg/pipeline"
 	"github.com/gdev6145/Spectral_cloud/pkg/blockchain"
 	"github.com/gdev6145/Spectral_cloud/pkg/circuit"
 	"github.com/gdev6145/Spectral_cloud/pkg/events"
 	"github.com/gdev6145/Spectral_cloud/pkg/jobs"
 	"github.com/gdev6145/Spectral_cloud/pkg/kv"
 	"github.com/gdev6145/Spectral_cloud/pkg/mesh"
+	"github.com/gdev6145/Spectral_cloud/pkg/mq"
 	"github.com/gdev6145/Spectral_cloud/pkg/notify"
+	"github.com/gdev6145/Spectral_cloud/pkg/pipeline"
 	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
 	"github.com/gdev6145/Spectral_cloud/pkg/routing"
 	"github.com/gdev6145/Spectral_cloud/pkg/scheduler"
@@ -57,7 +58,7 @@ func makeHandler(db *store.Store, counter *prometheus.CounterVec, auth authConfi
 		}
 	}
 	circuitMgr := circuit.New(5, 30*time.Second)
-	return newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist, auth, 100, 200, 0, 0, tenantLimits{}, status, meshNode, anomalyState, agentReg, corsConfig{}, false, broker, nil, "", jq, nil, kvStore, notifyMgr, circuitMgr, groupMgr, sched, pipeline.NewWithStore(db), billing.New(db))
+	return newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist, auth, 100, 200, 0, 0, tenantLimits{}, status, meshNode, anomalyState, agentReg, corsConfig{}, false, broker, nil, "", jq, nil, kvStore, notifyMgr, circuitMgr, groupMgr, sched, pipeline.NewWithStore(db), billing.New(db), mq.New())
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -2489,7 +2490,7 @@ func TestJobsEndpoints(t *testing.T) {
 	jq := jobs.NewQueue()
 	handler := newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist,
 		authConfig{defaultTenant: "default"}, 100, 200, 0, 0, tenantLimits{}, nil, nil, &meshAnomalyState{},
-		agentReg, corsConfig{}, false, broker, nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq), pipeline.NewWithStore(db), billing.New(db))
+		agentReg, corsConfig{}, false, broker, nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq), pipeline.NewWithStore(db), billing.New(db), mq.New())
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
@@ -2581,7 +2582,7 @@ func TestJobsClaimAndCancel(t *testing.T) {
 	jq := jobs.NewQueue()
 	handler := newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist,
 		authConfig{defaultTenant: "default"}, 100, 200, 0, 0, tenantLimits{}, nil, nil, &meshAnomalyState{},
-		agentReg, corsConfig{}, false, broker, nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq), pipeline.NewWithStore(db), billing.New(db))
+		agentReg, corsConfig{}, false, broker, nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq), pipeline.NewWithStore(db), billing.New(db), mq.New())
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
@@ -2768,7 +2769,7 @@ func TestJobsClaim_NoPendingJobs(t *testing.T) {
 	jq := jobs.NewQueue()
 	handler := newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist,
 		authConfig{defaultTenant: "default"}, 100, 200, 0, 0, tenantLimits{}, nil, nil, &meshAnomalyState{},
-		agent.NewRegistry(), corsConfig{}, false, events.NewBroker(), nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq), pipeline.NewWithStore(db), billing.New(db))
+		agent.NewRegistry(), corsConfig{}, false, events.NewBroker(), nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq), pipeline.NewWithStore(db), billing.New(db), mq.New())
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
@@ -2793,7 +2794,7 @@ func TestJobsAutoDispatch_NoAgent(t *testing.T) {
 	jq := jobs.NewQueue()
 	handler := newHandler(tenantMgr, db, 1<<20, counter, meshCounter, meshReject, meshAnom, durHist,
 		authConfig{defaultTenant: "default"}, 100, 200, 0, 0, tenantLimits{}, nil, nil, &meshAnomalyState{},
-		agent.NewRegistry(), corsConfig{}, false, events.NewBroker(), nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq), pipeline.NewWithStore(db), billing.New(db))
+		agent.NewRegistry(), corsConfig{}, false, events.NewBroker(), nil, "", jq, nil, kv.New(), notify.New(), circuit.New(5, 30*time.Second), agentgroup.New(), scheduler.New(jq), pipeline.NewWithStore(db), billing.New(db), mq.New())
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
