@@ -19,7 +19,7 @@ type Message struct {
 	CreatedAt time.Time      `json:"created_at"`
 }
 
-// TopicInfo summarises a topic without returning message bodies.
+// TopicInfo summarizes a topic without returning message bodies.
 type TopicInfo struct {
 	Topic   string `json:"topic"`
 	Tenant  string `json:"tenant"`

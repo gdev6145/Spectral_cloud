@@ -29,7 +29,7 @@ type LLMHook interface {
 	Enhance(in Input, heuristic Result) (Result, error)
 }
 
-// Organizer applies heuristic (and optionally LLM-based) rules to suggest file organisation.
+// Organizer applies heuristic (and optionally LLM-based) rules to suggest file organization.
 type Organizer struct {
 	hook LLMHook
 }
@@ -44,7 +44,7 @@ func (o *Organizer) SetLLMHook(hook LLMHook) {
 	o.hook = hook
 }
 
-// Organize analyses file metadata and returns a suggested canonical name and folder.
+// Organize analyzes file metadata and returns a suggested canonical name and folder.
 func (o *Organizer) Organize(in Input) Result {
 	res := heuristic(in)
 	if o.hook != nil {

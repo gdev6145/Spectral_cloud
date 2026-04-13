@@ -71,20 +71,20 @@ type SubKey struct {
 }
 
 // Meter tracks per-tenant daily usage and manages profiles/sub-keys.
-// It is backed by a BoltDB store for persistence.
+// Profile and key data are held in-memory for the lifetime of the process.
+// Persistence via BoltDB is planned for a future version; the store parameter
+// is accepted for forward-compatibility but not yet used for billing data.
 type Meter struct {
 	mu       sync.Mutex
-	db       *store.Store
-	usage    map[string]map[string]int64 // tenantID → metric → count (today)
-	usageDay string                      // "YYYY-MM-DD" — reset when day changes
 	profiles map[string]TenantProfile
 	keys     map[string]map[string]*SubKey // tenantID → keyID → SubKey
+	usage    map[string]map[string]int64   // tenantID → metric → count (today)
+	usageDay string                        // "YYYY-MM-DD" — reset when day changes
 }
 
-// New creates a Meter backed by the given store.
-func New(db *store.Store) *Meter {
+// New creates a Meter. The store parameter is reserved for future persistence.
+func New(_ *store.Store) *Meter {
 	m := &Meter{
-		db:       db,
 		usage:    make(map[string]map[string]int64),
 		usageDay: time.Now().UTC().Format("2006-01-02"),
 		profiles: make(map[string]TenantProfile),
@@ -162,7 +162,7 @@ func (m *Meter) GenerateKey(tenantID, name string) (*SubKey, error) {
 		TenantID:  tenantID,
 		Name:      name,
 		Key:       secret,
-		KeyHash:   secret, // store plain for now (MVP)
+		KeyHash:   secret, // MVP: stored as-is in memory; hash before persisting to disk
 		CreatedAt: time.Now().UTC(),
 	}
 	m.mu.Lock()

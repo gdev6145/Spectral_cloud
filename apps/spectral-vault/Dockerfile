@@ -9,6 +9,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+# CGO_ENABLED=0 is correct: modernc.org/sqlite is a pure-Go SQLite implementation
+# that does not require cgo. This produces a fully static binary.
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/vault-api  ./cmd/vault-api  && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/vault-worker ./cmd/vault-worker
 

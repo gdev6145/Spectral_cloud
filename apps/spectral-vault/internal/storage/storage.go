@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// Store is a local filesystem object store that organises files under DataDir.
+// Store is a local filesystem object store that organizes files under DataDir.
 type Store struct {
 	DataDir string
 }

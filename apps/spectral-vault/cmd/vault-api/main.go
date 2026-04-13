@@ -136,7 +136,7 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if existing != nil {
 		// Remove the just-stored duplicate file.
 		if delErr := s.store.Delete(tenant, storageKey); delErr != nil {
-			log.Printf("cleanup duplicate storage: delete failed")
+			log.Printf("cleanup duplicate storage: %v", delErr)
 		}
 		writeJSON(w, http.StatusConflict, existing)
 		return
