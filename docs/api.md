@@ -326,3 +326,41 @@ curl -s -X POST \
   --data-binary @control_message.bin \
   http://localhost:8080/proto/control
 ```
+
+## Message Queue
+
+A lightweight, multi-tenant, in-memory topic-based message queue. Messages are tenant-scoped and delivered FIFO.
+
+`GET /mq`
+Lists all topics for the current tenant with pending message counts.
+
+Response:
+```json
+{"topics": [{"topic": "ingest", "tenant": "default", "pending": 3}], "count": 1}
+```
+
+`POST /mq/{topic}`
+Publishes a message to the named topic.
+
+Request body:
+```json
+{"payload": {"key": "value"}}
+```
+
+Response: the published `Message` object with `id`, `topic`, `tenant`, `payload`, and `created_at`.
+
+`GET /mq/{topic}?count=N`
+Consumes (dequeues) up to `N` messages (default 1, 0 = all pending).
+
+Response:
+```json
+{"messages": [{...}, ...], "count": 2}
+```
+
+`DELETE /mq/{topic}`
+Purges all pending messages from the topic.
+
+Response:
+```json
+{"purged": 3, "topic": "ingest"}
+```

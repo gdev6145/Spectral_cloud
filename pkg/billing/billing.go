@@ -23,9 +23,9 @@ const (
 
 // Metric names used with Meter.Record.
 const (
-	MetricAPICalls  = "api_calls"
-	MetricJobs      = "jobs"
-	MetricAITokens  = "ai_tokens"
+	MetricAPICalls = "api_calls"
+	MetricJobs     = "jobs"
+	MetricAITokens = "ai_tokens"
 )
 
 // Quota holds per-plan daily usage limits (0 = unlimited).

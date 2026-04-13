@@ -106,9 +106,9 @@ func TestTenantIsolation(t *testing.T) {
 
 func TestTopics(t *testing.T) {
 	q := New()
-	q.Publish("t", "alpha", nil)   //nolint:errcheck
-	q.Publish("t", "alpha", nil)   //nolint:errcheck
-	q.Publish("t", "beta", nil)    //nolint:errcheck
+	q.Publish("t", "alpha", nil) //nolint:errcheck
+	q.Publish("t", "alpha", nil) //nolint:errcheck
+	q.Publish("t", "beta", nil)  //nolint:errcheck
 
 	topics := q.Topics("t")
 	counts := map[string]int{}

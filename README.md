@@ -19,6 +19,7 @@ Quick links:
 - Architecture overview: `docs/spectral-cloud-architecture.md`
 - API reference: `docs/api.md`
 - Configuration reference: `docs/configuration.md`
+- **Spectral Vault** (companion storage service): [`apps/spectral-vault/README.md`](apps/spectral-vault/README.md)
 
 **Standalone Agent**
 

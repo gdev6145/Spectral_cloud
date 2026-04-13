@@ -185,13 +185,13 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if pubErr := s.mq.Publish(ctx, s.mqTopic, map[string]any{
-				"file_id":      id,
-				"tenant":       tenant,
-				"storage_key":  storageKey,
+				"file_id":       id,
+				"tenant":        tenant,
+				"storage_key":   storageKey,
 				"original_name": fh.Filename,
-				"sha256":       sha,
-				"mime":         mime,
-				"size":         res.n,
+				"sha256":        sha,
+				"mime":          mime,
+				"size":          res.n,
 			}); pubErr != nil {
 				log.Printf("mq publish: %v", pubErr)
 			}

@@ -290,6 +290,54 @@ services:
     networks:
       - mesh-network
 
+  # ── Spectral Vault ─────────────────────────────────────────────────────────
+  vault-api:
+    build:
+      context: ./apps/spectral-vault
+      dockerfile: Dockerfile
+    command: ["/usr/local/bin/vault-api"]
+    environment:
+      - VAULT_DATA_DIR=/data
+      - VAULT_ADDR=:8090
+      - VAULT_TENANT_HEADER=X-Tenant-ID
+      - SPECTRAL_URL=http://node1:8080
+      - SPECTRAL_API_KEY=
+      - SPECTRAL_MQ_INGEST_TOPIC=ingest
+    volumes:
+      - vault-data:/data
+    networks:
+      - mesh-network
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8090/health"]
+      interval: 10s
+      timeout: 2s
+      retries: 5
+    depends_on:
+      - node1
+
+  vault-worker:
+    build:
+      context: ./apps/spectral-vault
+      dockerfile: Dockerfile
+    command: ["/usr/local/bin/vault-worker"]
+    environment:
+      - VAULT_DATA_DIR=/data
+      - SPECTRAL_URL=http://node1:8080
+      - SPECTRAL_API_KEY=
+      - SPECTRAL_TENANT=default
+      - SPECTRAL_MQ_INGEST_TOPIC=ingest
+      - SPECTRAL_MQ_RESULTS_TOPIC=ingest.results
+      - WORKER_POLL_INTERVAL=5s
+    volumes:
+      - vault-data:/data
+    networks:
+      - mesh-network
+    depends_on:
+      - node1
+      - vault-api
+
 networks:
   mesh-network:
     driver: bridge
@@ -301,3 +349,4 @@ volumes:
   node4-data:
   node5-data:
   alertmanager-config:
+  vault-data:

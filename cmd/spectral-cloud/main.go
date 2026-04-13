@@ -26,19 +26,19 @@ import (
 
 	"github.com/gdev6145/Spectral_cloud/pkg/agent"
 	"github.com/gdev6145/Spectral_cloud/pkg/agentgroup"
-	"github.com/gdev6145/Spectral_cloud/pkg/pipeline"
+	"github.com/gdev6145/Spectral_cloud/pkg/ai"
 	"github.com/gdev6145/Spectral_cloud/pkg/auth"
+	"github.com/gdev6145/Spectral_cloud/pkg/billing"
 	"github.com/gdev6145/Spectral_cloud/pkg/blockchain"
 	"github.com/gdev6145/Spectral_cloud/pkg/circuit"
 	"github.com/gdev6145/Spectral_cloud/pkg/events"
 	"github.com/gdev6145/Spectral_cloud/pkg/healthcheck"
 	"github.com/gdev6145/Spectral_cloud/pkg/jobs"
 	"github.com/gdev6145/Spectral_cloud/pkg/kv"
-	"github.com/gdev6145/Spectral_cloud/pkg/ai"
-	"github.com/gdev6145/Spectral_cloud/pkg/billing"
-	"github.com/gdev6145/Spectral_cloud/pkg/mq"
 	"github.com/gdev6145/Spectral_cloud/pkg/mesh"
+	"github.com/gdev6145/Spectral_cloud/pkg/mq"
 	"github.com/gdev6145/Spectral_cloud/pkg/notify"
+	"github.com/gdev6145/Spectral_cloud/pkg/pipeline"
 	meshpb "github.com/gdev6145/Spectral_cloud/pkg/proto"
 	"github.com/gdev6145/Spectral_cloud/pkg/routing"
 	"github.com/gdev6145/Spectral_cloud/pkg/scheduler"
@@ -3676,7 +3676,6 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 
 	// ── Scheduler endpoints ───────────────────────────────────────────────────
 
-
 	// ── Pipeline endpoints ────────────────────────────────────────────────────
 
 	// GET  /agent-pipelines   — list pipelines
@@ -4181,10 +4180,10 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			return
 		}
 		var req struct {
-			TenantID string        `json:"tenant_id"`
-			Name     string        `json:"name"`
-			Email    string        `json:"email"`
-			Plan     billing.Plan  `json:"plan"`
+			TenantID string       `json:"tenant_id"`
+			Name     string       `json:"name"`
+			Email    string       `json:"email"`
+			Plan     billing.Plan `json:"plan"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid request body")
@@ -4385,11 +4384,11 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		}
 
 		type tenantReport struct {
-			TenantID string                   `json:"tenant_id"`
-			Plan     billing.Plan             `json:"plan"`
-			Quota    billing.Quota            `json:"quota"`
-			Usage    map[string]int64         `json:"usage_today"`
-			Agents   int                      `json:"agents_live"`
+			TenantID string           `json:"tenant_id"`
+			Plan     billing.Plan     `json:"plan"`
+			Quota    billing.Quota    `json:"quota"`
+			Usage    map[string]int64 `json:"usage_today"`
+			Agents   int              `json:"agents_live"`
 		}
 		reports := make([]tenantReport, 0, len(tenants))
 		for _, t := range tenants {
@@ -5273,13 +5272,13 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"score":            verdict.Score,
-				"reasoning":        verdict.Reasoning,
-				"model":            result.Model,
-				"input_tokens":     result.InputTokens,
-				"output_tokens":    result.OutputTokens,
-				"cache_read":       result.CacheReadTokens,
-				"cache_write":      result.CacheWriteTokens,
+				"score":         verdict.Score,
+				"reasoning":     verdict.Reasoning,
+				"model":         result.Model,
+				"input_tokens":  result.InputTokens,
+				"output_tokens": result.OutputTokens,
+				"cache_read":    result.CacheReadTokens,
+				"cache_write":   result.CacheWriteTokens,
 			})
 		})
 
