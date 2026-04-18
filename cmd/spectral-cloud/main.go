@@ -164,6 +164,9 @@ func (b *metricsBuffer) push(p metricsPoint) {
 func (b *metricsBuffer) last(n int) []metricsPoint {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if n > b.maxLen {
+		n = b.maxLen
+	}
 	l := len(b.buf)
 	if n <= 0 || n > l {
 		n = l
@@ -173,8 +176,10 @@ func (b *metricsBuffer) last(n int) []metricsPoint {
 	return result
 }
 
+const maxMetricsSeriesPoints = 720
+
 // globalMetricsBuf is populated by a background goroutine started in main().
-var globalMetricsBuf = newMetricsBuf(720)
+var globalMetricsBuf = newMetricsBuf(maxMetricsSeriesPoints)
 
 func (s *statusTracker) snapshot() statusSnapshot {
 	s.mu.Lock()
@@ -2662,7 +2667,11 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 		n := 60
 		if ns := r.URL.Query().Get("n"); ns != "" {
 			if parsed, err := strconv.Atoi(ns); err == nil && parsed > 0 {
-				n = parsed
+				if parsed > maxMetricsSeriesPoints {
+					n = maxMetricsSeriesPoints
+				} else {
+					n = parsed
+				}
 			}
 		}
 		points := globalMetricsBuf.last(n)
