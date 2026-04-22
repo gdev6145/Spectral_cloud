@@ -20,4 +20,4 @@ Only the latest release is supported with security updates.
 ## Dependency Security
 
 - Run `govulncheck ./...` regularly and review results.
-- Some vulnerabilities require upgrading the Go toolchain and/or gRPC. If your environment is pinned to an older toolchain, schedule an upgrade to a patched Go version as soon as feasible.
+- Keep the Go toolchain current with the `go.mod` `toolchain` directive and the CI/Docker builder versions. Security fixes in `grpc` and the Go standard library may require coordinated upgrades.
