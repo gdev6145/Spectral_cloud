@@ -121,6 +121,17 @@ func (q *Queue) Consume(tenant, topic string, count int) []Message {
 	return out
 }
 
+func clonePayload(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(payload))
+	for k, v := range payload {
+		cloned[k] = v
+	}
+	return cloned
+}
+
 // Peek returns the next message in topic without removing it.
 // Returns (Message{}, false) when the topic is empty.
 func (q *Queue) Peek(tenant, topic string) (Message, bool) {
@@ -131,7 +142,9 @@ func (q *Queue) Peek(tenant, topic string) (Message, bool) {
 	if len(msgs) == 0 {
 		return Message{}, false
 	}
-	return *msgs[0], true
+	msg := *msgs[0]
+	msg.Payload = clonePayload(msg.Payload)
+	return msg, true
 }
 
 // Topics returns info about all topics with at least one pending message for
