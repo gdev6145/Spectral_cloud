@@ -45,6 +45,32 @@ func (q *Queue) tenantTopics(tenant string) map[string][]*Message {
 	return q.topics[tenant]
 }
 
+func cloneValue(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		return clonePayload(x)
+	case []any:
+		out := make([]any, len(x))
+		for i, item := range x {
+			out[i] = cloneValue(item)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func clonePayload(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	out := make(map[string]any, len(payload))
+	for k, v := range payload {
+		out[k] = cloneValue(v)
+	}
+	return out
+}
+
 // Publish appends a message to the named topic for tenant.
 // Returns the newly created Message.
 func (q *Queue) Publish(tenant, topic string, payload map[string]any) (*Message, error) {
@@ -59,7 +85,7 @@ func (q *Queue) Publish(tenant, topic string, payload map[string]any) (*Message,
 		ID:        id,
 		Topic:     topic,
 		Tenant:    tenant,
-		Payload:   payload,
+		Payload:   clonePayload(payload),
 		CreatedAt: time.Now().UTC(),
 	}
 	q.mu.Lock()
