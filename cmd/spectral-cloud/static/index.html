@@ -1068,6 +1068,55 @@ function toggleRouteEdit(dest) {
   if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
 }
 
+function buildRouteParams(destination, lat, thr, ttl, sat, tagsRaw) {
+  const params = new URLSearchParams({destination: destination, latency: lat, throughput: thr});
+  if (ttl > 0) params.set('ttlSeconds', ttl);
+  if (sat) params.set('satellite', 'true');
+  (tagsRaw || '').split(',').forEach(t => {
+    const [k, v] = t.split(':');
+    if (k && v) params.append('tag', k.trim()+':'+v.trim());
+  });
+  return params;
+}
+
+async function getRoutesByDestination(dest) {
+  const res = await api('/routes');
+  const routes = res.routes || [];
+  return routes.filter(rt => rt.destination === dest);
+}
+
+async function deleteAllRoutesByDestination(dest) {
+  let removed = 0;
+  while (true) {
+    const matches = await getRoutesByDestination(dest);
+    if (!matches.length) break;
+    await del('/routes?destination='+encodeURIComponent(dest));
+    removed++;
+  }
+  return removed;
+}
+
+function ttlSecondsFromRoute(rt) {
+  if (!rt || !rt.expires_at) return 0;
+  const expiresAtMs = Date.parse(rt.expires_at);
+  if (Number.isNaN(expiresAtMs)) return 0;
+  return Math.max(0, Math.ceil((expiresAtMs - Date.now()) / 1000));
+}
+
+async function restoreRoutes(routes) {
+  for (const rt of routes) {
+    const params = buildRouteParams(
+      rt.destination,
+      rt.metric ? rt.metric.latency : 0,
+      rt.metric ? rt.metric.throughput : 0,
+      ttlSecondsFromRoute(rt),
+      !!rt.satellite,
+      rt.tags ? Object.entries(rt.tags).map(([k, v]) => k+':'+v).join(',') : ''
+    );
+    await api('/routes?'+params, {method: 'POST'});
+  }
+}
+
 async function updateRoute(dest) {
   const sk = dest.replace(/[^a-zA-Z0-9_-]/g, '_');
   const lat = parseInt((document.getElementById('re-lat-'+sk)||{}).value||'0', 10) || 0;
@@ -1075,17 +1124,23 @@ async function updateRoute(dest) {
   const ttl = parseInt((document.getElementById('re-ttl-'+sk)||{}).value||'0', 10) || 0;
   const sat = ((document.getElementById('re-sat-'+sk)||{}).value||'') === 'true';
   const tagsRaw = ((document.getElementById('re-tags-'+sk)||{}).value||'').trim();
-  const params = new URLSearchParams({destination: dest, latency: lat, throughput: thr});
-  if (ttl > 0) params.set('ttlSeconds', ttl);
-  if (sat) params.set('satellite', 'true');
-  tagsRaw.split(',').forEach(t => { const [k,v] = t.split(':'); if (k && v) params.append('tag', k.trim()+':'+v.trim()); });
+  const params = buildRouteParams(dest, lat, thr, ttl, sat, tagsRaw);
+  let previousRoutes = [];
   try {
-    // delete then re-add with updated values (route system uses upsert semantics)
-    await del('/routes?destination='+encodeURIComponent(dest));
+    previousRoutes = await getRoutesByDestination(dest);
+    await deleteAllRoutesByDestination(dest);
     await api('/routes?'+params, {method: 'POST'});
     toast('Route updated');
     renderRoutes(currentRenderId);
-  } catch(e) { toast('Error: '+e.message, false); }
+  } catch(e) {
+    try {
+      if (previousRoutes.length) await restoreRoutes(previousRoutes);
+    } catch (restoreErr) {
+      toast('Error: '+e.message+' (rollback failed: '+restoreErr.message+')', false);
+      return;
+    }
+    toast('Error: '+e.message, false);
+  }
 }
 
 async function applyRouteFilter() {
