@@ -959,7 +959,7 @@ async function renderRoutes(rid) {
             <td class="mono">${r.expires_at?fmtTime(r.expires_at):'∞'}</td>
             <td class="flex">
               <button class="btn btn-outline btn-sm" onclick="toggleRouteEdit(${JSON.stringify(r.destination)})">✎</button>
-              <button class="btn btn-danger btn-sm" onclick="deleteRoute('${esc(r.destination)}')">✕</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteRoute(${JSON.stringify(r.destination)})">✕</button>
             </td>
           </tr>
           <tr id="route-edit-${esc(r.destination.replace(/[^a-zA-Z0-9_-]/g,'_'))}" style="display:none;background:var(--surface)">
