@@ -1423,7 +1423,7 @@ async function renderJobs(rid) {
               Math.round((new Date(j.updated_at) - new Date(j.created_at))/1000)+'s' : '---';
             const canCancel = j.status === 'pending' || j.status === 'running';
             const canComplete = j.status === 'running';
-            return `<tr style="cursor:pointer" onclick="toggleJobDetail('${esc(j.id)}')">
+            return `<tr style="cursor:pointer" onclick="toggleJobDetail(${JSON.stringify(String(j.id))})">
               <td class="mono"><strong>${esc(j.id)}</strong></td>
               <td><span class="pill ${esc(j.status)}">${esc(j.status)}</span></td>
               <td>${esc(j.capability||'---')}</td>
@@ -1431,9 +1431,9 @@ async function renderJobs(rid) {
               <td class="mono">${fmtTime(j.created_at)}</td>
               <td class="mono">${dur}</td>
               <td onclick="event.stopPropagation()" style="white-space:nowrap">
-                ${canCancel?`<button class="btn btn-danger btn-sm" onclick="cancelJob('${esc(j.id)}')">✕ Cancel</button>`:''}
-                ${canComplete?`<button class="btn btn-outline btn-sm" onclick="updateJob('${esc(j.id)}','done','')">✓ Done</button> <button class="btn btn-outline btn-sm" onclick="updateJob('${esc(j.id)}','failed','error')">✗ Fail</button>`:''}
-                ${(!canCancel && !canComplete)?`<button class="btn btn-outline btn-sm" onclick="retryJob('${esc(j.id)}')">↻ Retry</button>`:''}
+                ${canCancel?`<button class="btn btn-danger btn-sm" onclick="cancelJob(${JSON.stringify(String(j.id))})">✕ Cancel</button>`:''}
+                ${canComplete?`<button class="btn btn-outline btn-sm" onclick="updateJob(${JSON.stringify(String(j.id))},'done','')">✓ Done</button> <button class="btn btn-outline btn-sm" onclick="updateJob(${JSON.stringify(String(j.id))},'failed','error')">✗ Fail</button>`:''}
+                ${(!canCancel && !canComplete)?`<button class="btn btn-outline btn-sm" onclick="retryJob(${JSON.stringify(String(j.id))})">↻ Retry</button>`:''}
               </td>
             </tr>
             <tr id="job-detail-${esc(j.id)}" class="detail-row" style="display:none">
@@ -1448,8 +1448,8 @@ async function renderJobs(rid) {
                     <pre style="margin:0">${esc(j.result||j.error||'—')}</pre>
                     ${j.status==='running'?`<div style="margin-top:8px;display:flex;gap:6px">
                       <input id="job-res-${esc(j.id)}" placeholder="result value…" style="flex:1;padding:4px 8px;font-size:12px">
-                      <button class="btn btn-outline btn-sm" onclick="updateJobWithResult('${esc(j.id)}','done')">✓ Mark done</button>
-                      <button class="btn btn-outline btn-sm" style="color:var(--danger)" onclick="updateJobWithResult('${esc(j.id)}','failed')">✗ Mark failed</button>
+                      <button class="btn btn-outline btn-sm" onclick="updateJobWithResult(${JSON.stringify(String(j.id))},'done')">✓ Mark done</button>
+                      <button class="btn btn-outline btn-sm" style="color:var(--danger)" onclick="updateJobWithResult(${JSON.stringify(String(j.id))},'failed')">✗ Mark failed</button>
                     </div>`:''}
                   </div>
                 </div>
