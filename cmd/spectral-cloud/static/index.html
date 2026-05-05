@@ -2340,7 +2340,8 @@ async function renderGroups(rid) {
   const [groupsRes, agentsRes] = await Promise.allSettled([api('/agent-groups'), api('/agents')]);
   if (rid && rid !== currentRenderId) return;
   const groups = ((groupsRes.value||{}).groups) || [];
-  document.getElementById('content').innerHTML = `
+  const content = document.getElementById('content');
+  content.innerHTML = `
   <div class="section">
     <div class="flex" style="margin-bottom:12px">
       <div class="section-title" style="margin:0">${groups.length} Group(s)</div>
@@ -2354,13 +2355,13 @@ async function renderGroups(rid) {
             <td class="mono">${esc(g.id)}</td>
             <td><strong>${esc(g.name)}</strong></td>
             <td>
-              ${(g.members||[]).map(m=>`<span style="display:inline-flex;align-items:center;gap:3px;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:11px;font-family:monospace;margin:2px">${esc(m)}<button class="btn btn-danger" style="padding:0 4px;font-size:10px;line-height:1;min-width:auto;border-radius:2px;margin-left:2px" onclick="removeGroupMember('${esc(g.id)}','${esc(m)}')">✕</button></span>`).join('')||'<span style="color:var(--muted)">—</span>'}
+              ${(g.members||[]).map(m=>`<span style="display:inline-flex;align-items:center;gap:3px;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:11px;font-family:monospace;margin:2px">${esc(m)}<button class="btn btn-danger js-remove-group-member" style="padding:0 4px;font-size:10px;line-height:1;min-width:auto;border-radius:2px;margin-left:2px" data-group-id="${esc(g.id)}" data-member-id="${esc(m)}">✕</button></span>`).join('')||'<span style="color:var(--muted)">—</span>'}
             </td>
             <td class="mono">${fmtTime(g.created_at)}</td>
             <td class="flex" style="gap:4px">
-              <button class="btn btn-outline btn-sm" onclick="addGroupMember('${esc(g.id)}')">+ Member</button>
-              <button class="btn btn-outline btn-sm" onclick="groupNextMember('${esc(g.id)}')">→ Next</button>
-              <button class="btn btn-danger btn-sm" onclick="deleteGroup('${esc(g.id)}')">✕</button>
+              <button class="btn btn-outline btn-sm js-add-group-member" data-group-id="${esc(g.id)}">+ Member</button>
+              <button class="btn btn-outline btn-sm js-group-next-member" data-group-id="${esc(g.id)}">→ Next</button>
+              <button class="btn btn-danger btn-sm js-delete-group" data-group-id="${esc(g.id)}">✕</button>
             </td>
           </tr>`).join('')||'<tr><td colspan="5" class="empty">No groups</td></tr>'}
         </tbody>
@@ -2377,6 +2378,19 @@ async function renderGroups(rid) {
       </div>
     </div>
   </div>`;
+
+  content.querySelectorAll('.js-remove-group-member').forEach(btn => {
+    btn.addEventListener('click', () => removeGroupMember(btn.dataset.groupId, btn.dataset.memberId));
+  });
+  content.querySelectorAll('.js-add-group-member').forEach(btn => {
+    btn.addEventListener('click', () => addGroupMember(btn.dataset.groupId));
+  });
+  content.querySelectorAll('.js-group-next-member').forEach(btn => {
+    btn.addEventListener('click', () => groupNextMember(btn.dataset.groupId));
+  });
+  content.querySelectorAll('.js-delete-group').forEach(btn => {
+    btn.addEventListener('click', () => deleteGroup(btn.dataset.groupId));
+  });
 }
 
 async function createGroup() {
