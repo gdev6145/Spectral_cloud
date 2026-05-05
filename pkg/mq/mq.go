@@ -142,6 +142,6 @@ func (q *Queue) Purge(tenant, topic string) int {
 	defer q.mu.Unlock()
 	tt := q.tenantTopics(tenant)
 	n := len(tt[topic])
-	tt[topic] = nil
+	delete(tt, topic)
 	return n
 }
