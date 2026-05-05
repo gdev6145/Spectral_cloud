@@ -2660,8 +2660,9 @@ func newHandler(tenantMgr *tenantManager, db *store.Store, maxBodyBytes int, req
 			return
 		}
 		n := 60
+		const maxTimeseriesPoints = 720
 		if ns := r.URL.Query().Get("n"); ns != "" {
-			if parsed, err := strconv.Atoi(ns); err == nil && parsed > 0 {
+			if parsed, err := strconv.Atoi(ns); err == nil && parsed > 0 && parsed <= maxTimeseriesPoints {
 				n = parsed
 			}
 		}
